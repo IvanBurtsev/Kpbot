@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_timeout_seconds: float = 40.0
     llm_max_tokens: int = 1500
+    # тариф провайдера за 1 млн токенов, ₽. 0 = тариф не задан, считаем только токены
+    llm_price_input_rub_per_1m: float = 0.0
+    llm_price_output_rub_per_1m: float = 0.0
     smtp_enabled: bool = False
 
     # --- уведомления (Telegram) ---

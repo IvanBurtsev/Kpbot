@@ -25,6 +25,13 @@
   {% if quote.requires_review %}
   <p class="warn">В расчёт вошли не все строки: {{ quote.unmatched }} требуют уточнения. Проверьте перед отправкой.</p>
   {% endif %}
+  {% if llm_usage and llm_usage.calls %}
+  <p class="muted small">
+    Разбор LLM: {{ llm_usage.prompt_tokens + llm_usage.completion_tokens }} токенов
+    ({{ llm_usage.prompt_tokens }} на вход, {{ llm_usage.completion_tokens }} на ответ)
+    {% if llm_usage.cost_rub %}· {{ "%.4f"|format(llm_usage.cost_rub) }} ₽{% else %}· тариф не задан{% endif %}
+  </p>
+  {% endif %}
   <table class="grid">
     <thead>
       <tr><th>#</th><th>Позиция</th><th>Ед.</th><th class="num">Кол-во</th><th class="num">Цена</th><th class="num">Сумма</th></tr>

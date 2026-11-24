@@ -79,6 +79,31 @@ class LlmLine(BaseModel):
         return value.strip()
 
 
+@dataclass(slots=True)
+class LlmUsage:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
+@dataclass(slots=True)
+class LlmAnswer:
+    payload: LlmPayload
+    usage: LlmUsage
+
+
+def estimate_cost_rub(usage: LlmUsage, price_in_per_1m: float, price_out_per_1m: float) -> Decimal:
+    """Стоимость по тарифу провайдера. Нулевые цены = тариф не задан, считаем только токены."""
+    if price_in_per_1m <= 0 and price_out_per_1m <= 0:
+        return Decimal("0")
+    cost = (Decimal(usage.prompt_tokens) / Decimal(1_000_000)) * Decimal(str(price_in_per_1m))
+    cost += (Decimal(usage.completion_tokens) / Decimal(1_000_000)) * Decimal(str(price_out_per_1m))
+    return cost.quantize(Decimal("0.0001"))
+
+
 class LlmPayload(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -100,6 +125,17 @@ def _redact_local(text: str) -> str:  # pragma: no cover - оставлено д
     return redact(text)
 
 
+def _usage_from(data: dict) -> LlmUsage:
+    """Токены из ответа провайдера. Если поля нет — нули, а не выдумка."""
+    usage = data.get("usage") or {}
+    try:
+        prompt = int(usage.get("prompt_tokens") or 0)
+        completion = int(usage.get("completion_tokens") or 0)
+    except (TypeError, ValueError):
+        return LlmUsage()
+    return LlmUsage(prompt_tokens=max(prompt, 0), completion_tokens=max(completion, 0))
+
+
 class LlmClient:
     def __init__(self, config: LlmConfig, transport: httpx.BaseTransport | None = None) -> None:
         if not config.api_key:
@@ -115,7 +151,7 @@ class LlmClient:
             "Content-Type": "application/json",
         }
 
-    def complete(self, text: str) -> LlmPayload:
+    def complete(self, text: str) -> LlmAnswer:
         body = {
             "model": self.config.model,
             "temperature": self.config.temperature,
@@ -143,7 +179,8 @@ class LlmClient:
                 try:
                     data = response.json()
                     content = data["choices"][0]["message"]["content"]
-                    return LlmPayload.model_validate(json.loads(content))
+                    payload = LlmPayload.model_validate(json.loads(content))
+                    return LlmAnswer(payload=payload, usage=_usage_from(data))
                 except (KeyError, IndexError, json.JSONDecodeError, ValidationError) as exc:
                     last_error = f"ответ не по схеме: {redact(str(exc))[:200]}"
                     break
@@ -164,6 +201,7 @@ class LlmExtractor:
         self.client = client
         self.rules = rules or RuleExtractor()
         self.last_source = "llm"
+        self.last_usage = LlmUsage()
 
     @property
     def skipped(self) -> list[str]:
@@ -172,14 +210,17 @@ class LlmExtractor:
 
     def extract(self, text: str, *, max_lines: int = 200) -> list[RfqLine]:
         rule_lines = self.rules.extract(text, max_lines=max_lines)
+        self.last_usage = LlmUsage()
 
         try:
-            payload = self.client.complete(text)
+            answer = self.client.complete(text)
         except LlmError as exc:
             log.warning("LLM недоступна, работаем на правилах: %s", redact(str(exc)))
             self.last_source = "rules_fallback"
             return rule_lines
 
+        payload = answer.payload
+        self.last_usage = answer.usage
         self.last_source = "llm"
         llm_lines: list[RfqLine] = []
         for item in payload.lines[:max_lines]:

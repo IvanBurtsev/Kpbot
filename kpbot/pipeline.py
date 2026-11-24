@@ -19,7 +19,7 @@ from .domain import (
     status_for,
 )
 from .extract import RuleExtractor
-from .llm import build_extractor
+from .llm import build_extractor, estimate_cost_rub
 from .mailparse import ParsedEmail, parse_eml
 from .matching import PriceIndex, match_lines
 from .notify import Notifier
@@ -189,6 +189,7 @@ class Pipeline:
         )
         quote_id = uuid.uuid4().hex
         self.store.save_quote(quote_id, rfq_id, quote)
+        self._record_llm_usage(rfq_id)
 
         html_path = self._render_documents(rfq_id, parsed, lines, quote)
         reply_text = build_reply_text(parsed, quote, rfq_id)
@@ -245,6 +246,24 @@ class Pipeline:
                 )
             )
         return promoted
+
+    def _record_llm_usage(self, rfq_id: str) -> None:
+        """Сохраняет расход токенов и рублей на разбор этой заявки."""
+        usage = getattr(self.extractor, "last_usage", None)
+        if usage is None or usage.total <= 0:
+            return
+        cost = estimate_cost_rub(
+            usage,
+            self.cfg.llm_price_input_rub_per_1m,
+            self.cfg.llm_price_output_rub_per_1m,
+        )
+        self.store.add_llm_usage(
+            rfq_id,
+            model=self.cfg.llm_model or "unknown",
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            cost_rub=str(cost),
+        )
 
     def _notify_new(self, rfq_id: str, parsed: ParsedEmail, lines: list, quote: Quote) -> None:
         """Одно уведомление на заявку. Сбой не влияет на приём письма."""

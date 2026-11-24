@@ -449,6 +449,32 @@ def cmd_max_test(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_costs(args: argparse.Namespace) -> int:
+    """Сколько токенов и рублей съел разбор писем."""
+    store = Store(settings.db_path)
+    totals = store.llm_totals()
+
+    print(f"модель:        {settings.llm_model or '—'}")
+    print(f"вызовов LLM:   {totals['calls']} (заявок: {totals['rfqs']})")
+    print(f"токены:        {totals['prompt_tokens']} на вход, {totals['completion_tokens']} на ответ")
+    if totals["calls"]:
+        per_call = (totals["prompt_tokens"] + totals["completion_tokens"]) / totals["calls"]
+        print(f"в среднем:     {per_call:.0f} токенов на письмо")
+
+    prices_set = settings.llm_price_input_rub_per_1m or settings.llm_price_output_rub_per_1m
+    if prices_set:
+        print(f"тариф:         {settings.llm_price_input_rub_per_1m} ₽/1М вход, "
+              f"{settings.llm_price_output_rub_per_1m} ₽/1М ответ")
+        print(f"расход:        {totals['cost_rub']:.4f} ₽ всего · {totals['today_cost_rub']:.4f} ₽ сегодня")
+        if totals["rfqs"]:
+            print(f"на заявку:     {totals['cost_rub'] / totals['rfqs']:.4f} ₽")
+    else:
+        print("тариф:         не задан — заполните KPBOT_LLM_PRICE_INPUT_RUB_PER_1M "
+              "и KPBOT_LLM_PRICE_OUTPUT_RUB_PER_1M из кабинета провайдера")
+        print("               (токены считаются всегда, рубли появятся после настройки)")
+    return 0
+
+
 def cmd_eval(args: argparse.Namespace) -> int:
     """Замер качества на размеченном наборе писем."""
     from .evalkit import evaluate, format_report
@@ -634,6 +660,9 @@ def main(argv: list[str] | None = None) -> int:
 
     max_test = sub.add_parser("max-test", help="отправить тестовое уведомление в MAX")
     max_test.set_defaults(func=cmd_max_test)
+
+    costs = sub.add_parser("costs", help="расход токенов и рублей на разбор писем")
+    costs.set_defaults(func=cmd_costs)
 
     args = parser.parse_args(argv)
     return int(args.func(args) or 0)

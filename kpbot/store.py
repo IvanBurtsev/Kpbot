@@ -98,6 +98,17 @@ CREATE TABLE IF NOT EXISTS decisions(
     detail     TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS llm_usage(
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    rfq_id            TEXT NOT NULL REFERENCES rfqs(id) ON DELETE CASCADE,
+    model             TEXT NOT NULL,
+    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_rub          TEXT NOT NULL DEFAULT '0',
+    created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_llm_usage_rfq ON llm_usage(rfq_id);
 """
 
 
@@ -335,6 +346,67 @@ class Store:
                 "SELECT * FROM decisions WHERE rfq_id = ? ORDER BY id", (rfq_id,)
             ).fetchall()
         return [dict(row) for row in rows]
+
+    # ---------- расход на LLM ----------
+
+    def add_llm_usage(
+        self,
+        rfq_id: str,
+        *,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cost_rub: str = "0",
+    ) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "INSERT INTO llm_usage(rfq_id, model, prompt_tokens, completion_tokens, cost_rub, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (rfq_id, model, int(prompt_tokens), int(completion_tokens), str(cost_rub), utcnow()),
+            )
+
+    def llm_usage_for(self, rfq_id: str) -> dict:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS calls, COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,"
+                " COALESCE(SUM(completion_tokens), 0) AS completion_tokens"
+                " FROM llm_usage WHERE rfq_id = ?",
+                (rfq_id,),
+            ).fetchone()
+            cost_row = conn.execute(
+                "SELECT COALESCE(SUM(CAST(cost_rub AS REAL)), 0) AS cost FROM llm_usage WHERE rfq_id = ?",
+                (rfq_id,),
+            ).fetchone()
+        return {
+            "calls": int(row["calls"] or 0),
+            "prompt_tokens": int(row["prompt_tokens"] or 0),
+            "completion_tokens": int(row["completion_tokens"] or 0),
+            "cost_rub": round(float(cost_row["cost"] or 0), 4),
+        }
+
+    def llm_totals(self) -> dict:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS calls, COUNT(DISTINCT rfq_id) AS rfqs,"
+                " COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,"
+                " COALESCE(SUM(completion_tokens), 0) AS completion_tokens,"
+                " COALESCE(SUM(CAST(cost_rub AS REAL)), 0) AS cost"
+                " FROM llm_usage"
+            ).fetchone()
+            today = conn.execute(
+                "SELECT COUNT(*) AS calls, COALESCE(SUM(CAST(cost_rub AS REAL)), 0) AS cost"
+                " FROM llm_usage WHERE substr(created_at, 1, 10) = substr(?, 1, 10)",
+                (utcnow(),),
+            ).fetchone()
+        return {
+            "calls": int(row["calls"] or 0),
+            "rfqs": int(row["rfqs"] or 0),
+            "prompt_tokens": int(row["prompt_tokens"] or 0),
+            "completion_tokens": int(row["completion_tokens"] or 0),
+            "cost_rub": round(float(row["cost"] or 0), 4),
+            "today_calls": int(today["calls"] or 0),
+            "today_cost_rub": round(float(today["cost"] or 0), 4),
+        }
 
     def stats(self) -> dict:
         with closing(self._connect()) as conn:
