@@ -16,3 +16,9 @@ paths = [
   '''^tests/''',
   '''\.gitleaks\.toml''',
 ]
+# заглушки, которые не являются секретами
+regexes = [
+  '''dev-api-key-change-me''',
+  '''dev-password''',
+  '''dev-session-secret-change-me''',
+]

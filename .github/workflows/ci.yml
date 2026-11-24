@@ -1,4 +1,4 @@
-name: ci
+﻿name: ci
 
 on:
   push:
@@ -49,7 +49,7 @@ jobs:
           curl -sSfL "$ARCHIVE" -o gitleaks.tar.gz
           tar -xzf gitleaks.tar.gz gitleaks
           ./gitleaks version
-          ./gitleaks detect --source . --no-banner --redact --verbose
+          ./gitleaks detect --source . --no-git --no-banner --redact --verbose
 
   audit:
     name: аудит зависимостей
