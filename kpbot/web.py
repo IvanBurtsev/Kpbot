@@ -38,9 +38,10 @@ from .security import (
 )
 from .store import Store
 
-from .logs import mask, setup_logging
+from .logs import mask, register_settings_secrets, setup_logging
 
 setup_logging()
+register_settings_secrets(settings)
 log = logging.getLogger("kpbot.web")
 
 app = FastAPI(title="kpbot", version="0.1.0", docs_url="/api/docs", openapi_url="/api/openapi.json")

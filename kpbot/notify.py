@@ -129,15 +129,22 @@ def max_bot_info(config: MaxConfig) -> dict:
 
 
 def load_max_user_ids(config: MaxConfig) -> list[tuple[str, str]]:
-    """Кто писал боту: из long polling /updates. Нужно при первом подключении."""
+    """Кто писал боту: из long polling /updates. Нужно при первом подключении.
+
+    /updates без параметра `timeout` держит соединение до события, поэтому для
+    разведки просим минимальное ожидание и считаем таймаут «сообщений нет».
+    """
     url = f"{config.api_base.rstrip('/')}/updates"
     try:
         response = httpx.get(
             url,
             headers={"Authorization": config.token},
+            params={"timeout": 1, "limit": 100},
             timeout=config.timeout,
             verify=max_ssl_context(),
         )
+    except httpx.ReadTimeout:
+        return []
     except httpx.HTTPError as exc:
         raise NotifyError(f"сеть: {redact(str(exc))[:200]}") from exc
     if response.status_code != 200:

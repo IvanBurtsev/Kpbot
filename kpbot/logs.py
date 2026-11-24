@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_\-]{8,}"),
@@ -14,8 +15,41 @@ _SECRET_PATTERNS = (
 )
 
 
+_REGISTERED: set[str] = set()
+_LOCK = threading.Lock()
+
+
+def register_secret(value: str) -> None:
+    """Запоминает конкретное секретное значение (токен без явного префикса).
+
+    Шаблоны ловят `sk-…`, `GOCSPX-…`, токены Telegram, но у токенов MAX
+    нет сигнатуры — поэтому вырезаем их по точному значению.
+    """
+    if value and len(value) >= 8:
+        with _LOCK:
+            _REGISTERED.add(value)
+
+
+def register_settings_secrets(settings) -> None:
+    for name in (
+        "llm_api_key",
+        "telegram_bot_token",
+        "max_bot_token",
+        "oauth_client_secret",
+        "imap_password",
+        "api_key",
+        "ui_password",
+        "session_secret",
+    ):
+        register_secret(str(getattr(settings, name, "") or ""))
+
+
 def redact(text: str) -> str:
     value = str(text)
+    with _LOCK:
+        registered = sorted(_REGISTERED, key=len, reverse=True)
+    for secret in registered:
+        value = value.replace(secret, "***")
     for pattern in _SECRET_PATTERNS:
         value = pattern.sub("***", value)
     return value

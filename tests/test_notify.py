@@ -184,5 +184,38 @@ class MaxChannelTest(unittest.TestCase):
         self.assertGreater(stats["x509"], 10)
 
 
+class MaxPollingTest(unittest.TestCase):
+    def test_long_poll_timeout_means_no_messages(self) -> None:
+        from kpbot.notify import MaxConfig, load_max_user_ids
+
+        with patch("kpbot.notify.httpx.get", side_effect=httpx.ReadTimeout("нет событий")):
+            users = load_max_user_ids(MaxConfig(token="max-token"))
+        self.assertEqual(users, [])
+
+    def test_updates_are_parsed_and_bots_ignored(self) -> None:
+        from kpbot.notify import MaxConfig, load_max_user_ids
+
+        payload = {
+            "updates": [
+                {"message": {"sender": {"user_id": 501, "name": "Иван", "is_bot": False}}},
+                {"message": {"sender": {"user_id": 900, "name": "Бот", "is_bot": True}}},
+            ]
+        }
+        with patch("kpbot.notify.httpx.get", return_value=response(200, payload)):
+            users = load_max_user_ids(MaxConfig(token="max-token"))
+        self.assertEqual(users, [("501", "Иван")])
+
+
+class MaxTokenRedactionTest(unittest.TestCase):
+    def test_token_without_prefix_is_hidden(self) -> None:
+        from kpbot.logs import register_secret
+
+        max_token = "f9LHodD0cOLvtNgNb8l7jFDH0yym2QYSZEwFC7OYLHPA3MLb5Onrz"
+        register_secret(max_token)
+        cleaned = redact(f"Authorization: {max_token}, ответ 401")
+        self.assertNotIn(max_token, cleaned)
+        self.assertIn("***", cleaned)
+
+
 if __name__ == "__main__":
     unittest.main()

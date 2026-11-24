@@ -564,9 +564,10 @@ def cmd_mail_preview(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from .logs import setup_logging
+    from .logs import register_settings_secrets, setup_logging
 
     setup_logging()
+    register_settings_secrets(settings)
     parser = argparse.ArgumentParser(prog="kpbot", description="заявка из письма → КП")
     sub = parser.add_subparsers(dest="command", required=True)
 
