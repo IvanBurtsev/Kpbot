@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block title %}Входящие · kpbot{% endblock %}
 {% block content %}
 {% set labels = {"received": "принято", "parsed": "разобрано", "priced": "посчитано",
@@ -36,7 +36,7 @@
     <tbody>
       {% for r in rfqs %}
       <tr>
-        <td class="small muted">{{ r.created_at }}</td>
+        <td class="small muted">{{ r.created_at[:19] }}</td>
         <td>{{ r.sender }}</td>
         <td><a href="/ui/rfq/{{ r.id }}">{{ r.subject }}</a></td>
         <td class="num">{{ r.line_count }}</td>

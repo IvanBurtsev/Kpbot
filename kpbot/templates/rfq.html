@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block title %}{{ rfq.subject }} · kpbot{% endblock %}
 {% block content %}
 {% set labels = {"ok": "в прайсе", "ambiguous": "похоже", "no_match": "не найдено", "invalid": "нет кол-ва"} %}
@@ -13,7 +13,7 @@
   <h1>{{ rfq.subject }}</h1>
   <p>
     <span class="badge s-{{ rfq.status }}">{{ rfq_labels.get(rfq.status, rfq.status) }}</span>
-    <span class="muted small">от {{ rfq.sender }} · {{ rfq.created_at }} · заявка <code>{{ rfq.id[:12] }}</code></span>
+    <span class="muted small">от {{ rfq.sender }} · {{ rfq.created_at[:19] }} · заявка <code>{{ rfq.id[:12] }}</code></span>
   </p>
   {% if timing and timing.seconds is not none %}
   <p class="small"><b>КП готово за {{ "%.1f"|format(timing.seconds) }} с</b>

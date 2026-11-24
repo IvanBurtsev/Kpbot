@@ -114,7 +114,8 @@ CREATE INDEX IF NOT EXISTS ix_llm_usage_rfq ON llm_usage(rfq_id);
 
 
 def utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    """Время с микросекундами: секундной точности не хватает для метрики «письмо → КП»."""
+    return datetime.now(timezone.utc).isoformat()
 
 
 class Store:
