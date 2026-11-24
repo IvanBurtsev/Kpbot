@@ -22,6 +22,7 @@ from .extract import RuleExtractor
 from .llm import build_extractor
 from .mailparse import ParsedEmail, parse_eml
 from .matching import PriceIndex, match_lines
+from .notify import Notifier
 from .pricelist import default_price_items, load_price_items
 from .render import html_to_pdf, render_quote_docx, render_template, write_html
 from .store import Store, sha256_bytes
@@ -61,6 +62,7 @@ class Pipeline:
         self.store = store
         self.cfg = cfg or default_settings
         self.extractor = build_extractor(self.cfg)
+        self.notifier = Notifier.from_settings(self.cfg)
         self._index: PriceIndex | None = None
         self._index_key: tuple[int, str] | None = None
 
@@ -203,6 +205,9 @@ class Pipeline:
                 rfq_id, "unparsed_request", "system",
                 "позиции угадываются, но количество не распознано — отдано человеку",
             )
+
+        self._notify_new(rfq_id, parsed, lines, quote)
+
         return IngestResult(
             rfq_id=rfq_id,
             status=status.value,
@@ -240,6 +245,22 @@ class Pipeline:
                 )
             )
         return promoted
+
+    def _notify_new(self, rfq_id: str, parsed: ParsedEmail, lines: list, quote: Quote) -> None:
+        """Одно уведомление на заявку. Сбой не влияет на приём письма."""
+        if not self.notifier.enabled:
+            return
+        if any(item["action"] == "notified" for item in self.store.decisions(rfq_id)):
+            return
+        sent = self.notifier.notify_new_rfq(
+            rfq_id=rfq_id,
+            subject=parsed.subject,
+            sender=parsed.sender,
+            total=str(quote.total),
+            lines=len(lines),
+            matched=len(quote.lines),
+        )
+        self.store.log(rfq_id, "notified" if sent else "notify_failed", "system", "")
 
     @staticmethod
     def _dedupe_by_sku(lines: list[RfqLine]) -> list[RfqLine]:

@@ -3,6 +3,9 @@ import unittest
 from decimal import Decimal
 from email.message import EmailMessage
 from pathlib import Path
+from unittest.mock import patch
+
+import httpx
 
 from kpbot.config import BASE_DIR, Settings
 from kpbot.mailparse import parse_eml
@@ -127,6 +130,44 @@ class PipelineTest(unittest.TestCase):
         html = Path(result.html_path).read_text(encoding="utf-8")
         self.assertNotIn("<script>alert(1)</script>", html)
         self.assertIn("&lt;script&gt;", html)
+
+    def test_notification_failure_does_not_break_ingest(self) -> None:
+        settings = Settings(
+            data_dir=self.data_dir,
+            api_key="test-key",
+            ui_password="test-pass",
+            session_secret="test-secret",
+            pdf_enabled=False,
+            telegram_enabled=True,
+            telegram_bot_token="1234567890:AAmockedtokenvalue1234567890abcdefg",
+            telegram_chat_id="42",
+        )
+        pipeline = Pipeline(self.store, settings)
+        with patch("kpbot.notify.httpx.post", side_effect=httpx.ConnectError("нет сети")):
+            result = pipeline.process_eml_bytes(build_eml("уголок 50х50 — 10 шт"), actor="test")
+        self.assertEqual(result.status, "draft_ready")
+        actions = [row["action"] for row in self.store.decisions(result.rfq_id)]
+        self.assertIn("notify_failed", actions)
+
+    def test_notification_sent_once_per_rfq(self) -> None:
+        settings = Settings(
+            data_dir=self.data_dir,
+            api_key="test-key",
+            ui_password="test-pass",
+            session_secret="test-secret",
+            pdf_enabled=False,
+            telegram_enabled=True,
+            telegram_bot_token="1234567890:AAmockedtokenvalue1234567890abcdefg",
+            telegram_chat_id="42",
+        )
+        pipeline = Pipeline(self.store, settings)
+        ok = httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", "https://api.telegram.org/"))
+        with patch("kpbot.notify.httpx.post", return_value=ok) as mocked:
+            first = pipeline.process_eml_bytes(build_eml("уголок 50х50 — 10 шт"), actor="test")
+            pipeline.process_eml_bytes(build_eml("уголок 50х50 — 10 шт"), actor="test")
+        self.assertEqual(mocked.call_count, 1)
+        actions = [row["action"] for row in self.store.decisions(first.rfq_id)]
+        self.assertIn("notified", actions)
 
 
 if __name__ == "__main__":

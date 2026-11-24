@@ -327,6 +327,68 @@ def _log_skipped(items: list[dict[str, str]]) -> None:
                                 ensure_ascii=False) + "\n")
 
 
+def _telegram_config():
+    from .notify import TelegramConfig
+
+    return TelegramConfig(
+        token=settings.telegram_bot_token,
+        chat_id=settings.telegram_chat_id,
+        api_base=settings.telegram_api_base,
+        ip_override=settings.telegram_ip_override,
+    )
+
+
+def cmd_telegram_info(args: argparse.Namespace) -> int:
+    """Показывает бота и чаты, которые ему писали. С --save записывает chat_id в .env."""
+    import re
+    from pathlib import Path
+
+    from .notify import NotifyError, bot_username, load_chat_id
+
+    config = _telegram_config()
+    try:
+        username = bot_username(config)
+        chats = load_chat_id(config)
+    except NotifyError as exc:
+        print(f"Telegram недоступен: {exc}")
+        return 2
+
+    print(f"бот: @{username}")
+    if not chats:
+        print("чатов нет: откройте бота в Telegram и нажмите «Start» (или отправьте любое сообщение)")
+        return 1
+
+    for chat_id, title in chats:
+        print(f"  chat_id: {chat_id} ({title})")
+
+    if args.save and len(chats) == 1:
+        chat_id = chats[0][0]
+        env_path = Path(".env")
+        text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+        pattern = re.compile(r"^KPBOT_TELEGRAM_CHAT_ID=.*$", re.M)
+        line = f"KPBOT_TELEGRAM_CHAT_ID={chat_id}"
+        text = pattern.sub(line, text) if pattern.search(text) else text.rstrip() + "\n" + line + "\n"
+        env_path.write_text(text, encoding="utf-8")
+        print(f"chat_id {chat_id} записан в .env")
+    return 0
+
+
+def cmd_telegram_test(args: argparse.Namespace) -> int:
+    from .notify import NotifyError, send_telegram
+
+    config = _telegram_config()
+    if not config.chat_id:
+        print("не задан KPBOT_TELEGRAM_CHAT_ID — выполните: python -m kpbot.cli telegram-info --save")
+        return 2
+    try:
+        send_telegram(config, "kpbot: проверка уведомлений. Это тестовое сообщение.")
+    except NotifyError as exc:
+        print(f"не отправлено: {exc}")
+        return 2
+    print("тестовое сообщение отправлено")
+    return 0
+
+
 def cmd_eval(args: argparse.Namespace) -> int:
     """Замер качества на размеченном наборе писем."""
     from .evalkit import evaluate, format_report
@@ -497,6 +559,13 @@ def main(argv: list[str] | None = None) -> int:
     evaluate_cmd = sub.add_parser("eval", help="замерить качество разбора на размеченных письмах")
     evaluate_cmd.add_argument("--verbose", "-v", action="store_true")
     evaluate_cmd.set_defaults(func=cmd_eval)
+
+    tg_info = sub.add_parser("telegram-info", help="показать бота и чаты, писавшие ему")
+    tg_info.add_argument("--save", action="store_true", help="записать chat_id в .env")
+    tg_info.set_defaults(func=cmd_telegram_info)
+
+    tg_test = sub.add_parser("telegram-test", help="отправить тестовое уведомление")
+    tg_test.set_defaults(func=cmd_telegram_test)
 
     args = parser.parse_args(argv)
     return int(args.func(args) or 0)

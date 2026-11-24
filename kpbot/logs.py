@@ -8,6 +8,8 @@ import re
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_\-]{8,}"),
     re.compile(r"GOCSPX-[A-Za-z0-9_\-]{4,}"),
+    # токен Telegram-бота: 10 цифр, двоеточие, 35 символов (может стоять вплотную к /bot)
+    re.compile(r"\d{8,12}:[A-Za-z0-9_\-]{30,}"),
     re.compile(r"(?i)(password|token|secret|api[_-]?key)\s*[=:]\s*[^\s,;]+"),
 )
 

@@ -74,6 +74,15 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 1500
     smtp_enabled: bool = False
 
+    # --- уведомления (Telegram) ---
+    telegram_enabled: bool = False
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    telegram_api_base: str = "https://api.telegram.org"
+    # для сетей, где провайдер режет отдельные адреса Telegram:
+    telegram_ip_override: str = ""
+    public_base_url: str = "http://127.0.0.1:8000"
+
     # --- почта (IMAP) ---
     imap_host: str = "imap.gmail.com"
     imap_port: int = 993
