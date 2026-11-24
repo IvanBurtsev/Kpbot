@@ -15,6 +15,13 @@
     <span class="badge s-{{ rfq.status }}">{{ rfq_labels.get(rfq.status, rfq.status) }}</span>
     <span class="muted small">от {{ rfq.sender }} · {{ rfq.created_at }} · заявка <code>{{ rfq.id[:12] }}</code></span>
   </p>
+  {% if timing and timing.seconds is not none %}
+  <p class="small"><b>КП готово за {{ "%.1f"|format(timing.seconds) }} с</b>
+    <span class="muted">— от приёма письма до расчёта</span></p>
+  {% endif %}
+  <p class="small muted">Разобрано автоматически: {{ rfq.lines|selectattr("status", "equalto", "ok")|list|length }} из {{ rfq.lines|length }}
+    {%- set issues = rfq.lines|rejectattr("status", "equalto", "ok")|list|length -%}
+    {% if issues %} · требуют внимания: {{ issues }}{% endif %}</p>
   {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
 </section>

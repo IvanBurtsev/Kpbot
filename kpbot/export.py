@@ -88,6 +88,22 @@ def build_rfq_xlsx(rfq: dict, quote: dict | None) -> bytes:
         sheet.column_dimensions[column].width = width
     sheet.freeze_panes = f"A{table_row + 1}"
 
+    # лист для загрузки в 1С: только нужные колонки, без оформления
+    one_c = wb.create_sheet("Для 1С")
+    one_c.append(("Код", "Наименование", "Количество", "Цена", "Сумма"))
+    for line in lines:
+        one_c.append(
+            (
+                line["sku"],
+                line["name"],
+                float(Decimal(str(line["qty"]))),
+                float(Decimal(str(line["price"]))),
+                float(Decimal(str(line["amount"]))),
+            )
+        )
+    for column, width in {"A": 14, "B": 52, "C": 12, "D": 12, "E": 14}.items():
+        one_c.column_dimensions[column].width = width
+
     second = wb.create_sheet("Строки из письма")
     second_headers = ("№", "Как в письме", "Кол-во", "Ед.", "Статус", "Score", "Подобранная позиция")
     for column, title in enumerate(second_headers, start=1):

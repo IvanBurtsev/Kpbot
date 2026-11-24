@@ -243,6 +243,7 @@ async def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
         artifacts=artifacts,
         items=store.price_items(),
         llm_usage=store.llm_usage_for(rfq_id),
+        timing=store.rfq_timing(rfq_id),
         decisions=store.decisions(rfq_id),
         flash=flash[:200],
     )

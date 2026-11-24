@@ -434,5 +434,52 @@ class Store:
         return dict(row)
 
 
+# ---------- метрики времени ----------
+
+    def rfq_timing(self, rfq_id: str) -> dict:
+        """Сколько прошло от приёма письма до готового КП — главная метрика продукта."""
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT r.created_at AS received, q.created_at AS quoted"
+                " FROM rfqs r LEFT JOIN quotes q ON q.rfq_id = r.id"
+                " WHERE r.id = ? ORDER BY q.rowid LIMIT 1",
+                (rfq_id,),
+            ).fetchone()
+        if row is None:
+            return {}
+        seconds = _seconds_between(row["received"], row["quoted"]) if row["quoted"] else None
+        return {"received_at": row["received"], "quoted_at": row["quoted"], "seconds": seconds}
+
+    def timing_stats(self) -> dict:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT r.created_at AS received, q.created_at AS quoted"
+                " FROM rfqs r JOIN quotes q ON q.rfq_id = r.id"
+            ).fetchall()
+        values = [s for s in (_seconds_between(row["received"], row["quoted"]) for row in rows) if s is not None]
+        if not values:
+            return {"count": 0, "median_seconds": None, "max_seconds": None}
+        values.sort()
+        middle = len(values) // 2
+        median = values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / 2
+        return {
+            "count": len(values),
+            "median_seconds": round(median, 1),
+            "max_seconds": round(values[-1], 1),
+        }
+
+
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _seconds_between(start: str, end: str) -> float | None:
+    """Разница между двумя ISO-метками SQLite. None, если что-то не разобралось."""
+    from datetime import datetime
+
+    try:
+        first = datetime.fromisoformat(start)
+        second = datetime.fromisoformat(end)
+    except (TypeError, ValueError):
+        return None
+    return max((second - first).total_seconds(), 0.0)

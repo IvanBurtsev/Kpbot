@@ -456,9 +456,14 @@ def cmd_max_test(args: argparse.Namespace) -> int:
 
 
 def cmd_costs(args: argparse.Namespace) -> int:
-    """Сколько токенов и рублей съел разбор писем."""
+    """Сколько токенов и рублей съел разбор писем, и за сколько он их разбирает."""
     store = Store(settings.db_path)
     totals = store.llm_totals()
+    timing = store.timing_stats()
+
+    if timing["median_seconds"] is not None:
+        print(f"время до КП:   медиана {timing['median_seconds']:.1f} с, "
+              f"максимум {timing['max_seconds']:.1f} с (заявок: {timing['count']})")
 
     print(f"модель:        {settings.llm_model or '—'}")
     print(f"вызовов LLM:   {totals['calls']} (заявок: {totals['rfqs']})")

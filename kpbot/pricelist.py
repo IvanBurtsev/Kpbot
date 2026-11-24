@@ -120,27 +120,76 @@ def write_xlsx(path: Path, items: list[PriceItem] | None = None) -> Path:
     return path
 
 
+def _header_indexes(header: list[object]) -> dict[str, int] | None:
+    """Распознаёт шапку выгрузки из 1С/Excel: колонки могут называться по-разному.
+
+    Возвращает индексы колонок по смыслу или None, если шапка не похожа на прайс.
+    """
+    names = [str(cell or "").strip().lower().replace("ё", "е") for cell in header]
+
+    def find(aliases: tuple[str, ...]) -> int | None:
+        for index, name in enumerate(names):
+            cleaned = name.replace(".", "").replace(" ", "")
+            for alias in aliases:
+                if cleaned == alias or cleaned.startswith(alias):
+                    return index
+        return None
+
+    sku = find(("sku", "артикул", "код", "code", "номенклатуракод"))
+    name = find(("наименование", "номенклатура", "name", "товар"))
+    unit = find(("единица", "ед", "unit", "ед изм", "едизм"))
+    price = find(("цена", "price", "стоимость"))
+
+    if name is None or price is None:
+        return None
+    return {
+        "sku": sku if sku is not None else -1,
+        "name": name,
+        "unit": unit if unit is not None else -1,
+        "price": price,
+    }
+
+
 def load_price_items(path: Path, *, max_rows: int = 100_000) -> list[PriceItem]:
-    """Читает прайс в CSV (разделитель ; или ,) или XLSX. Строки без SKU пропускаются."""
+    """Читает прайс из CSV (; или ,) или XLSX.
+
+    Понимает как наш шаблон (SKU/Наименование/Ед./Цена), так и выгрузку из 1С
+    (Код/Номенклатура/Единица/Цена) — колонки ищутся по смыслу, а не по номеру.
+    """
     if not path.exists():
         raise ValidationError(f"прайс-лист не найден: {path}")
 
     suffix = path.suffix.lower()
-    if suffix == ".xlsx":
-        rows = _read_xlsx(path, max_rows=max_rows)
-    else:
-        rows = _read_csv(path, max_rows=max_rows)
+    header, rows = (
+        _read_xlsx_with_header(path, max_rows=max_rows)
+        if suffix == ".xlsx"
+        else _read_csv_with_header(path, max_rows=max_rows)
+    )
+
+    columns = _header_indexes(header) if header else None
+    if columns is None:
+        # шапки нет или она нестандартная: читаем позиционно, как раньше
+        columns = {"sku": 0, "name": 1, "unit": 2, "price": 3}
 
     items: list[PriceItem] = []
     for row in rows:
-        if len(row) < 4:
+        if len(row) <= max(columns["name"], columns["price"]):
             continue
-        sku = str(row[0] or "").strip()
-        name = str(row[1] or "").strip()
-        unit = str(row[2] or "").strip()
-        raw_price = str(row[3] or "").replace(",", ".").replace(" ", "")
-        if not sku or not name or not unit:
+
+        def cell(key: str) -> str:
+            index = columns[key]
+            if index < 0 or index >= len(row):
+                return ""
+            return str(row[index] or "").strip()
+
+        sku = cell("sku")
+        name = cell("name")
+        unit = cell("unit") or "шт"
+        raw_price = cell("price").replace(",", ".").replace(" ", "").replace("₽", "")
+        if not name:
             continue
+        if not sku:
+            sku = f"AUTO-{len(items) + 1:05d}"
         try:
             price = Decimal(raw_price)
         except Exception:
@@ -154,29 +203,33 @@ def load_price_items(path: Path, *, max_rows: int = 100_000) -> list[PriceItem]:
     return items
 
 
-def _read_csv(path: Path, *, max_rows: int) -> list[list[str]]:
+def _read_csv_with_header(path: Path, *, max_rows: int) -> tuple[list[str], list[list[str]]]:
     with path.open("r", encoding="utf-8-sig", newline="") as fh:
         sample = fh.read(4096)
         fh.seek(0)
         delimiter = ";" if sample.count(";") >= sample.count(",") else ","
         reader = csv.reader(fh, delimiter=delimiter, strict=True)
-        rows = [row for _, row in zip(range(max_rows + 1), reader)]
-    return rows[1:] if rows else []
+        all_rows = [row for _, row in zip(range(max_rows + 1), reader)]
+    if not all_rows:
+        return [], []
+    return list(all_rows[0]), all_rows[1:]
 
 
-def _read_xlsx(path: Path, *, max_rows: int) -> list[list[object]]:
+def _read_xlsx_with_header(path: Path, *, max_rows: int) -> tuple[list[object], list[list[object]]]:
     from openpyxl import load_workbook
 
     wb = load_workbook(filename=str(path), read_only=True, data_only=True)
     try:
         ws = wb.active
+        header: list[object] = []
         rows: list[list[object]] = []
         for index, row in enumerate(ws.iter_rows(values_only=True)):
             if index == 0:
+                header = list(row)
                 continue
             if index > max_rows:
                 break
             rows.append(list(row))
-        return rows
+        return header, rows
     finally:
         wb.close()
