@@ -302,13 +302,14 @@ async def ui_kp_pdf(request: Request, rfq_id: str):
 
 
 @app.get("/ui/rfq/{rfq_id}/kp.docx")
+@app.get("/ui/rfq/{rfq_id}/kp-office", include_in_schema=False)
 async def ui_kp_docx(request: Request, rfq_id: str):
     if not is_authenticated(request):
         return login_redirect(request)
     path = settings.out_dir / f"{rfq_id}.docx"
     if not path.exists():
         raise HTTPException(status_code=404, detail="DOCX не сформирован")
-    # отдаём как поток байтов: часть CDN-ов придерживает офисные MIME-типы
+    # без расширения в пути и с потоком байтов: CDN-ы придерживают офисные файлы
     return FileResponse(
         path,
         media_type="application/octet-stream",

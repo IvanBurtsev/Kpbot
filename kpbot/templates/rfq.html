@@ -131,7 +131,7 @@
       <button class="danger" type="submit">Отклонить</button>
     </form>
     {% if "kp_html" in artifacts %}<a class="button" href="/ui/rfq/{{ rfq.id }}/kp.html" target="_blank" rel="noopener">КП (HTML)</a>{% endif %}
-    {% if "kp_docx" in artifacts %}<a class="button" href="/ui/rfq/{{ rfq.id }}/kp.docx">КП (DOCX)</a>{% endif %}
+    {% if "kp_docx" in artifacts %}<a class="button" href="/ui/rfq/{{ rfq.id }}/kp-office">КП (DOCX)</a>{% endif %}
     {% if "kp_pdf" in artifacts %}<a class="button" href="/ui/rfq/{{ rfq.id }}/kp.pdf" target="_blank" rel="noopener">КП (PDF)</a>{% endif %}
     <a class="button" href="/ui/rfq/{{ rfq.id }}/export.xlsx">Выгрузить в Excel</a>
   </div>
