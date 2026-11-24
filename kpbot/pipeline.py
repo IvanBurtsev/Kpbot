@@ -1,8 +1,9 @@
-"""Пайплайн: письмо → позиции → матчинг → расчёт → КП → черновик ответа."""
+﻿"""Пайплайн: письмо → позиции → матчинг → расчёт → КП → черновик ответа."""
 
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -171,6 +172,7 @@ class Pipeline:
             )
 
         rfq_id = uuid.uuid4().hex
+        started = time.perf_counter()
         lines, quote, is_request = self.analyze(parsed.text)
         if not is_request:
             raise NotAnRfq("в письме не найдено ни одной позиции с количеством")
@@ -192,6 +194,7 @@ class Pipeline:
         self._record_llm_usage(rfq_id)
 
         html_path = self._render_documents(rfq_id, parsed, lines, quote)
+        self.store.set_quote_duration(quote_id, int((time.perf_counter() - started) * 1000))
         reply_text = build_reply_text(parsed, quote, rfq_id)
 
         self.store.log(

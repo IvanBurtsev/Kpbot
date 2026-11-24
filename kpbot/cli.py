@@ -462,8 +462,11 @@ def cmd_costs(args: argparse.Namespace) -> int:
     timing = store.timing_stats()
 
     if timing["median_seconds"] is not None:
-        print(f"время до КП:   медиана {timing['median_seconds']:.1f} с, "
+        print(f"разбор письма: медиана {timing['median_seconds']:.1f} с, "
               f"максимум {timing['max_seconds']:.1f} с (заявок: {timing['count']})")
+        if timing.get("median_wait_seconds") is not None:
+            print(f"ожидание в очереди: медиана {timing['median_wait_seconds']:.0f} с "
+                  f"— уменьшается частотой опроса почты")
 
     print(f"модель:        {settings.llm_model or '—'}")
     print(f"вызовов LLM:   {totals['calls']} (заявок: {totals['rfqs']})")

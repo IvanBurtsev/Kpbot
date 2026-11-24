@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS quotes(
     vat_rate        TEXT NOT NULL,
     requires_review INTEGER NOT NULL,
     unmatched       INTEGER NOT NULL,
+    duration_ms     INTEGER,
     created_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_quotes_rfq ON quotes(rfq_id);
@@ -136,6 +137,10 @@ class Store:
             # мягкая миграция для баз, созданных до появления поля
             try:
                 conn.execute("ALTER TABLE llm_usage ADD COLUMN balance_rub TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE quotes ADD COLUMN duration_ms INTEGER")
             except sqlite3.OperationalError:
                 pass
 
@@ -275,11 +280,12 @@ class Store:
 
     # ---------- КП ----------
 
-    def save_quote(self, quote_id: str, rfq_id: str, quote: Quote) -> str:
+    def save_quote(self, quote_id: str, rfq_id: str, quote: Quote, *, duration_ms: int | None = None) -> str:
         with closing(self._connect()) as conn, conn:
             conn.execute(
                 "INSERT INTO quotes(id, rfq_id, subtotal, vat, delivery, total, vat_rate,"
-                " requires_review, unmatched, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " requires_review, unmatched, duration_ms, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     quote_id,
                     rfq_id,
@@ -290,6 +296,7 @@ class Store:
                     str(quote.vat_rate),
                     int(quote.requires_review),
                     int(quote.unmatched),
+                    duration_ms,
                     utcnow(),
                 ),
             )
@@ -435,50 +442,71 @@ class Store:
         return dict(row)
 
 
-# ---------- метрики времени ----------
+    def set_quote_duration(self, quote_id: str, duration_ms: int) -> None:
+            """Сколько занял разбор вместе с подготовкой документов."""
+            with closing(self._connect()) as conn, conn:
+                conn.execute(
+                    "UPDATE quotes SET duration_ms = ? WHERE id = ?", (int(duration_ms), quote_id)
+                )
+
+    # ---------- метрики времени ----------
 
     def rfq_timing(self, rfq_id: str) -> dict:
-        """Сколько прошло от приёма письма до готового КП — главная метрика продукта."""
+        """Два разных числа: сколько шёл разбор и сколько письмо ждало в очереди."""
         with closing(self._connect()) as conn:
             row = conn.execute(
-                "SELECT r.created_at AS received, r.received_at AS mail_date, q.created_at AS quoted"
+                "SELECT r.created_at AS received, r.received_at AS mail_date,"
+                " q.created_at AS quoted, q.duration_ms AS duration_ms"
                 " FROM rfqs r LEFT JOIN quotes q ON q.rfq_id = r.id"
                 " WHERE r.id = ? ORDER BY q.rowid LIMIT 1",
                 (rfq_id,),
             ).fetchone()
         if row is None:
             return {}
-        # считаем от даты письма, если её удалось разобрать: это честное «письмо → КП»
         start = row["mail_date"] if _parse_dt(row["mail_date"] or "") else row["received"]
-        seconds = _seconds_between(start, row["quoted"]) if row["quoted"] else None
+        total = _seconds_between(start, row["quoted"]) if row["quoted"] else None
+        duration = (row["duration_ms"] / 1000) if row["duration_ms"] is not None else None
+        wait = round(total - duration, 1) if (total is not None and duration is not None) else None
         return {
             "start": start,
             "received_at": row["received"],
             "quoted_at": row["quoted"],
-            "seconds": seconds,
+            "seconds": total,
+            "duration_seconds": duration,
+            "wait_seconds": wait,
         }
 
     def timing_stats(self) -> dict:
         with closing(self._connect()) as conn:
             rows = conn.execute(
-                "SELECT r.created_at AS received, r.received_at AS mail_date, q.created_at AS quoted"
+                "SELECT r.created_at AS received, r.received_at AS mail_date,"
+                " q.created_at AS quoted, q.duration_ms AS duration_ms"
                 " FROM rfqs r JOIN quotes q ON q.rfq_id = r.id"
             ).fetchall()
-        values = []
+        durations: list[float] = []
+        waits: list[float] = []
         for row in rows:
             start = row["mail_date"] if _parse_dt(row["mail_date"] or "") else row["received"]
-            seconds = _seconds_between(start, row["quoted"])
-            if seconds is not None:
-                values.append(seconds)
-        if not values:
-            return {"count": 0, "median_seconds": None, "max_seconds": None}
-        values.sort()
-        middle = len(values) // 2
-        median = values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / 2
+            total = _seconds_between(start, row["quoted"])
+            duration = (row["duration_ms"] / 1000) if row["duration_ms"] is not None else None
+            if duration is not None:
+                durations.append(duration)
+            if total is not None and duration is not None:
+                waits.append(max(total - duration, 0.0))
+
+        def median(values: list[float]) -> float | None:
+            if not values:
+                return None
+            ordered = sorted(values)
+            middle = len(ordered) // 2
+            result = ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+            return round(result, 1)
+
         return {
-            "count": len(values),
-            "median_seconds": round(median, 1),
-            "max_seconds": round(values[-1], 1),
+            "count": len(durations),
+            "median_seconds": median(durations),
+            "max_seconds": round(max(durations), 1) if durations else None,
+            "median_wait_seconds": median(waits),
         }
 
 

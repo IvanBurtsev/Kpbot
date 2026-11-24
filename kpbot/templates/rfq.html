@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block title %}{{ rfq.subject }} · kpbot{% endblock %}
 {% block content %}
 {% set labels = {"ok": "в прайсе", "ambiguous": "похоже", "no_match": "не найдено", "invalid": "нет кол-ва"} %}
@@ -15,9 +15,12 @@
     <span class="badge s-{{ rfq.status }}">{{ rfq_labels.get(rfq.status, rfq.status) }}</span>
     <span class="muted small">от {{ rfq.sender }} · {{ rfq.created_at[:19] }} · заявка <code>{{ rfq.id[:12] }}</code></span>
   </p>
-  {% if timing and timing.seconds is not none %}
-  <p class="small"><b>КП готово за {{ "%.1f"|format(timing.seconds) }} с</b>
-    <span class="muted">— от приёма письма до расчёта</span></p>
+  {% if timing and timing.duration_seconds is not none %}
+  <p class="small"><b>Разбор и КП: {{ "%.1f"|format(timing.duration_seconds) }} с</b>
+    <span class="muted">— от получения письма сервисом до готовых документов</span>
+    {% if timing.wait_seconds and timing.wait_seconds > 60 %}
+    <span class="warn">· в очереди ждало {{ "%.0f"|format(timing.wait_seconds // 60) }} мин</span>
+    {% endif %}</p>
   {% endif %}
   <p class="small muted">Разобрано автоматически: {{ rfq.lines|selectattr("status", "equalto", "ok")|list|length }} из {{ rfq.lines|length }}
     {%- set issues = rfq.lines|rejectattr("status", "equalto", "ok")|list|length -%}
