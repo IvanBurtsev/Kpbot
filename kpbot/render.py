@@ -76,7 +76,40 @@ def _browser_candidates() -> list[Path]:
 
 
 def html_to_pdf(html_path: Path, pdf_path: Path) -> tuple[bool, str]:
-    """Печатает HTML в PDF первым доступным браузером. Ошибка не роняет пайплайн."""
+    """Печать в PDF: сначала браузер, если его нет — WeasyPrint.
+
+    Возвращает (успех, чем напечатали). Ошибка не роняет пайплайн.
+    """
+    ok, reason = _pdf_via_browser(html_path, pdf_path)
+    if ok:
+        return True, "browser"
+
+    ok_weasy, reason_weasy = _pdf_via_weasyprint(html_path, pdf_path)
+    if ok_weasy:
+        return True, "weasyprint"
+
+    return False, f"{reason}; {reason_weasy}"
+
+
+def _pdf_via_weasyprint(html_path: Path, pdf_path: Path) -> tuple[bool, str]:
+    """Запасной движок для серверов без браузера: HTML+CSS → PDF на чистом Python."""
+    try:
+        from weasyprint import HTML  # noqa: PLC0415 - тяжёлый импорт, грузим по требованию
+    except Exception:
+        return False, "weasyprint не установлен"
+
+    try:
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        HTML(filename=str(html_path)).write_pdf(str(pdf_path))
+    except Exception as exc:  # noqa: BLE001 - любые сбои рендера не должны валить приём
+        return False, f"weasyprint: {str(exc)[:160]}"
+
+    if pdf_path.exists() and pdf_path.stat().st_size > 1024:
+        return True, "ok"
+    return False, "weasyprint не создал файл"
+
+
+def _pdf_via_browser(html_path: Path, pdf_path: Path) -> tuple[bool, str]:
     browsers = _browser_candidates()
     if not browsers:
         return False, "браузер для печати PDF не найден"
