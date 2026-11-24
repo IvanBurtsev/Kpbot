@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Входящие · kpbot{% endblock %}
+{% block content %}
+{% set labels = {"received": "принято", "parsed": "разобрано", "priced": "посчитано",
+                 "draft_ready": "черновик готов", "human_review": "нужен человек",
+                 "approved": "одобрено", "sent": "отправлено", "rejected": "отклонено"} %}
+
+<section class="card">
+  <h1>Входящие заявки</h1>
+  <p class="muted">Загрузите письмо <code>.eml</code> или отправьте JSON в <code>POST /api/v1/rfqs</code>.</p>
+
+  {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  <form method="post" action="/ui/upload" enctype="multipart/form-data" class="row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="file" name="file" accept=".eml,.txt" required>
+    <button class="primary" type="submit">Разобрать письмо</button>
+  </form>
+</section>
+
+<section class="card">
+  {% if rfqs %}
+  <table class="grid">
+    <thead>
+      <tr>
+        <th>Получено</th>
+        <th>От кого</th>
+        <th>Тема</th>
+        <th class="num">Строк</th>
+        <th class="num">Проблем</th>
+        <th class="num">Итого, ₽</th>
+        <th>Статус</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rfqs %}
+      <tr>
+        <td class="small muted">{{ r.created_at }}</td>
+        <td>{{ r.sender }}</td>
+        <td><a href="/ui/rfq/{{ r.id }}">{{ r.subject }}</a></td>
+        <td class="num">{{ r.line_count }}</td>
+        <td class="num">{% if r.line_issues %}<span class="warn">{{ r.line_issues }}</span>{% else %}0{% endif %}</td>
+        <td class="num">{{ r.total or "—" }}</td>
+        <td><span class="badge s-{{ r.status }}">{{ labels.get(r.status, r.status) }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Пока пусто. Загрузите письмо — или выполните <code>python -m kpbot.cli demo</code>.</p>
+  {% endif %}
+</section>
+{% endblock %}

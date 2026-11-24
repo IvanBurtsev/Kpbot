@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}kpbot{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/ui">kpbot <span class="muted">· заявка → КП</span></a>
+  {% if authenticated %}
+  <nav class="nav">
+    <a href="/ui">Входящие</a>
+    <span class="muted small">{{ price_count }} позиций в прайсе</span>
+    <form method="post" action="/ui/logout" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="link" type="submit">Выйти</button>
+    </form>
+  </nav>
+  {% endif %}
+</header>
+<main class="wrap">
+  {% block content %}{% endblock %}
+</main>
+<footer class="foot">
+  <span class="muted small">Прототип · отправка писем отключена, SMTP не подключён</span>
+</footer>
+</body>
+</html>

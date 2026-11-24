@@ -1,0 +1,13 @@
+# секреты и данные клиентов не попадают в git
+.env
+.git-credentials
+.git-token
+.ssh/
+data/
+.tmp/
+vendor/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+!data/.gitkeep

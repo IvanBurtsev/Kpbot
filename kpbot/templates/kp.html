@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>КП {{ rfq.id[:8] }}</title>
+  <style>
+    @page { size: A4; margin: 14mm 14mm 16mm; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; color: #111; background: #fff;
+      font: 11pt/1.45 "Segoe UI", Arial, sans-serif;
+    }
+    .head { display: flex; justify-content: space-between; gap: 24px; border-bottom: 2px solid #111; padding-bottom: 10px; }
+    .company-name { font-size: 14pt; font-weight: 700; margin: 0 0 4px; }
+    .muted { color: #555; }
+    .small { font-size: 9pt; }
+    .title { text-align: right; }
+    .title h1 { font-size: 15pt; margin: 0 0 4px; }
+    .meta { margin: 14px 0 10px; font-size: 10pt; }
+    table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+    th, td { border-bottom: 1px solid #d8d8d8; padding: 6px 6px; vertical-align: top; font-size: 10pt; }
+    th { text-align: left; background: #f4f4f4; font-size: 9pt; text-transform: uppercase; letter-spacing: .03em; }
+    .num { text-align: right; white-space: nowrap; }
+    tfoot td { font-weight: 600; border-bottom: none; }
+    .totals { margin-left: auto; width: 62%; margin-top: 10px; }
+    .totals tr td:first-child { color: #555; }
+    .totals .grand td { font-size: 12pt; font-weight: 700; border-top: 2px solid #111; padding-top: 8px; }
+    .note { margin-top: 14px; padding: 8px 10px; background: #fff7e6; border-left: 3px solid #d99000; font-size: 9.5pt; }
+    .note ul { margin: 4px 0 0 16px; padding: 0; }
+    .conditions { margin-top: 16px; font-size: 9.5pt; }
+    .sign { margin-top: 26px; display: flex; justify-content: space-between; gap: 40px; font-size: 10pt; }
+    .sign .line { border-bottom: 1px solid #111; width: 220px; display: inline-block; }
+    .foot { position: fixed; bottom: 0; left: 0; right: 0; font-size: 8pt; color: #666; border-top: 1px solid #ddd; padding-top: 4px; }
+  </style>
+</head>
+<body>
+
+<div class="head">
+  <div>
+    <p class="company-name">{{ company.name }}</p>
+    <div class="small muted">
+      ИНН {{ company.inn }} · КПП {{ company.kpp }}<br>
+      {{ company.address }}<br>
+      {{ company.phone }} · {{ company.email }}
+    </div>
+  </div>
+  <div class="title">
+    <h1>Коммерческое предложение</h1>
+    <div class="small muted">№ {{ rfq.id[:8]|upper }}<br>{{ (rfq.received_at or "")[:10] }}</div>
+  </div>
+</div>
+
+<div class="meta">
+  <div><b>Кому:</b> {{ client.sender }}</div>
+  <div><b>По заявке:</b> {{ client.subject }}</div>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:28px">№</th>
+      <th>Наименование</th>
+      <th style="width:70px">Артикул</th>
+      <th style="width:46px">Ед.</th>
+      <th class="num" style="width:62px">Кол-во</th>
+      <th class="num" style="width:78px">Цена, ₽</th>
+      <th class="num" style="width:88px">Сумма, ₽</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for l in quote.lines %}
+    <tr>
+      <td class="muted">{{ loop.index }}</td>
+      <td>{{ l.name }}</td>
+      <td class="small muted">{{ l.sku }}</td>
+      <td>{{ l.unit }}</td>
+      <td class="num">{{ l.qty|qty }}</td>
+      <td class="num">{{ l.price|rub }}</td>
+      <td class="num">{{ l.amount|rub }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<table class="totals">
+  <tr><td>Сумма без НДС</td><td class="num">{{ quote.subtotal|rub }} ₽</td></tr>
+  <tr><td>НДС {{ (quote.vat_rate * 100)|round(0, 'floor')|int }}%</td><td class="num">{{ quote.vat|rub }} ₽</td></tr>
+  <tr><td>Доставка</td><td class="num">{{ quote.delivery|rub }} ₽</td></tr>
+  <tr class="grand"><td>Итого к оплате</td><td class="num">{{ quote.total|rub }} ₽</td></tr>
+</table>
+
+{% if quote.excluded %}
+<div class="note">
+  <b>Позиции, требующие уточнения ({{ quote.excluded|length }}):</b> в расчёт не включены, цену по ним не подтверждаем.
+  <ul>
+    {% for item in quote.excluded %}<li>{{ item }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<div class="conditions">
+  <div>Предложение действительно {{ valid_days }} календарных дней с даты выставления.</div>
+  <div>Цены указаны с учётом НДС, если не указано иное. Срок поставки и условия оплаты согласуются отдельно.</div>
+</div>
+
+<div class="sign">
+  <div><span class="line"></span><br><span class="small muted">{{ company.signer }}</span></div>
+  <div><span class="line"></span><br><span class="small muted">Подпись / печать</span></div>
+</div>
+
+<div class="foot">
+  Документ сформирован автоматически · {{ company.name }} · {{ company.phone }} · {{ company.email }}
+</div>
+
+</body>
+</html>
