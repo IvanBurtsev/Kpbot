@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS llm_usage(
     prompt_tokens     INTEGER NOT NULL DEFAULT 0,
     completion_tokens INTEGER NOT NULL DEFAULT 0,
     cost_rub          TEXT NOT NULL DEFAULT '0',
+    balance_rub       TEXT,
     created_at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_llm_usage_rfq ON llm_usage(rfq_id);
@@ -131,6 +132,11 @@ class Store:
     def init_schema(self) -> None:
         with closing(self._connect()) as conn, conn:
             conn.executescript(SCHEMA)
+            # мягкая миграция для баз, созданных до появления поля
+            try:
+                conn.execute("ALTER TABLE llm_usage ADD COLUMN balance_rub TEXT")
+            except sqlite3.OperationalError:
+                pass
 
     # ---------- прайс ----------
 
@@ -357,12 +363,14 @@ class Store:
         prompt_tokens: int,
         completion_tokens: int,
         cost_rub: str = "0",
+        balance_rub: str | None = None,
     ) -> None:
         with closing(self._connect()) as conn, conn:
             conn.execute(
-                "INSERT INTO llm_usage(rfq_id, model, prompt_tokens, completion_tokens, cost_rub, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (rfq_id, model, int(prompt_tokens), int(completion_tokens), str(cost_rub), utcnow()),
+                "INSERT INTO llm_usage(rfq_id, model, prompt_tokens, completion_tokens,"
+                " cost_rub, balance_rub, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (rfq_id, model, int(prompt_tokens), int(completion_tokens), str(cost_rub),
+                 balance_rub, utcnow()),
             )
 
     def llm_usage_for(self, rfq_id: str) -> dict:
@@ -398,6 +406,10 @@ class Store:
                 " FROM llm_usage WHERE substr(created_at, 1, 10) = substr(?, 1, 10)",
                 (utcnow(),),
             ).fetchone()
+            balance = conn.execute(
+                "SELECT balance_rub FROM llm_usage WHERE balance_rub IS NOT NULL"
+                " ORDER BY id DESC LIMIT 1"
+            ).fetchone()
         return {
             "calls": int(row["calls"] or 0),
             "rfqs": int(row["rfqs"] or 0),
@@ -406,6 +418,7 @@ class Store:
             "cost_rub": round(float(row["cost"] or 0), 4),
             "today_calls": int(today["calls"] or 0),
             "today_cost_rub": round(float(today["cost"] or 0), 4),
+            "balance_rub": (round(float(balance["balance_rub"]), 2) if balance else None),
         }
 
     def stats(self) -> dict:

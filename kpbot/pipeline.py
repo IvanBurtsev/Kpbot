@@ -263,6 +263,7 @@ class Pipeline:
             prompt_tokens=usage.prompt_tokens,
             completion_tokens=usage.completion_tokens,
             cost_rub=str(cost),
+            balance_rub=str(usage.balance_rub) if usage.balance_rub is not None else None,
         )
 
     def _notify_new(self, rfq_id: str, parsed: ParsedEmail, lines: list, quote: Quote) -> None:

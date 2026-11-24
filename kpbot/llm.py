@@ -83,6 +83,9 @@ class LlmLine(BaseModel):
 class LlmUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # провайдер может вернуть стоимость и остаток баланса сам — это точнее расчёта по тарифу
+    cost_rub: Decimal | None = None
+    balance_rub: Decimal | None = None
 
     @property
     def total(self) -> int:
@@ -96,7 +99,9 @@ class LlmAnswer:
 
 
 def estimate_cost_rub(usage: LlmUsage, price_in_per_1m: float, price_out_per_1m: float) -> Decimal:
-    """Стоимость по тарифу провайдера. Нулевые цены = тариф не задан, считаем только токены."""
+    """Стоимость разбора: сначала то, что посчитал провайдер, иначе — по тарифу."""
+    if usage.cost_rub is not None:
+        return usage.cost_rub.quantize(Decimal("0.0001"))
     if price_in_per_1m <= 0 and price_out_per_1m <= 0:
         return Decimal("0")
     cost = (Decimal(usage.prompt_tokens) / Decimal(1_000_000)) * Decimal(str(price_in_per_1m))
@@ -125,15 +130,29 @@ def _redact_local(text: str) -> str:  # pragma: no cover - оставлено д
     return redact(text)
 
 
+def _decimal_or_none(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
 def _usage_from(data: dict) -> LlmUsage:
-    """Токены из ответа провайдера. Если поля нет — нули, а не выдумка."""
+    """Токены и стоимость из ответа провайдера. Нет поля — значит нет, а не выдумка."""
     usage = data.get("usage") or {}
     try:
         prompt = int(usage.get("prompt_tokens") or 0)
         completion = int(usage.get("completion_tokens") or 0)
     except (TypeError, ValueError):
-        return LlmUsage()
-    return LlmUsage(prompt_tokens=max(prompt, 0), completion_tokens=max(completion, 0))
+        prompt, completion = 0, 0
+    return LlmUsage(
+        prompt_tokens=max(prompt, 0),
+        completion_tokens=max(completion, 0),
+        cost_rub=_decimal_or_none(usage.get("cost_rub") or usage.get("cost")),
+        balance_rub=_decimal_or_none(usage.get("balance")),
+    )
 
 
 class LlmClient:
@@ -178,10 +197,18 @@ class LlmClient:
             if response.status_code == 200:
                 try:
                     data = response.json()
-                    content = data["choices"][0]["message"]["content"]
+                    choice = data["choices"][0]
+                    message = choice["message"]
+                    content = message.get("content")
+                    if not content:
+                        # у модели бывают reasoning-токены: лимит съеден, а текста нет
+                        reason = choice.get("finish_reason", "unknown")
+                        raise LlmError(f"модель вернула пустой ответ (finish_reason={reason})")
                     payload = LlmPayload.model_validate(json.loads(content))
                     return LlmAnswer(payload=payload, usage=_usage_from(data))
-                except (KeyError, IndexError, json.JSONDecodeError, ValidationError) as exc:
+                except LlmError:
+                    raise
+                except (KeyError, IndexError, TypeError, json.JSONDecodeError, ValidationError) as exc:
                     last_error = f"ответ не по схеме: {redact(str(exc))[:200]}"
                     break
             if response.status_code in (429, 500, 502, 503, 504):

@@ -462,16 +462,18 @@ def cmd_costs(args: argparse.Namespace) -> int:
         print(f"в среднем:     {per_call:.0f} токенов на письмо")
 
     prices_set = settings.llm_price_input_rub_per_1m or settings.llm_price_output_rub_per_1m
-    if prices_set:
-        print(f"тариф:         {settings.llm_price_input_rub_per_1m} ₽/1М вход, "
-              f"{settings.llm_price_output_rub_per_1m} ₽/1М ответ")
+    if totals["cost_rub"] or prices_set:
+        if prices_set and not totals["cost_rub"]:
+            print(f"тариф:         {settings.llm_price_input_rub_per_1m} ₽/1М вход, "
+                  f"{settings.llm_price_output_rub_per_1m} ₽/1М ответ")
         print(f"расход:        {totals['cost_rub']:.4f} ₽ всего · {totals['today_cost_rub']:.4f} ₽ сегодня")
         if totals["rfqs"]:
             print(f"на заявку:     {totals['cost_rub'] / totals['rfqs']:.4f} ₽")
+        if totals.get("balance_rub") is not None:
+            print(f"баланс:        {totals['balance_rub']:.2f} ₽ (последний известный)")
     else:
-        print("тариф:         не задан — заполните KPBOT_LLM_PRICE_INPUT_RUB_PER_1M "
-              "и KPBOT_LLM_PRICE_OUTPUT_RUB_PER_1M из кабинета провайдера")
-        print("               (токены считаются всегда, рубли появятся после настройки)")
+        print("расход:        провайдер не вернул стоимость и тариф не задан")
+        print("               заполните KPBOT_LLM_PRICE_INPUT_RUB_PER_1M / _OUTPUT_RUB_PER_1M")
     return 0
 
 
