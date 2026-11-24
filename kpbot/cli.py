@@ -269,6 +269,12 @@ def cmd_poll(args: argparse.Namespace) -> int:
             print("режим проверки: письма не забирались")
             return 0
         messages = mailbox.fetch_unseen(limit=args.limit)
+        if not messages:
+            # фильтр почты мог пометить письма прочитанными — смотрим последние
+            # в папке и опираемся на дедупликацию по message_id
+            messages = mailbox.fetch_recent(args.limit, unseen_only=False, readonly=False)
+            if messages:
+                print("непрочитанных нет — проверяю последние письма в папке")
     except MailError as exc:
         print(f"почта недоступна: {exc}")
         return 2
