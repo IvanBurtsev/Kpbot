@@ -1,0 +1,27 @@
+#!/bin/sh
+# Не пускаем push, если тесты красные.
+# Ставится локально (git не переносит хуки в репозиторий).
+
+echo "[pre-push] запускаю тесты..."
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+if command -v python >/dev/null 2>&1; then
+  PY=python
+elif command -v python3 >/dev/null 2>&1; then
+  PY=python3
+else
+  echo "[pre-push] python не найден — пропускаю проверку"
+  exit 0
+fi
+
+KPBOT_LLM_ENABLED=false KPBOT_PDF_ENABLED=false "$PY" -m unittest discover -s tests >/tmp/kpbot-prepush.log 2>&1
+STATUS=$?
+
+if [ $STATUS -ne 0 ]; then
+  echo "[pre-push] тесты упали, пуш отменён. Подробности: /tmp/kpbot-prepush.log"
+  tail -20 /tmp/kpbot-prepush.log
+  exit 1
+fi
+
+echo "[pre-push] тесты зелёные — пуш разрешён"
+exit 0
