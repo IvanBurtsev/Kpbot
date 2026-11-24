@@ -308,9 +308,10 @@ async def ui_kp_docx(request: Request, rfq_id: str):
     path = settings.out_dir / f"{rfq_id}.docx"
     if not path.exists():
         raise HTTPException(status_code=404, detail="DOCX не сформирован")
+    # отдаём как поток байтов: часть CDN-ов придерживает офисные MIME-типы
     return FileResponse(
         path,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        media_type="application/octet-stream",
         filename=f"kp-{rfq_id[:8]}.docx",
     )
 
