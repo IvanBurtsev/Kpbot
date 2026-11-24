@@ -165,7 +165,7 @@ python -m kpbot.cli serve
 
 ```powershell
 curl -X POST http://127.0.0.1:8000/api/v1/rfqs `
-  -H "X-API-Key: dev-api-key-change-me" -H "Content-Type: application/json" `
+  -H "X-API-Key: $env:KPBOT_API_KEY" -H "Content-Type: application/json" `
   -d '{"sender":"a@b.ru","subject":"Заявка","text":"уголок 50х50 — 10 шт"}'
 ```
 
