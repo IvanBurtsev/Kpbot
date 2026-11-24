@@ -466,7 +466,7 @@ class Store:
         start = row["mail_date"] if _parse_dt(row["mail_date"] or "") else row["received"]
         total = _seconds_between(start, row["quoted"]) if row["quoted"] else None
         duration = (row["duration_ms"] / 1000) if row["duration_ms"] is not None else None
-        wait = round(total - duration, 1) if (total is not None and duration is not None) else None
+        wait = round(max(total - duration, 0.0), 1) if (total is not None and duration is not None) else None
         return {
             "start": start,
             "received_at": row["received"],
