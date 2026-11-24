@@ -83,6 +83,13 @@ class Settings(BaseSettings):
     telegram_ip_override: str = ""
     public_base_url: str = "http://127.0.0.1:8000"
 
+    # --- уведомления: MAX (мессенджер) ---
+    max_enabled: bool = False
+    max_bot_token: str = ""
+    max_user_id: str = ""
+    max_chat_id: str = ""
+    max_api_base: str = "https://platform-api2.max.ru"
+
     # --- почта (IMAP) ---
     imap_host: str = "imap.gmail.com"
     imap_port: int = 993

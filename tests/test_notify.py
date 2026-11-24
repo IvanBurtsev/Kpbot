@@ -89,7 +89,7 @@ class NotifierTest(unittest.TestCase):
             result = notifier.notify_new_rfq(
                 rfq_id="1", subject="s", sender="a", total="0", lines=1, matched=1
             )
-        self.assertFalse(result)
+        self.assertFalse(result["telegram"])
 
     def test_link_uses_public_base(self) -> None:
         notifier = Notifier(TelegramConfig(token=TOKEN, chat_id="1"), public_base_url="https://kp.example/")
@@ -116,6 +116,72 @@ class RedactionTest(unittest.TestCase):
         cleaned = redact(f"url https://api.telegram.org/bot{TOKEN}/sendMessage failed")
         self.assertNotIn(TOKEN, cleaned)
         self.assertIn("***", cleaned)
+
+
+class MaxChannelTest(unittest.TestCase):
+    def setUp(self) -> None:
+        from kpbot.notify import MaxConfig
+
+        self.config = MaxConfig(token="max-token", user_id="777")
+
+    def test_send_uses_header_and_user_id(self) -> None:
+        from kpbot.notify import send_max
+
+        with patch("kpbot.notify.httpx.post", return_value=response(200, {"message": {}})) as mocked:
+            send_max(self.config, "привет")
+        kwargs = mocked.call_args.kwargs
+        self.assertEqual(kwargs["params"], {"user_id": "777"})
+        self.assertEqual(kwargs["headers"]["Authorization"], "max-token")
+        self.assertTrue(kwargs["verify"])  # TLS проверяется, а не отключается
+
+    def test_http_error_is_reported(self) -> None:
+        from kpbot.notify import NotifyError, send_max
+
+        with patch("kpbot.notify.httpx.post", return_value=httpx.Response(
+            401, text='{"code":"verify.token"}', request=httpx.Request("POST", "https://platform-api2.max.ru/")
+        )):
+            with self.assertRaises(NotifyError) as ctx:
+                send_max(self.config, "текст")
+        self.assertIn("401", str(ctx.exception))
+        self.assertNotIn("max-token", str(ctx.exception))
+
+    def test_business_error_in_body_is_reported(self) -> None:
+        from kpbot.notify import NotifyError, send_max
+
+        payload = {"success": False, "code": "chat.denied", "message": "bot is not a member"}
+        with patch("kpbot.notify.httpx.post", return_value=response(200, payload)):
+            with self.assertRaises(NotifyError) as ctx:
+                send_max(self.config, "текст")
+        self.assertIn("chat.denied", str(ctx.exception))
+
+    def test_missing_recipient(self) -> None:
+        from kpbot.notify import MaxConfig, NotifyError, send_max
+
+        with self.assertRaises(NotifyError):
+            send_max(MaxConfig(token="max-token"), "текст")
+
+    def test_channels_are_independent(self) -> None:
+        from kpbot.notify import MaxConfig
+
+        notifier = Notifier(
+            TelegramConfig(token=TOKEN, chat_id="1"),
+            MaxConfig(token="max-token", user_id="777"),
+        )
+        call_results = [
+            httpx.ConnectError("telegram недоступен"),
+            response(200, {"message": {}}),
+        ]
+        with patch("kpbot.notify.httpx.post", side_effect=call_results):
+            result = notifier.notify_new_rfq(
+                rfq_id="1", subject="s", sender="a", total="100", lines=1, matched=1
+            )
+        self.assertEqual(result, {"telegram": False, "max": True})
+
+    def test_ssl_context_loads_mintsifry_ca(self) -> None:
+        from kpbot.notify import max_ssl_context
+
+        stats = max_ssl_context().cert_store_stats()
+        self.assertGreater(stats["x509"], 10)
 
 
 if __name__ == "__main__":

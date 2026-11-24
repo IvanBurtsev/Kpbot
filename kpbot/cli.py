@@ -389,6 +389,66 @@ def cmd_telegram_test(args: argparse.Namespace) -> int:
     return 0
 
 
+def _max_config():
+    from .notify import MaxConfig
+
+    return MaxConfig(
+        token=settings.max_bot_token,
+        user_id=settings.max_user_id,
+        chat_id=settings.max_chat_id,
+        api_base=settings.max_api_base,
+    )
+
+
+def cmd_max_info(args: argparse.Namespace) -> int:
+    """Показывает бота MAX и тех, кто ему писал. С --save пишет user_id в .env."""
+    import re
+    from pathlib import Path
+
+    from .notify import NotifyError, load_max_user_ids, max_bot_info
+
+    config = _max_config()
+    try:
+        info = max_bot_info(config)
+        users = load_max_user_ids(config)
+    except NotifyError as exc:
+        print(f"MAX недоступен: {exc}")
+        return 2
+
+    print(f"бот: {info.get('name') or info.get('first_name')} (@{info.get('username', '—')})")
+    if not users:
+        print("сообщений боту нет: напишите боту в MAX любое сообщение")
+        return 1
+    for user_id, name in users:
+        print(f"  user_id: {user_id} ({name})")
+    if args.save and len(users) == 1:
+        user_id = users[0][0]
+        env_path = Path(".env")
+        text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+        pattern = re.compile(r"^KPBOT_MAX_USER_ID=.*$", re.M)
+        line = f"KPBOT_MAX_USER_ID={user_id}"
+        text = pattern.sub(line, text) if pattern.search(text) else text.rstrip() + "\n" + line + "\n"
+        env_path.write_text(text, encoding="utf-8")
+        print(f"user_id {user_id} записан в .env")
+    return 0
+
+
+def cmd_max_test(args: argparse.Namespace) -> int:
+    from .notify import NotifyError, send_max
+
+    config = _max_config()
+    if not config.addressed:
+        print("не задан KPBOT_MAX_USER_ID — выполните: python -m kpbot.cli max-info --save")
+        return 2
+    try:
+        send_max(config, "kpbot: проверка уведомлений в MAX. Это тестовое сообщение.")
+    except NotifyError as exc:
+        print(f"не отправлено: {exc}")
+        return 2
+    print("тестовое сообщение в MAX отправлено")
+    return 0
+
+
 def cmd_eval(args: argparse.Namespace) -> int:
     """Замер качества на размеченном наборе писем."""
     from .evalkit import evaluate, format_report
@@ -566,6 +626,13 @@ def main(argv: list[str] | None = None) -> int:
 
     tg_test = sub.add_parser("telegram-test", help="отправить тестовое уведомление")
     tg_test.set_defaults(func=cmd_telegram_test)
+
+    max_info = sub.add_parser("max-info", help="показать бота MAX и тех, кто ему писал")
+    max_info.add_argument("--save", action="store_true", help="записать user_id в .env")
+    max_info.set_defaults(func=cmd_max_info)
+
+    max_test = sub.add_parser("max-test", help="отправить тестовое уведомление в MAX")
+    max_test.set_defaults(func=cmd_max_test)
 
     args = parser.parse_args(argv)
     return int(args.func(args) or 0)

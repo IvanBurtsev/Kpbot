@@ -260,7 +260,8 @@ class Pipeline:
             lines=len(lines),
             matched=len(quote.lines),
         )
-        self.store.log(rfq_id, "notified" if sent else "notify_failed", "system", "")
+        detail = ", ".join(f"{channel}={'ok' if ok else 'fail'}" for channel, ok in sent.items())
+        self.store.log(rfq_id, "notified" if any(sent.values()) else "notify_failed", "system", detail)
 
     @staticmethod
     def _dedupe_by_sku(lines: list[RfqLine]) -> list[RfqLine]:
