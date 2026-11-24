@@ -441,23 +441,35 @@ class Store:
         """Сколько прошло от приёма письма до готового КП — главная метрика продукта."""
         with closing(self._connect()) as conn:
             row = conn.execute(
-                "SELECT r.created_at AS received, q.created_at AS quoted"
+                "SELECT r.created_at AS received, r.received_at AS mail_date, q.created_at AS quoted"
                 " FROM rfqs r LEFT JOIN quotes q ON q.rfq_id = r.id"
                 " WHERE r.id = ? ORDER BY q.rowid LIMIT 1",
                 (rfq_id,),
             ).fetchone()
         if row is None:
             return {}
-        seconds = _seconds_between(row["received"], row["quoted"]) if row["quoted"] else None
-        return {"received_at": row["received"], "quoted_at": row["quoted"], "seconds": seconds}
+        # считаем от даты письма, если её удалось разобрать: это честное «письмо → КП»
+        start = row["mail_date"] if _parse_dt(row["mail_date"] or "") else row["received"]
+        seconds = _seconds_between(start, row["quoted"]) if row["quoted"] else None
+        return {
+            "start": start,
+            "received_at": row["received"],
+            "quoted_at": row["quoted"],
+            "seconds": seconds,
+        }
 
     def timing_stats(self) -> dict:
         with closing(self._connect()) as conn:
             rows = conn.execute(
-                "SELECT r.created_at AS received, q.created_at AS quoted"
+                "SELECT r.created_at AS received, r.received_at AS mail_date, q.created_at AS quoted"
                 " FROM rfqs r JOIN quotes q ON q.rfq_id = r.id"
             ).fetchall()
-        values = [s for s in (_seconds_between(row["received"], row["quoted"]) for row in rows) if s is not None]
+        values = []
+        for row in rows:
+            start = row["mail_date"] if _parse_dt(row["mail_date"] or "") else row["received"]
+            seconds = _seconds_between(start, row["quoted"])
+            if seconds is not None:
+                values.append(seconds)
         if not values:
             return {"count": 0, "median_seconds": None, "max_seconds": None}
         values.sort()
@@ -474,13 +486,31 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _seconds_between(start: str, end: str) -> float | None:
-    """Разница между двумя ISO-метками SQLite. None, если что-то не разобралось."""
+def _parse_dt(value: str):
+    """Понимает и ISO из базы, и заголовок Date из письма (RFC 2822)."""
     from datetime import datetime
+    from email.utils import parsedate_to_datetime
 
+    if not value:
+        return None
     try:
-        first = datetime.fromisoformat(start)
-        second = datetime.fromisoformat(end)
+        parsed = datetime.fromisoformat(value)
     except (TypeError, ValueError):
+        try:
+            parsed = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+    if parsed.tzinfo is None:
+        from datetime import timezone
+
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _seconds_between(start: str, end: str) -> float | None:
+    """Разница между двумя метками времени. None, если что-то не разобралось."""
+    first = _parse_dt(start)
+    second = _parse_dt(end)
+    if first is None or second is None:
         return None
     return max((second - first).total_seconds(), 0.0)
