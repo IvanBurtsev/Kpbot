@@ -104,6 +104,67 @@ OAuth-токен получается **на сервере** (`python -m kpbot.
 
 ## 5. Эксплуатация
 
+### HTTPS без домена
+
+Если домена нет, работает бесплатный quick-туннель Cloudflare: сертификат настоящий,
+покупать ничего не нужно. Минус — адрес меняется при перезапуске туннеля.
+
+```bash
+cat > /etc/systemd/system/kpbot-tunnel.service <<'UNIT'
+[Unit]
+Description=kpbot HTTPS tunnel
+After=network-online.target kpbot.service
+Wants=kpbot.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflared tunnel --url http://127.0.0.1:8100 --no-autoupdate
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl enable --now kpbot-tunnel
+```
+
+Адрес берётся из журнала и записывается в `.env` скриптом `scripts/sync_tunnel_url.sh`
+(проверяет, что адрес отвечает 200, и только потом обновляет `KPBOT_PUBLIC_BASE_URL`
+и перезапускает сервис). Он же оформлен как `kpbot-tunnel-url.service`.
+Приложение при этом слушает только `127.0.0.1` — наружу торчит лишь туннель.
+
+### PDF на сервере без браузера
+
+`WeasyPrint` как запасной движок: `pip install weasyprint` + системные библиотеки
+`libpango-1.0-0 libpangoft2-1.0-0 libcairo2 libgdk-pixbuf-2.0-0 fonts-dejavu-core`.
+Сначала пробуется браузер, если его нет — WeasyPrint.
+
+### Почта: отдельная папка
+
+Опрос лучше нацелить на папку с заявками, а не на весь ящик:
+
+```ini
+KPBOT_IMAP_FOLDER=kpbot
+```
+
+Папка создаётся один раз (IMAP `CREATE`), письма в неё кладёт правило почтового сервиса.
+
+### Cron и сторож
+
+```bash
+cat > /etc/cron.d/kpbot <<'CRON'
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+*/10 * * * * kpbot cd /opt/kpbot && .venv/bin/python -m kpbot.cli poll --limit 20 >> /opt/kpbot/data/poll.log 2>&1
+0 3 * * * kpbot cd /opt/kpbot && .venv/bin/python -m kpbot.cli backup --keep 14 >> /opt/kpbot/data/backup.log 2>&1
+CRON
+```
+
+`kpbot-watchdog.timer` каждые 5 минут проверяет `/healthz` и перезапускает сервис,
+если он не отвечает.
+
+### Основное
+
 ```bash
 # бэкап базы (по cron, каждый день в 3:00)
 crontab -u kpbot -e
