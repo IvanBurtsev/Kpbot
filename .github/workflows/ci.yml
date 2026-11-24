@@ -35,17 +35,21 @@ jobs:
   secrets:
     name: проверка секретов
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # «прибит» к мажорной версии; для строгого режима заменить на commit SHA
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # официальный бинарник вместо action: у action бывают лицензионные сюрпризы
+      - name: gitleaks
+        run: |
+          set -euo pipefail
+          ARCHIVE=$(curl -sSf https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
+            | grep -o 'https://[^"]*linux_x64.tar.gz' | head -1)
+          echo "скачиваю: $ARCHIVE"
+          curl -sSfL "$ARCHIVE" -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks version
+          ./gitleaks detect --source . --no-banner --redact --verbose
 
   audit:
     name: аудит зависимостей
