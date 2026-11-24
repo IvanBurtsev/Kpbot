@@ -17,8 +17,8 @@ jobs:
       KPBOT_LLM_ENABLED: "false"
       KPBOT_PDF_ENABLED: "false"
       KPBOT_UI_PASSWORD: ci-password
-      KPBOT_API_KEY: ci-api-key-1234567890abcdef
-      KPBOT_SESSION_SECRET: ci-session-secret-1234567890abcdef
+      KPBOT_API_KEY: not-a-secret-ci-value
+      KPBOT_SESSION_SECRET: not-a-secret-ci-session
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
