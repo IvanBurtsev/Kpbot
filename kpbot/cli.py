@@ -468,6 +468,15 @@ def cmd_export_1c(args: argparse.Namespace) -> int:
         print("заявок нет — выгружать нечего")
         return 2
 
+    if args.csv:
+        from .export import build_rfq_csv
+
+        files = build_rfq_csv(rfq, store.get_quote(rfq["id"]), settings.out_dir)
+        for path in files:
+            print(f"файл: {path} ({path.stat().st_size} байт)")
+        print("CSV: разделитель «;», десятичная запятая, кодировка UTF-8 с BOM")
+        return 0
+
     content = build_rfq_xlsx(rfq, store.get_quote(rfq["id"]))
     target = Path(args.out) if args.out else settings.out_dir / f"1c-{rfq['id'][:8]}.xlsx"
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -892,6 +901,7 @@ def main(argv: list[str] | None = None) -> int:
     export_1c = sub.add_parser("export-1c", help="выгрузить заявку в файл для 1С и проверить формат")
     export_1c.add_argument("rfq_id", nargs="?", default="")
     export_1c.add_argument("--out", default="")
+    export_1c.add_argument("--csv", action="store_true", help="выгрузить CSV вместо Excel")
     export_1c.set_defaults(func=cmd_export_1c)
 
     send_kp = sub.add_parser("send-kp", help="отправить готовое КП клиенту письмом")

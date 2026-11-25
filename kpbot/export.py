@@ -192,3 +192,52 @@ def build_price_xlsx(items: list[PriceItem]) -> bytes:  # pragma: no cover - в�
     buffer = BytesIO()
     wb.save(buffer)
     return buffer.getvalue()
+
+def build_rfq_csv(rfq: dict, quote: dict | None, out_dir: Path) -> list[Path]:
+    """Два CSV для 1С: справочник и табличная часть документа.
+
+    Разделитель «;», десятичная запятая, UTF-8 с BOM — так 1С и Excel
+    на русской локали читают файл без танцев.
+    """
+    import csv
+
+    short = str(rfq.get("id", ""))[:8]
+    lines = (quote or {}).get("lines", [])
+    written: list[Path] = []
+
+    nom_path = out_dir / f"1c-nomenclature-{short}.csv"
+    with nom_path.open("w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.writer(fh, delimiter=";")
+        writer.writerow(("Наименование", "Артикул", "Единица измерения"))
+        seen: set[str] = set()
+        for line in lines:
+            if line["sku"] in seen:
+                continue
+            seen.add(line["sku"])
+            writer.writerow((line["name"], line["sku"], line["unit"]))
+    written.append(nom_path)
+
+    order_path = out_dir / f"1c-order-{short}.csv"
+    with order_path.open("w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.writer(fh, delimiter=";")
+        writer.writerow(("Код", "Наименование", "Количество", "Цена", "Сумма"))
+        for line in lines:
+            writer.writerow(
+                (
+                    line["sku"],
+                    line["name"],
+                    _ru_number(line["qty"]),
+                    _ru_number(line["price"]),
+                    _ru_number(line["amount"]),
+                )
+            )
+    written.append(order_path)
+    return written
+
+
+def _ru_number(value: object) -> str:
+    """1234.5 → «1234,50»: 1С и Excel на русской локали ждут запятую."""
+    from decimal import Decimal
+
+    amount = Decimal(str(value))
+    return f"{amount:.2f}".replace(".", ",")
