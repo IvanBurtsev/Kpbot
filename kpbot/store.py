@@ -574,6 +574,39 @@ class Store:
             )
         return user
 
+    def set_user_role(self, user_id: str, role: str) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute("UPDATE users SET role = ? WHERE id = ?", (check_role(role), user_id))
+
+    def set_user_password(self, user_id: str, password: str) -> None:
+        if len(password or "") < 8:
+            raise ValueError("пароль короче 8 символов")
+        salt, digest = hash_password(password)
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "UPDATE users SET salt = ?, password_hash = ? WHERE id = ?", (salt, digest, user_id)
+            )
+
+    def delete_user(self, user_id: str) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute("UPDATE rfqs SET assignee = NULL WHERE assignee = ?", (user_id,))
+            conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+    def admin_count(self) -> int:
+        with closing(self._connect()) as conn:
+            return int(
+                conn.execute("SELECT COUNT(*) AS c FROM users WHERE role = 'admin'").fetchone()["c"]
+            )
+
+    def list_events(self, limit: int = 100) -> list[dict]:
+        limit = max(1, min(int(limit), 500))
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT action, actor, detail, created_at FROM events ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def users(self) -> list[User]:
         with closing(self._connect()) as conn:
             rows = conn.execute("SELECT id, email, role, name FROM users ORDER BY role, email").fetchall()

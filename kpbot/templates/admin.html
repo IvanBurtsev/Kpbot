@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Админка · kpbot{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Админка</h1>
+  {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
+  <p class="muted small">Состояние установки: что включено, сколько обработано, чем это работает.</p>
+
+  <table>
+    <tbody>
+      <tr><th>Окружение</th><td>{{ diagnostics.env }}</td></tr>
+      <tr>
+        <th>Модель</th>
+        <td>
+          {% if diagnostics.llm %}включена · {{ diagnostics.llm_model }}{% else %}<span class="warn">выключена — разбор по правилам</span>{% endif %}
+        </td>
+      </tr>
+      <tr>
+        <th>Отправка КП</th>
+        <td>{% if diagnostics.smtp %}настроена{% else %}<span class="warn">выключена</span>{% endif %}</td>
+      </tr>
+      <tr>
+        <th>Почта (IMAP)</th>
+        <td>{{ diagnostics.imap }} · папка <code>{{ diagnostics.imap_folder }}</code></td>
+      </tr>
+      <tr>
+        <th>Уведомления</th>
+        <td>
+          Telegram {% if diagnostics.telegram %}✓{% else %}—{% endif %} ·
+          MAX {% if diagnostics.max %}✓{% else %}—{% endif %}
+        </td>
+      </tr>
+      <tr><th>PDF</th><td>{% if diagnostics.pdf %}включён{% else %}выключен{% endif %}</td></tr>
+      <tr><th>Размер базы</th><td class="num">{{ diagnostics.db_mb }} МБ</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Что сделано</h2>
+  <table>
+    <tbody>
+      <tr><th>Заявок</th><td class="num">{{ totals.rfqs }}</td></tr>
+      <tr><th>КП</th><td class="num">{{ totals.quotes }}</td></tr>
+      <tr><th>Позиций прайса</th><td class="num">{{ totals.price_items }}</td></tr>
+      <tr><th>Пользователей</th><td class="num">{{ users|length }}</td></tr>
+      <tr><th>Сумма за 30 дней</th><td class="num">{{ "%.2f"|format(report.total_sum) }} ₽</td></tr>
+      <tr><th>Без человека</th><td class="num">{{ report.auto_share }}%</td></tr>
+    </tbody>
+  </table>
+  <p><a class="button" href="/ui/admin/users">Пользователи</a>
+     <a class="button" href="/ui/admin/events">Журнал событий</a>
+     <a class="button" href="/ui/prices">Прайс</a></p>
+</section>
+
+<section class="card">
+  <h2>Последние события</h2>
+  <table>
+    <thead><tr><th>Когда</th><th>Что</th><th>Кто</th><th>Подробности</th></tr></thead>
+    <tbody>
+      {% for event in events %}
+      <tr>
+        <td class="small">{{ event.created_at[:19] }}</td>
+        <td class="small">{{ event.action }}</td>
+        <td class="small">{{ event.actor }}</td>
+        <td class="small muted">{{ event.detail }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">пока пусто</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

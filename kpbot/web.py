@@ -358,6 +358,138 @@ async def ui_prices_upload(request: Request):
     return RedirectResponse(f"/ui/prices?flash={quote(flash)}", status_code=status.HTTP_303_SEE_OTHER)
 
 
+# ---------- админка ----------
+
+
+def admin_only(request: Request):
+    """Пропускает только администратора; иначе — на вход."""
+    if not is_authenticated(request):
+        return login_redirect(request)
+    if not is_admin_request(request):
+        return PlainTextResponse("раздел только для администратора", status_code=403)
+    return None
+
+
+@app.get("/ui/admin", response_class=HTMLResponse)
+async def ui_admin(request: Request, flash: str = ""):
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    db_path = settings.db_path
+    return page(
+        "admin.html",
+        request,
+        totals=store.stats(),
+        users=store.users(),
+        events=store.list_events(10),
+        report=store.report(30),
+        diagnostics={
+            "llm": bool(settings.llm_enabled and settings.llm_base_url),
+            "llm_model": settings.llm_model or "—",
+            "smtp": bool(mailer.enabled and mailer.host),
+            "telegram": bool(settings.telegram_enabled and settings.telegram_bot_token),
+            "max": bool(settings.max_enabled and settings.max_bot_token),
+            "imap": settings.imap_user or "—",
+            "imap_folder": settings.imap_folder,
+            "pdf": settings.pdf_enabled,
+            "env": "боевой" if settings.is_production else "разработка",
+            "db_mb": round(db_path.stat().st_size / 1024 / 1024, 2) if db_path.exists() else 0,
+        },
+        flash=flash[:200],
+    )
+
+
+@app.get("/ui/admin/users", response_class=HTMLResponse)
+async def ui_admin_users(request: Request, flash: str = ""):
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    return page("admin_users.html", request, users=store.users(), flash=flash[:200])
+
+
+@app.post("/ui/admin/users")
+async def ui_admin_user_create(request: Request):
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    form = await verified_form(request)
+    email = str(form.get("email", "")).strip()
+    password = str(form.get("password", ""))
+    role = str(form.get("role", "manager"))
+    name = str(form.get("name", "")).strip()
+    try:
+        user = store.create_user(email=email, password=password, role=role, name=name)
+    except Exception as exc:  # noqa: BLE001 - причину показываем человеку
+        return RedirectResponse(f"/ui/admin/users?flash={quote(str(exc)[:160])}", status_code=status.HTTP_303_SEE_OTHER)
+    store.log_event("user_created", f"ui:{client_ip(request)}", f"{user.email} · {user.role}")
+    return RedirectResponse(
+        f"/ui/admin/users?flash={quote('создан ' + user.email)}", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
+@app.post("/ui/admin/users/{user_id}/role")
+async def ui_admin_user_role(request: Request, user_id: str):
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    form = await verified_form(request)
+    role = str(form.get("role", "manager"))
+    current = store.user_by_id(user_id)
+    if current is None:
+        return RedirectResponse(f"/ui/admin/users?flash={quote('пользователь не найден')}", status_code=303)
+    if current.role == ROLE_ADMIN and role != ROLE_ADMIN and store.admin_count() <= 1:
+        return RedirectResponse(
+            f"/ui/admin/users?flash={quote('нельзя снять роль с последнего администратора')}", status_code=303
+        )
+    store.set_user_role(user_id, role)
+    store.log_event("user_role", f"ui:{client_ip(request)}", f"{current.email} → {role}")
+    return RedirectResponse(f"/ui/admin/users?flash={quote('роль обновлена')}", status_code=303)
+
+
+@app.post("/ui/admin/users/{user_id}/password")
+async def ui_admin_user_password(request: Request, user_id: str):
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    form = await verified_form(request)
+    password = str(form.get("password", ""))
+    current = store.user_by_id(user_id)
+    if current is None:
+        return RedirectResponse(f"/ui/admin/users?flash={quote('пользователь не найден')}", status_code=303)
+    try:
+        store.set_user_password(user_id, password)
+    except ValueError as exc:
+        return RedirectResponse(f"/ui/admin/users?flash={quote(str(exc))}", status_code=303)
+    store.log_event("user_password", f"ui:{client_ip(request)}", current.email)
+    return RedirectResponse(f"/ui/admin/users?flash={quote('пароль обновлён')}", status_code=303)
+
+
+@app.post("/ui/admin/users/{user_id}/delete")
+async def ui_admin_user_delete(request: Request, user_id: str):
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    await verified_form(request)
+    current = store.user_by_id(user_id)
+    if current is None:
+        return RedirectResponse(f"/ui/admin/users?flash={quote('пользователь не найден')}", status_code=303)
+    if current.role == ROLE_ADMIN and store.admin_count() <= 1:
+        return RedirectResponse(
+            f"/ui/admin/users?flash={quote('нельзя удалить последнего администратора')}", status_code=303
+        )
+    store.delete_user(user_id)
+    store.log_event("user_deleted", f"ui:{client_ip(request)}", current.email)
+    return RedirectResponse(f"/ui/admin/users?flash={quote('пользователь удалён')}", status_code=303)
+
+
+@app.get("/ui/admin/events", response_class=HTMLResponse)
+async def ui_admin_events(request: Request):
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    return page("admin_events.html", request, events=store.list_events(200))
+
+
 @app.get("/ui/rfq/{rfq_id}", response_class=HTMLResponse)
 async def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
     if not is_authenticated(request):
