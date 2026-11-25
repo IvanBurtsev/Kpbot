@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
@@ -11,12 +11,12 @@
   <a class="brand" href="/ui">kpbot <span class="muted">· заявка → КП</span></a>
   {% if authenticated %}
   <nav class="nav">
-    <a href="/ui">Входящие</a>
-<a href="/ui/prices">Прайс</a>
-<a href="/ui/stats">Сводка</a>
-{% if is_admin %}<a href="/ui/settings">Настройки</a>
-<a href="/ui/admin">Админка</a>{% endif %}
-    <span class="muted small">{{ price_count }} позиций в прайсе</span>
+    <a href="/ui"{% if active_page == "inbox" %} class="active"{% endif %}>Заявки</a>
+    <a href="/ui/prices"{% if active_page == "prices" %} class="active"{% endif %}>Прайс</a>
+    {% if is_admin %}
+    <a href="/ui/admin"{% if active_page == "admin" %} class="active"{% endif %}>Админка</a>
+    {% endif %}
+    <span class="muted small">{{ price_count }} позиций</span>
     <form method="post" action="/ui/logout" class="inline">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="link" type="submit">Выйти</button>
@@ -28,7 +28,11 @@
   {% block content %}{% endblock %}
 </main>
 <footer class="foot">
-  {% if smtp_ready %}<span class="muted small">Сервис · письма отправляются с настроенного ящика</span>{% else %}<span class="muted small">Сервис · отправка писем не настроена</span>{% endif %}
+  {% if smtp_ready %}
+  <span class="muted small">Письма отправляются с настроенного ящика</span>
+  {% else %}
+  <span class="muted small">Отправка писем не настроена</span>
+  {% endif %}
 </footer>
 </body>
 </html>

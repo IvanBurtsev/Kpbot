@@ -3,73 +3,182 @@
 {% block content %}
 <section class="card">
   <h1>Админка</h1>
-  {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
-  <p class="muted small">Состояние установки: что включено, сколько обработано, чем это работает.</p>
+  <p class="muted small">Состояние сервиса, люди, обучение, журнал и реквизиты — в одном месте.</p>
 
+  {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  <nav class="tabs">
+    <a href="/ui/admin?tab=state" {% if tab == "state" %}class="active"{% endif %}>Состояние</a>
+    <a href="/ui/admin?tab=users" {% if tab == "users" %}class="active"{% endif %}>Пользователи</a>
+    <a href="/ui/admin?tab=learned" {% if tab == "learned" %}class="active"{% endif %}>Обучение</a>
+    <a href="/ui/admin?tab=events" {% if tab == "events" %}class="active"{% endif %}>Журнал</a>
+    <a href="/ui/admin?tab=company" {% if tab == "company" %}class="active"{% endif %}>Компания</a>
+  </nav>
+
+  {% if tab == "state" %}
+  <h2>Что включено</h2>
   <table>
     <tbody>
       <tr><th>Окружение</th><td>{{ diagnostics.env }}</td></tr>
       <tr>
         <th>Модель</th>
-        <td>
-          {% if diagnostics.llm %}включена · {{ diagnostics.llm_model }}{% else %}<span class="warn">выключена — разбор по правилам</span>{% endif %}
-        </td>
+        <td>{% if diagnostics.llm %}включена · {{ diagnostics.llm_model }}{% else %}<span class="warn">выключена — разбор по правилам</span>{% endif %}</td>
       </tr>
-      <tr>
-        <th>Отправка КП</th>
-        <td>{% if diagnostics.smtp %}настроена{% else %}<span class="warn">выключена</span>{% endif %}</td>
-      </tr>
-      <tr>
-        <th>Почта (IMAP)</th>
-        <td>{{ diagnostics.imap }} · папка <code>{{ diagnostics.imap_folder }}</code></td>
-      </tr>
-      <tr>
-        <th>Уведомления</th>
-        <td>
-          Telegram {% if diagnostics.telegram %}✓{% else %}—{% endif %} ·
-          MAX {% if diagnostics.max %}✓{% else %}—{% endif %}
-        </td>
-      </tr>
-      <tr><th>PDF</th><td>{% if diagnostics.pdf %}включён{% else %}выключен{% endif %}</td></tr>
+      <tr><th>Отправка КП</th><td>{% if diagnostics.smtp %}настроена{% else %}<span class="warn">выключена</span>{% endif %}</td></tr>
+      <tr><th>Почта</th><td>{{ diagnostics.imap }} · папка <code>{{ diagnostics.imap_folder }}</code></td></tr>
+      <tr><th>Уведомления</th><td>Telegram {% if diagnostics.telegram %}✓{% else %}—{% endif %} · MAX {% if diagnostics.max %}✓{% else %}—{% endif %}</td></tr>
+      <tr><th>PDF</th><td>{% if diagnostics.pdf %}включён{% endif %}{% if not diagnostics.pdf %}выключен{% endif %}</td></tr>
       <tr><th>Размер базы</th><td class="num">{{ diagnostics.db_mb }} МБ</td></tr>
     </tbody>
   </table>
-</section>
 
-<section class="card">
   <h2>Что сделано</h2>
+  <div class="stats">
+    <div class="stat"><div class="label">Заявок</div><div class="value">{{ totals.rfqs }}</div></div>
+    <div class="stat"><div class="label">КП</div><div class="value">{{ totals.quotes }}</div></div>
+    <div class="stat"><div class="label">Позиций прайса</div><div class="value">{{ totals.price_items }}</div></div>
+    <div class="stat"><div class="label">Пользователей</div><div class="value">{{ users|length }}</div></div>
+  </div>
+
+  {% elif tab == "users" %}
+  <h2>Пользователи</h2>
+  <p class="muted small">Администратор видит все заявки и управляет людьми. Менеджер — свободные и свои.</p>
   <table>
+    <thead><tr><th>Логин</th><th>Имя</th><th>Роль</th><th>Действия</th></tr></thead>
     <tbody>
-      <tr><th>Заявок</th><td class="num">{{ totals.rfqs }}</td></tr>
-      <tr><th>КП</th><td class="num">{{ totals.quotes }}</td></tr>
-      <tr><th>Позиций прайса</th><td class="num">{{ totals.price_items }}</td></tr>
-      <tr><th>Пользователей</th><td class="num">{{ users|length }}</td></tr>
-      <tr><th>Сумма за 30 дней</th><td class="num">{{ "%.2f"|format(report.total_sum) }} ₽</td></tr>
-      <tr><th>Без человека</th><td class="num">{{ report.auto_share }}%</td></tr>
+      {% for user in users %}
+      <tr>
+        <td>{{ user.email }}</td>
+        <td>{{ user.name or "—" }}</td>
+        <td><span class="badge">{{ user.role }}</span></td>
+        <td class="small">
+          <form method="post" action="/ui/admin/users/{{ user.id }}/role" class="line-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <select name="role">
+              <option value="manager" {% if user.role == 'manager' %}selected{% endif %}>manager</option>
+              <option value="admin" {% if user.role == 'admin' %}selected{% endif %}>admin</option>
+            </select>
+            <button type="submit" class="mini">Роль</button>
+          </form>
+          <form method="post" action="/ui/admin/users/{{ user.id }}/password" class="line-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="password" name="password" placeholder="новый пароль" minlength="8" required>
+            <button type="submit" class="mini">Пароль</button>
+          </form>
+          <form method="post" action="/ui/admin/users/{{ user.id }}/delete" class="inline"
+                onsubmit="return confirm('Удалить пользователя {{ user.email }}?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="mini danger">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
     </tbody>
   </table>
-  <p><a class="button" href="/ui/admin/users">Пользователи</a>
-     <a class="button" href="/ui/admin/events">Журнал событий</a>
-     <a class="button" href="/ui/admin/learned">Обучение</a>
-     <a class="button" href="/ui/prices">Прайс</a></p>
-</section>
 
-<section class="card">
-  <h2>Последние события</h2>
+  <h3>Добавить</h3>
+  <form method="post" action="/ui/admin/users" class="row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="email" name="email" placeholder="почта" required>
+    <input type="text" name="name" placeholder="имя (необязательно)">
+    <input type="password" name="password" placeholder="пароль, от 8 символов" minlength="8" required>
+    <select name="role">
+      <option value="manager">manager</option>
+      <option value="admin">admin</option>
+    </select>
+    <button type="submit" class="primary mini">Создать</button>
+  </form>
+
+  {% elif tab == "learned" %}
+  <h2>Что сервис выучил</h2>
+  <p class="muted small">
+    Пары «формулировка из письма → артикул», появившиеся из правок менеджеров.
+    Пара работает после двух подтверждений и отключается, если правок стало больше. Всего: <b>{{ escalated_total if escalated_total is defined else learned_total }}</b>.
+  </p>
+  {% if pairs %}
+  <form method="post" action="/ui/admin/learned/forget"
+        onsubmit="return confirm('Забыть всё обучение? Разбор вернётся к работе по прайсу.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="mini danger">Забыть всё</button>
+  </form>
+  {% endif %}
+  <table>
+    <thead>
+      <tr><th>Формулировка</th><th>Артикул</th><th class="num">Подтверждений</th>
+          <th class="num">Правок</th><th>Обновлено</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for pair in pairs %}
+      <tr>
+        <td>{{ pair.key }}</td>
+        <td><code>{{ pair.sku }}</code></td>
+        <td class="num">{{ pair.hits }}</td>
+        <td class="num">{{ pair.misses }}</td>
+        <td class="small muted">{{ pair.updated_at[:16].replace("T", " ") }}</td>
+        <td>
+          <form method="post" action="/ui/admin/learned/forget" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="key" value="{{ pair.key }}">
+            <button type="submit" class="mini">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">пока пусто — правьте строки в заявках, сервис запомнит</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% elif tab == "events" %}
+  <h2>Журнал событий</h2>
+  <p class="muted small">Кто и что менял: загрузки прайса, пользователи, отправки, настройки.</p>
   <table>
     <thead><tr><th>Когда</th><th>Что</th><th>Кто</th><th>Подробности</th></tr></thead>
     <tbody>
       {% for event in events %}
       <tr>
-        <td class="small">{{ event.created_at[:19] }}</td>
+        <td class="small muted">{{ event.created_at[:16].replace("T", " ") }}</td>
         <td class="small">{{ event.action }}</td>
         <td class="small">{{ event.actor }}</td>
         <td class="small muted">{{ event.detail }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="4" class="muted">пока пусто</td></tr>
+      <tr><td colspan="4" class="muted">событий пока нет</td></tr>
       {% endfor %}
     </tbody>
   </table>
+
+  {% elif tab == "company" %}
+  <h2>Реквизиты компании</h2>
+  <p class="muted small">
+    Эти данные попадают в шапку КП, в подпись письма и в контакты для клиента.
+    Значения из интерфейса важнее того, что прописано в файле настроек сервера.
+  </p>
+  <form method="post" action="/ui/settings" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Название компании
+      <input type="text" name="name" value="{{ company.name }}" required maxlength="200">
+    </label>
+    <div class="row">
+      <label>ИНН <input type="text" name="inn" value="{{ company.inn }}" maxlength="12"></label>
+      <label>КПП <input type="text" name="kpp" value="{{ company.kpp }}" maxlength="9"></label>
+    </div>
+    <label>Адрес <input type="text" name="address" value="{{ company.address }}" maxlength="300"></label>
+    <div class="row">
+      <label>Телефон <input type="text" name="phone" value="{{ company.phone }}" maxlength="60"></label>
+      <label>Почта для клиентов <input type="email" name="email" value="{{ company.email }}" maxlength="120"></label>
+    </div>
+    <label>Подписант (в КП) <input type="text" name="signer" value="{{ company.signer }}" maxlength="200"></label>
+    <label>Подпись в письме клиенту
+      <textarea name="signature" rows="5" placeholder="С уважением,&#10;{{подписант}}&#10;{{компания}} · {{телефон}}">{{ company.signature }}</textarea>
+      <span class="muted small">Подстановки: <code>{{подписант}}</code>, <code>{{компания}}</code>, <code>{{телефон}}</code>, <code>{{почта}}</code>.</span>
+    </label>
+    <label>Вводный текст КП (необязательно)
+      <textarea name="kp_intro" rows="3" placeholder="Например: Цены действительны при заказе от 50 000 ₽">{{ company.kp_intro }}</textarea>
+    </label>
+    <button class="primary" type="submit">Сохранить</button>
+  </form>
+  {% endif %}
 </section>
 {% endblock %}

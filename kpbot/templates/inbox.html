@@ -1,13 +1,36 @@
 {% extends "base.html" %}
-{% block title %}Входящие · kpbot{% endblock %}
+{% block title %}Заявки · kpbot{% endblock %}
 {% block content %}
 {% set labels = {"received": "принято", "parsed": "разобрано", "priced": "посчитано",
                  "draft_ready": "черновик готов", "human_review": "нужен человек",
                  "approved": "одобрено", "sent": "отправлено", "rejected": "отклонено"} %}
 
 <section class="card">
-  <h1>Входящие заявки</h1>
-  <p class="muted">Загрузите письмо <code>.eml</code> или отправьте JSON в <code>POST /api/v1/rfqs</code>.</p>
+  <h1>Заявки</h1>
+  <p class="muted small">Сюда попадают письма клиентов. Каждое превращается в КП за секунды.</p>
+
+  {% if report %}
+  <div class="stats">
+    <div class="stat">
+      <div class="label">Заявок за {{ report.days }} дней</div>
+      <div class="value">{{ report.rfqs }}</div>
+    </div>
+    <div class="stat">
+      <div class="label">Сумма предложений</div>
+      <div class="value">{{ "%.0f"|format(report.total_sum) }} <small>₽</small></div>
+    </div>
+    <div class="stat">
+      <div class="label">Разобрано без человека</div>
+      <div class="value">{{ report.auto_share }}<small>%</small></div>
+    </div>
+    <div class="stat">
+      <div class="label">Разбор письма</div>
+      <div class="value">
+        {% if report.median_seconds is not none %}{{ "%.1f"|format(report.median_seconds) }}<small> с</small>{% else %}—{% endif %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
   {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
@@ -16,12 +39,13 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="file" name="file" accept=".eml,.txt" required>
     <button class="primary" type="submit">Разобрать письмо</button>
+    <span class="muted small">файл .eml или .txt, до 2 МБ</span>
   </form>
 </section>
 
 <section class="card">
   {% if rfqs %}
-  <table class="grid">
+  <table>
     <thead>
       <tr>
         <th>Получено</th>
@@ -37,8 +61,8 @@
     <tbody>
       {% for r in rfqs %}
       <tr>
-        <td class="small muted">{{ r.created_at[:19] }}</td>
-        <td>{{ r.sender }}</td>
+        <td class="small muted">{{ r.created_at[:16].replace("T", " ") }}</td>
+        <td class="small">{{ r.sender }}</td>
         <td><a href="/ui/rfq/{{ r.id }}">{{ r.subject }}</a></td>
         <td class="small">
           {% set owner = users|selectattr("id", "equalto", r.assignee)|list %}
@@ -53,7 +77,8 @@
     </tbody>
   </table>
   {% else %}
-  <p class="muted">Пока пусто. Загрузите письмо — или выполните <code>python -m kpbot.cli demo</code>.</p>
+  <p class="empty">Пока пусто. Загрузите письмо кнопкой выше — или запустите демо-стенд:
+    <code>python -m kpbot.cli demo-stand</code>.</p>
   {% endif %}
 </section>
 {% endblock %}

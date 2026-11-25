@@ -215,8 +215,10 @@ async def ui_inbox(request: Request, flash: str = ""):
     return page(
         "inbox.html",
         request,
+        active_page="inbox",
         rfqs=rfqs,
         users=store.users() if (user and user.is_admin) else [],
+        report=store.report(30),
         flash=flash[:200],
     )
 
@@ -307,16 +309,18 @@ async def ui_upload(request: Request, file: UploadFile):
 
 @app.get("/ui/stats", response_class=HTMLResponse)
 async def ui_stats(request: Request, days: str = "30"):
-    """Сводка: сколько заявок, на какую сумму, за сколько разобрано."""
+    """Сводка живёт на главной: отдельная страница больше не нужна."""
     if not is_authenticated(request):
         return login_redirect(request)
-    days = safe_int(days, 30, 1, 365)
+    user = current_user(request)
+    rfqs = store.list_rfqs(100, assignee=None if (user is None or user.is_admin) else user.id)
     return page(
-        "stats.html",
+        "inbox.html",
         request,
-        report=store.report(days),
-        days=days,
-        totals=store.stats(),
+        active_page="inbox",
+        rfqs=rfqs,
+        users=store.users() if (user and user.is_admin) else [],
+        report=store.report(safe_int(days, 30, 1, 365)),
     )
 
 
@@ -333,6 +337,7 @@ async def ui_prices(request: Request, q: str = "", flash: str = ""):
     return page(
         "prices.html",
         request,
+        active_page="prices",
         items=items[:300],
         total=store.price_count(),
         shown=len(items),
@@ -408,11 +413,8 @@ def admin_only(request: Request):
 
 @app.get("/ui/settings", response_class=HTMLResponse)
 async def ui_settings(request: Request, flash: str = ""):
-    """Реквизиты компании, подпись письма и вводный текст КП."""
-    denied = admin_only(request)
-    if denied is not None:
-        return denied
-    return page("settings.html", request, company=pipeline.company(), flash=flash[:200])
+    """Реквизиты компании — вкладка в админке, отдельной страницы нет."""
+    return await render_admin(request, tab="company", flash=flash)
 
 
 @app.post("/ui/settings")
@@ -430,20 +432,18 @@ async def ui_settings_save(request: Request):
     )
 
 
-@app.get("/ui/admin", response_class=HTMLResponse)
-async def ui_admin(request: Request, flash: str = ""):
-    denied = admin_only(request)
-    if denied is not None:
-        return denied
+def admin_context(request: Request) -> dict:
+    """Всё, что нужно любой вкладке админки: одна выборка, один рендер."""
     db_path = settings.db_path
-    return page(
-        "admin.html",
-        request,
-        totals=store.stats(),
-        users=store.users(),
-        events=store.list_events(10),
-        report=store.report(30),
-        diagnostics={
+    return {
+        "users": store.users(),
+        "events": store.list_events(100),
+        "pairs": store.learned_pairs(300),
+        "learned_total": store.learned_count(),
+        "company": pipeline.company(),
+        "totals": store.stats(),
+        "report": store.report(30),
+        "diagnostics": {
             "llm": bool(settings.llm_enabled and settings.llm_base_url),
             "llm_model": settings.llm_model or "—",
             "smtp": bool(mailer.enabled and mailer.host),
@@ -455,16 +455,31 @@ async def ui_admin(request: Request, flash: str = ""):
             "env": "боевой" if settings.is_production else "разработка",
             "db_mb": round(db_path.stat().st_size / 1024 / 1024, 2) if db_path.exists() else 0,
         },
+    }
+
+
+async def render_admin(request: Request, *, tab: str = "state", flash: str = ""):
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    return page(
+        "admin.html",
+        request,
+        active_page="admin",
+        tab=tab if tab in ("state", "users", "learned", "events", "company") else "state",
         flash=flash[:200],
+        **admin_context(request),
     )
+
+
+@app.get("/ui/admin", response_class=HTMLResponse)
+async def ui_admin(request: Request, tab: str = "state", flash: str = ""):
+    return await render_admin(request, tab=tab, flash=flash)
 
 
 @app.get("/ui/admin/users", response_class=HTMLResponse)
 async def ui_admin_users(request: Request, flash: str = ""):
-    denied = admin_only(request)
-    if denied is not None:
-        return denied
-    return page("admin_users.html", request, users=store.users(), flash=flash[:200])
+    return await render_admin(request, tab="users", flash=flash)
 
 
 @app.post("/ui/admin/users")
@@ -544,17 +559,7 @@ async def ui_admin_user_delete(request: Request, user_id: str):
 
 @app.get("/ui/admin/learned", response_class=HTMLResponse)
 async def ui_admin_learned(request: Request, flash: str = ""):
-    """Что сервис выучил на правках менеджеров."""
-    denied = admin_only(request)
-    if denied is not None:
-        return denied
-    return page(
-        "admin_learned.html",
-        request,
-        pairs=store.learned_pairs(300),
-        total=store.learned_count(),
-        flash=flash[:200],
-    )
+    return await render_admin(request, tab="learned", flash=flash)
 
 
 @app.post("/ui/admin/learned/forget")
@@ -572,10 +577,7 @@ async def ui_admin_learned_forget(request: Request):
 
 @app.get("/ui/admin/events", response_class=HTMLResponse)
 async def ui_admin_events(request: Request):
-    denied = admin_only(request)
-    if denied is not None:
-        return denied
-    return page("admin_events.html", request, events=store.list_events(200))
+    return await render_admin(request, tab="events")
 
 
 @app.get("/ui/rfq/{rfq_id}", response_class=HTMLResponse)
