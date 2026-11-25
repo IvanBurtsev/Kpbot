@@ -627,6 +627,45 @@ def cmd_smtp_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_alert(args: argparse.Namespace) -> int:
+    """Отправляет служебное сообщение в подключённые каналы (сторож, cron, деплой)."""
+    from .notify import MaxConfig, NotifyError, TelegramConfig, send_max, send_telegram
+
+    text = (args.text or "").strip()[:900] or "kpbot: служебное сообщение"
+    text = "kpbot\n" + text
+    sent = 0
+    if settings.telegram_enabled and settings.telegram_bot_token and settings.telegram_chat_id:
+        try:
+            send_telegram(
+                TelegramConfig(
+                    token=settings.telegram_bot_token,
+                    chat_id=settings.telegram_chat_id,
+                    api_base=settings.telegram_api_base,
+                    ip_override=settings.telegram_ip_override,
+                ),
+                text,
+            )
+            sent += 1
+        except NotifyError as exc:
+            print(f"telegram: {exc}")
+    if settings.max_enabled and settings.max_bot_token and (settings.max_user_id or settings.max_chat_id):
+        try:
+            send_max(
+                MaxConfig(
+                    token=settings.max_bot_token,
+                    user_id=settings.max_user_id,
+                    chat_id=settings.max_chat_id,
+                    api_base=settings.max_api_base,
+                ),
+                text,
+            )
+            sent += 1
+        except NotifyError as exc:
+            print(f"max: {exc}")
+    print(f"отправлено каналов: {sent}")
+    return 0 if sent else 1
+
+
 def cmd_user_add(args: argparse.Namespace) -> int:
     """Добавить менеджера или администратора. Пароль спрашиваем скрыто."""
     import getpass
@@ -894,6 +933,10 @@ def main(argv: list[str] | None = None) -> int:
     user_add.add_argument("--name", default="")
     user_add.add_argument("--password", default="", help="необязательно: иначе спросим скрыто")
     user_add.set_defaults(func=cmd_user_add)
+
+    alert = sub.add_parser("alert", help="служебное сообщение в Telegram и MAX")
+    alert.add_argument("--text", default="")
+    alert.set_defaults(func=cmd_alert)
 
     users_cmd = sub.add_parser("users", help="список пользователей")
     users_cmd.set_defaults(func=cmd_users)
