@@ -216,6 +216,28 @@ class MaxTokenRedactionTest(unittest.TestCase):
         self.assertNotIn(max_token, cleaned)
         self.assertIn("***", cleaned)
 
+    def test_link_is_public_and_not_local(self) -> None:
+        from kpbot.notify import Notifier
+
+        notifier = Notifier(telegram=None, max_channel=None, public_base_url="https://kp.example.ru:8443")
+        self.assertEqual(
+            notifier.link_for("abc123"), "https://kp.example.ru:8443/ui/rfq/abc123"
+        )
+
+    def test_local_address_produces_no_link(self) -> None:
+        from kpbot.notify import Notifier
+
+        for base in ("http://127.0.0.1:8000", "http://localhost:8000", ""):
+            notifier = Notifier(telegram=None, max_channel=None, public_base_url=base)
+            self.assertEqual(notifier.link_for("abc123"), "", f"адрес {base!r} не должен попадать в уведомление")
+
+    def test_message_without_link_has_no_trailing_blank(self) -> None:
+        from kpbot.notify import format_new_rfq
+
+        text = format_new_rfq(subject="Заявка", sender="a@b.ru", total="100", lines=2, matched=2, link="")
+        self.assertFalse(text.endswith("\n"))
+
+
 
 if __name__ == "__main__":
     unittest.main()

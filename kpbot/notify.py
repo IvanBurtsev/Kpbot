@@ -189,15 +189,25 @@ def _api_url(config: TelegramConfig) -> str:
     return f"{config.api_base.rstrip('/')}/bot{config.token}/sendMessage"
 
 
-def send_telegram(config: TelegramConfig, text: str) -> None:
+def _is_local_url(url: str) -> bool:
+    lowered = url.lower()
+    return any(host in lowered for host in ("127.0.0.1", "localhost", "0.0.0.0", "::1"))
+
+
+def send_telegram(config: TelegramConfig, text: str, button_url: str = "") -> None:
     if not config.token or not config.chat_id:
         raise NotifyError("не заданы токен бота или chat_id")
 
-    payload = {
+    payload: dict[str, object] = {
         "chat_id": config.chat_id,
         "text": text[:4000],
         "disable_web_page_preview": True,
     }
+    if button_url:
+        # кнопка открывает веб-версию заявки в браузере, а не локальный адрес
+        payload["reply_markup"] = {
+            "inline_keyboard": [[{"text": "Открыть заявку", "url": button_url}]]
+        }
     try:
         with _resolve_override("api.telegram.org", config.ip_override):
             response = httpx.post(_api_url(config), json=payload, timeout=config.timeout)
@@ -219,13 +229,13 @@ def format_new_rfq(
     link: str,
 ) -> str:
     tail = f"\nПозиций: {matched} из {lines}" if lines else ""
-    return (
+    body = (
         f"Новая заявка\n"
         f"Тема: {subject[:120]}\n"
         f"От: {sender[:80]}\n"
-        f"Сумма: {total} ₽{tail}\n"
-        f"{link}"
+        f"Сумма: {total} ₽{tail}"
     )
+    return f"{body}\n{link}" if link else body
 
 
 class Notifier:
@@ -269,7 +279,15 @@ class Notifier:
         return telegram_ready or max_ready
 
     def link_for(self, rfq_id: str) -> str:
-        base = self.public_base_url or "http://127.0.0.1:8000"
+        """Только публичный адрес: локальный в мессенджере бесполезен."""
+        base = (self.public_base_url or "").rstrip("/")
+        if not base or _is_local_url(base):
+            log.error(
+                "не задан публичный адрес (KPBOT_PUBLIC_BASE_URL=%r): "
+                "ссылки в уведомлениях будут нерабочими",
+                base,
+            )
+            return ""
         return f"{base}/ui/rfq/{rfq_id}"
 
     def notify_new_rfq(
@@ -287,18 +305,19 @@ class Notifier:
         if not self.enabled:
             return results
 
+        link = self.link_for(rfq_id)
         text = format_new_rfq(
             subject=subject,
             sender=sender,
             total=total,
             lines=lines,
             matched=matched,
-            link=self.link_for(rfq_id),
+            link=link,
         )
 
         if self.telegram is not None and self.telegram.chat_id:
             try:
-                send_telegram(self.telegram, text)
+                send_telegram(self.telegram, text, button_url=link)
                 results["telegram"] = True
             except NotifyError as exc:
                 log.warning("telegram: уведомление не отправлено: %s", redact(str(exc)))
