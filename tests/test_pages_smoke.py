@@ -15,6 +15,7 @@ os.environ.setdefault("KPBOT_API_KEY", "test-key")
 os.environ.setdefault("KPBOT_UI_PASSWORD", "test-pass")
 os.environ.setdefault("KPBOT_SESSION_SECRET", "test-secret")
 os.environ.setdefault("KPBOT_PDF_ENABLED", "false")
+os.environ.setdefault("KPBOT_ENV", "dev")
 
 from fastapi.testclient import TestClient  # noqa: E402
 

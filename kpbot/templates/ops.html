@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Клиенты · kpbot{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Клиенты</h1>
+  {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
+  <p class="muted small">
+    У каждого клиента своя база: заявки, прайс и пользователи не пересекаются.
+    Переключение меняет то, что вы видите дальше — вернуться можно этой же кнопкой.
+  </p>
+
+  <table>
+    <thead><tr><th>Клиент</th><th>Код</th><th>Статус</th><th>Создан</th><th>Действия</th></tr></thead>
+    <tbody>
+      {% for tenant in tenants %}
+      <tr>
+        <td>{{ tenant.name }}</td>
+        <td><code>{{ tenant.id }}</code></td>
+        <td><span class="badge {% if tenant.status == 'active' %}s-ok{% else %}s-rejected{% endif %}">{{ tenant.status }}</span></td>
+        <td class="small muted">{{ tenant.created_at[:10] }}</td>
+        <td class="small">
+          <form method="post" action="/ui/ops/switch" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="tenant_id" value="{{ tenant.id }}">
+            <button type="submit" class="mini">Войти в базу</button>
+          </form>
+          <form method="post" action="/ui/ops/status" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="tenant_id" value="{{ tenant.id }}">
+            <input type="hidden" name="status" value="{% if tenant.status == 'active' %}paused{% else %}active{% endif %}">
+            <button type="submit" class="mini">{% if tenant.status == 'active' %}Приостановить{% else %}Включить{% endif %}</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Новый клиент</h2>
+  <p class="muted small">
+    Создаётся отдельная база и администратор. Пароль покажется один раз — передайте его клиенту.
+  </p>
+  <form method="post" action="/ui/ops/create" class="row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="text" name="name" placeholder="Например: ООО «СтройСнаб»" required maxlength="120">
+    <input type="email" name="email" placeholder="почта администратора клиента" required>
+    <button type="submit" class="primary mini">Создать клиента</button>
+  </form>
+</section>
+{% endblock %}

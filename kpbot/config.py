@@ -131,6 +131,16 @@ class Settings(BaseSettings):
         return self.data_dir / "kpbot.sqlite3"
 
     @property
+    def tenants_db_path(self) -> Path:
+        """Реестр клиентов: отдельный файл рядом с основными данными."""
+        return self.data_dir / "tenants.sqlite3"
+
+    @property
+    def tenants_dir(self) -> Path:
+        """Каталог баз клиентов. Основная база остаётся в data/."""
+        return self.data_dir / "tenants"
+
+    @property
     def out_dir(self) -> Path:
         return self.data_dir / "out"
 

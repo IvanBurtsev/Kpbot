@@ -13,10 +13,14 @@
   <nav class="nav">
     <a href="/ui"{% if active_page == "inbox" %} class="active"{% endif %}>Заявки</a>
     <a href="/ui/prices"{% if active_page == "prices" %} class="active"{% endif %}>Прайс</a>
+    {% if is_owner %}
+    <a href="/ui/ops"{% if active_page == "ops" %} class="active"{% endif %}>Клиенты</a>
+    {% endif %}
     {% if is_admin %}
     <a href="/ui/setup"{% if active_page == "setup" %} class="active"{% endif %}>Подключение</a>
     <a href="/ui/admin"{% if active_page == "admin" %} class="active"{% endif %}>Админка</a>
     {% endif %}
+    {% if tenant_name %}<span class="badge">{{ tenant_name }}</span>{% endif %}
     <span class="muted small">{{ price_count }} позиций</span>
     <form method="post" action="/ui/logout" class="inline">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

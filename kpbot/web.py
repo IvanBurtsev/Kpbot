@@ -12,8 +12,11 @@ from __future__ import annotations
 import base64
 import logging
 import re
+import secrets
+import string
 import time
 import uuid
+from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import quote
@@ -46,6 +49,7 @@ from .security import (
 )
 from .users import ROLE_ADMIN, User, normalize_email
 from .store import Store
+from .tenancy import TenantRegistry
 
 from .logs import mask, register_settings_secrets, setup_logging
 
@@ -57,7 +61,23 @@ app = FastAPI(title="kpbot", version="0.1.0", docs_url="/api/docs", openapi_url=
 app.mount("/static", StaticFiles(directory=str(settings.static_dir)), name="static")
 
 settings.ensure_dirs()
-store = Store(settings.db_path)
+registry = TenantRegistry(settings.tenants_db_path, settings.db_path)
+
+
+class TenantStore:
+    """Фасад над Store: база выбирается по клиенту из контекста запроса."""
+
+    def __init__(self, default_path: Path) -> None:
+        self.default_path = default_path
+
+    def _target(self) -> Store:
+        return Store(_tenant_db.get() or self.default_path)
+
+    def __getattr__(self, name: str):
+        return getattr(self._target(), name)
+
+
+store = TenantStore(settings.db_path)
 pipeline = Pipeline(store, settings)
 mailer = Mailer(settings)
 limiter = RateLimiter(settings.rate_limit_per_minute)
@@ -75,7 +95,11 @@ async def hardening(request: Request, call_next):
     length = request.headers.get("content-length")
     if length and length.isdigit() and int(length) > settings.max_upload_bytes + 128 * 1024:
         return PlainTextResponse("payload too large", status_code=413)
-    response = await call_next(request)
+    tenant_token = _tenant_db.set(tenant_db_from_request(request))
+    try:
+        response = await call_next(request)
+    finally:
+        _tenant_db.reset(tenant_token)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
@@ -97,6 +121,7 @@ async def hardening(request: Request, call_next):
 
 @app.on_event("startup")
 async def check_production_config() -> None:
+    registry.ensure_default()
     created = store.ensure_default_admin(settings.ui_password)
     if created is not None:
         log.info("создан администратор %s (пароль — из KPBOT_UI_PASSWORD)", created.email)
@@ -148,6 +173,25 @@ def rate_key(request: Request) -> str:
     return f"user:{user.id}" if user else f"ip:{client_ip(request)}"
 
 
+TENANT_COOKIE = "kpbot_tenant"
+_tenant_db: ContextVar[Path | None] = ContextVar("tenant_db", default=None)
+
+
+def tenant_db_from_request(request: Request) -> Path | None:
+    """База клиента по подписанной куке; None — основная база."""
+    value = request.cookies.get(TENANT_COOKIE)
+    if not value:
+        return None
+    tenant_id = user_from_session(settings.session_secret, value, 86400 * 30)
+    if not tenant_id:
+        return None
+    tenant = registry.get(tenant_id)
+    if not tenant or tenant["status"] != "active":
+        return None
+    path = Path(tenant["db_path"])
+    return path if path.exists() else None
+
+
 def client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
@@ -187,6 +231,8 @@ def page(name: str, request: Request, *, code: int = 200, **context: object) -> 
         authenticated=is_authenticated(request),
         current_user=user,
         is_admin=bool(user and user.is_admin),
+        is_owner=is_owner(request),
+        tenant_name=_tenant_name(),
         csrf_token=csrf_for(settings.session_secret, session),
         price_count=store.price_count(),
         smtp_ready=bool(mailer.enabled and mailer.host),
@@ -240,6 +286,14 @@ async def ui_login(request: Request):
     password = str(form.get("password", ""))
 
     user = store.authenticate(email, password) if email else None
+    tenant_id: str | None = None
+    if user is None and email:
+        # логин может принадлежать другому клиенту: ищем по всем базам
+        for tenant in registry.find_by_login(email):
+            candidate = Store(Path(tenant["db_path"])).authenticate(email, password)
+            if candidate is not None:
+                user, tenant_id = candidate, tenant["id"]
+                break
     if user is not None:
         token = make_user_session(settings.session_secret, user.id, settings.session_ttl_seconds)
     elif not email and constant_time_equal(password, settings.ui_password):
@@ -250,6 +304,16 @@ async def ui_login(request: Request):
         return page("login.html", request, code=401, error="неверный логин или пароль")
 
     response = RedirectResponse("/ui", status_code=status.HTTP_303_SEE_OTHER)
+    if tenant_id:
+        response.set_cookie(
+            TENANT_COOKIE,
+            make_user_session(settings.session_secret, tenant_id, 86400 * 30),
+            httponly=True,
+            samesite="lax",
+            secure=settings.public_base_url.lower().startswith("https"),
+            max_age=86400 * 30,
+            path="/",
+        )
     response.set_cookie(
         SESSION_COOKIE,
         token,
@@ -597,6 +661,106 @@ async def render_admin(request: Request, *, tab: str = "state", flash: str = "")
         flash=flash[:200],
         **admin_context(request),
     )
+
+
+def _tenant_name() -> str:
+    """Название текущего клиента — для шапки, чтобы не перепутать базы."""
+    current = _tenant_db.get()
+    if current is None:
+        return ""
+    for tenant in registry.list():
+        if Path(tenant["db_path"]) == Path(current):
+            return tenant["name"]
+    return ""
+
+
+def is_owner(request: Request) -> bool:
+    """Владелец сервиса: администратор основной базы (не клиентской)."""
+    if not is_admin_request(request):
+        return False
+    current = _tenant_db.get()
+    return current is None or current == settings.db_path
+
+
+@app.get("/ui/ops", response_class=HTMLResponse)
+async def ui_ops(request: Request, flash: str = ""):
+    if not is_authenticated(request):
+        return login_redirect(request)
+    if not is_owner(request):
+        raise HTTPException(status_code=403, detail="раздел владельца сервиса")
+    return page("ops.html", request, active_page="ops", tenants=registry.list(), flash=flash[:300])
+
+
+@app.post("/ui/ops/create")
+async def ui_ops_create(request: Request):
+    if not is_owner(request):
+        raise HTTPException(status_code=403, detail="раздел владельца сервиса")
+    form = await verified_form(request)
+    name = str(form.get("name", "")).strip()[:120]
+    email = normalize_email(str(form.get("email", "")))
+    if not name or "@" not in email:
+        return RedirectResponse(
+            f"/ui/ops?flash={quote('нужны название и почта администратора')}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    tenant = registry.create(name, settings.tenants_dir / f"{uuid.uuid4().hex[:12]}.sqlite3")
+    path = Path(tenant["db_path"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tenant_store = Store(path)
+    tenant_store.init_schema()
+
+    password = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(12))
+    try:
+        tenant_store.create_user(email=email, password=password, role=ROLE_ADMIN, name="Администратор")
+    except Exception as exc:  # noqa: BLE001 - показываем причину владельцу
+        registry.set_status(tenant["id"], "paused")
+        return RedirectResponse(
+            f"/ui/ops?flash={quote('клиент создан, но пользователь не заведён: ' + str(exc)[:100])}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    store.log_event("tenant_created", f"ui:{client_ip(request)}", f"{name} · {tenant['id']} · {email}")
+    flash = f"клиент «{name}»: вход {email} · пароль {password} (покажется один раз)"
+    return RedirectResponse(f"/ui/ops?flash={quote(flash)}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/ui/ops/switch")
+async def ui_ops_switch(request: Request):
+    if not is_owner(request):
+        raise HTTPException(status_code=403, detail="раздел владельца сервиса")
+    form = await verified_form(request)
+    tenant_id = str(form.get("tenant_id", "")).strip()
+    tenant = registry.get(tenant_id)
+    if tenant is None:
+        return RedirectResponse(f"/ui/ops?flash={quote('клиент не найден')}", status_code=status.HTTP_303_SEE_OTHER)
+
+    response = RedirectResponse("/ui", status_code=status.HTTP_303_SEE_OTHER)
+    if tenant["id"] == registry.ensure_default():
+        response.delete_cookie(TENANT_COOKIE, path="/")
+    else:
+        response.set_cookie(
+            TENANT_COOKIE,
+            make_user_session(settings.session_secret, tenant["id"], 86400 * 30),
+            httponly=True,
+            samesite="lax",
+            secure=settings.public_base_url.lower().startswith("https"),
+            max_age=86400 * 30,
+            path="/",
+        )
+    store.log_event("tenant_switch", f"ui:{client_ip(request)}", tenant["id"])
+    return response
+
+
+@app.post("/ui/ops/status")
+async def ui_ops_status(request: Request):
+    if not is_owner(request):
+        raise HTTPException(status_code=403, detail="раздел владельца сервиса")
+    form = await verified_form(request)
+    tenant_id = str(form.get("tenant_id", "")).strip()
+    status_value = str(form.get("status", "active")).strip()
+    registry.set_status(tenant_id, status_value)
+    store.log_event("tenant_status", f"ui:{client_ip(request)}", f"{tenant_id} → {status_value}")
+    return RedirectResponse(f"/ui/ops?flash={quote('статус обновлён')}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.get("/ui/admin", response_class=HTMLResponse)
