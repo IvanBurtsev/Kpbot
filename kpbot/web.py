@@ -472,6 +472,118 @@ async def render_admin(request: Request, *, tab: str = "state", flash: str = "")
     )
 
 
+# ---------- подключение (визард) ----------
+
+
+def setup_state() -> dict:
+    """Три условия готовности: реквизиты, прайс, почта."""
+    company = pipeline.company()
+    saved = store.get_settings()
+    price = store.price_count()
+    mail_ready = bool(mailer.enabled and mailer.host)
+    company_ready = bool(saved.get("company_name") or (company.get("name") and company["name"] != settings.company_name))
+    done = company_ready and price > 0 and mail_ready
+    return {
+        "company_ready": company_ready,
+        "price_count": price,
+        "mail_ready": mail_ready,
+        "done": done,
+        "company": company,
+        "smtp_host": settings.smtp_host,
+        "smtp_port": settings.smtp_port,
+        "smtp_user": settings.smtp_user,
+        "imap_user": settings.imap_user,
+        "imap_folder": settings.imap_folder,
+    }
+
+
+@app.get("/ui/setup", response_class=HTMLResponse)
+async def ui_setup(request: Request, flash: str = ""):
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    return page("setup.html", request, active_page="setup", state=setup_state(), flash=flash[:200])
+
+
+@app.post("/ui/setup/company")
+async def ui_setup_company(request: Request):
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    form = await verified_form(request)
+    allowed = ("name", "inn", "kpp", "address", "phone", "email", "signer", "signature", "kp_intro")
+    store.set_settings({f"company_{key}": str(form.get(key, "")).strip()[:500] for key in allowed})
+    store.log_event("setup_company", f"ui:{client_ip(request)}", str(form.get("name", ""))[:120])
+    return RedirectResponse(
+        f"/ui/setup?flash={quote('шаг 1 готов: реквизиты сохранены')}", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
+@app.post("/ui/setup/price")
+async def ui_setup_price(request: Request):
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    form = await request.form()
+    if not verify_csrf(settings.session_secret, session_of(request), str(form.get(CSRF_FIELD, ""))):
+        return PlainTextResponse("csrf failed", status_code=403)
+    upload = form.get("file")
+    if not isinstance(upload, StarletteUploadFile):
+        return RedirectResponse(
+            f"/ui/setup?flash={quote('файл не выбран')}", status_code=status.HTTP_303_SEE_OTHER
+        )
+    filename = (upload.filename or "").lower()
+    if not filename.endswith((".xlsx", ".csv")):
+        return RedirectResponse(
+            f"/ui/setup?flash={quote('нужен .xlsx или .csv')}", status_code=status.HTTP_303_SEE_OTHER
+        )
+    raw = await upload.read(settings.max_upload_bytes + 1)
+    if len(raw) > settings.max_upload_bytes:
+        return RedirectResponse(
+            f"/ui/setup?flash={quote('файл больше 2 МБ')}", status_code=status.HTTP_303_SEE_OTHER
+        )
+    suffix = ".xlsx" if filename.endswith(".xlsx") else ".csv"
+    temp_path = settings.data_dir / f"price_upload{suffix}"
+    temp_path.write_bytes(raw)
+    try:
+        items = load_price_items(temp_path)
+    except ValidationError as exc:
+        temp_path.unlink(missing_ok=True)
+        return RedirectResponse(f"/ui/setup?flash={quote(str(exc))}", status_code=status.HTTP_303_SEE_OTHER)
+    except Exception as exc:  # noqa: BLE001 - файл клиента может быть любым
+        temp_path.unlink(missing_ok=True)
+        log.warning("прайс в визарде не разобран: %s", exc)
+        return RedirectResponse(
+            f"/ui/setup?flash={quote('файл не разобран: ' + str(exc)[:120])}", status_code=status.HTTP_303_SEE_OTHER
+        )
+    count = store.replace_price_items(items)
+    store.log_event("setup_price", f"ui:{client_ip(request)}", f"позиций {count}, файл {filename}")
+    return RedirectResponse(
+        f"/ui/setup?flash={quote(f'шаг 2 готов: прайс {count} позиций')}", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
+@app.post("/ui/setup/mail")
+async def ui_setup_mail(request: Request):
+    """Проверяет почтовые настройки, ничего не меняя."""
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    await verified_form(request)
+    from .mailer import MailError, check_connection
+
+    try:
+        message = check_connection(settings)
+    except MailError as exc:
+        return RedirectResponse(
+            f"/ui/setup?flash={quote('почта: ' + str(exc)[:160])}", status_code=status.HTTP_303_SEE_OTHER
+        )
+    store.log_event("setup_mail", f"ui:{client_ip(request)}", message[:160])
+    return RedirectResponse(
+        f"/ui/setup?flash={quote('шаг 3 готов: ' + message[:140])}", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
 @app.get("/ui/admin", response_class=HTMLResponse)
 async def ui_admin(request: Request, tab: str = "state", flash: str = ""):
     return await render_admin(request, tab=tab, flash=flash)

@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Подключение · kpbot{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Подключение сервиса</h1>
+  {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
+
+  {% if state.done %}
+  <p class="ok"><b>Готово — можно принимать заявки.</b> Все три шага пройдены.</p>
+  {% else %}
+  <p class="muted small">Три шага, каждый занимает минуту. Пока шаг не пройден, сервис работает,
+    но КП уходят без ваших реквизитов или без прайса.</p>
+  {% endif %}
+
+  <div class="stats">
+    <div class="stat">
+      <div class="label">1. Реквизиты</div>
+      <div class="value">{% if state.company_ready %}<span class="ok">готово</span>{% else %}<span class="warn">нужно</span>{% endif %}</div>
+    </div>
+    <div class="stat">
+      <div class="label">2. Прайс</div>
+      <div class="value">{{ state.price_count }} <small>позиций</small></div>
+    </div>
+    <div class="stat">
+      <div class="label">3. Почта</div>
+      <div class="value">{% if state.mail_ready %}<span class="ok">готово</span>{% else %}<span class="warn">нужно</span>{% endif %}</div>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Шаг 1. Реквизиты компании</h2>
+  <p class="muted small">Попадут в шапку КП и подпись письма. Без них КП уходит от «Ромашки».</p>
+  <form method="post" action="/ui/setup/company" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Название компании
+      <input type="text" name="name" value="{{ state.company.name }}" required maxlength="200">
+    </label>
+    <div class="row">
+      <label>ИНН <input type="text" name="inn" value="{{ state.company.inn }}" maxlength="12"></label>
+      <label>КПП <input type="text" name="kpp" value="{{ state.company.kpp }}" maxlength="9"></label>
+    </div>
+    <label>Адрес <input type="text" name="address" value="{{ state.company.address }}" maxlength="300"></label>
+    <div class="row">
+      <label>Телефон <input type="text" name="phone" value="{{ state.company.phone }}" maxlength="60"></label>
+      <label>Почта для клиентов <input type="email" name="email" value="{{ state.company.email }}" maxlength="120"></label>
+    </div>
+    <label>Подписант <input type="text" name="signer" value="{{ state.company.signer }}" maxlength="200"></label>
+    <button class="primary" type="submit">Сохранить реквизиты</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Шаг 2. Прайс-лист</h2>
+  <p class="muted small">
+    Excel или CSV из 1С. Колонки ищутся по смыслу: Код/Артикул, Наименование/Номенклатура,
+    Единица, Цена. Загрузка заменяет текущий список.
+  </p>
+  <form method="post" action="/ui/setup/price" enctype="multipart/form-data" class="row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="file" name="file" accept=".xlsx,.csv" required>
+    <button class="primary" type="submit">Загрузить прайс</button>
+  </form>
+  <p class="muted small">Сейчас в базе: <b>{{ state.price_count }}</b> позиций.</p>
+</section>
+
+<section class="card">
+  <h2>Шаг 3. Почта</h2>
+  {% if state.mail_ready %}
+  <p class="small">Настроено: <code>{{ state.smtp_user or "—" }}</code> через
+    <code>{{ state.smtp_host }}:{{ state.smtp_port }}</code></p>
+  {% else %}
+  <p class="small warn">Отправка писем не настроена. Нужны данные ящика:
+    сервер, порт, логин и пароль приложения.</p>
+  {% endif %}
+  <p class="muted small">
+    Приём заявок: письма берутся из папки <code>{{ state.imap_folder }}</code>
+    ящика <code>{{ state.imap_user or "не задан" }}</code>.
+  </p>
+  <form method="post" action="/ui/setup/mail">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Проверить почту</button>
+  </form>
+  {% if not state.mail_ready %}
+  <p class="muted small">
+    Почтовые данные хранятся в настройках сервера, а не в базе — так пароль не попадает
+    в резервные копии. Их прописывает администратор командой
+    <code>python -m kpbot.cli smtp-setup</code>, после чего эта кнопка покажет результат.
+  </p>
+  {% endif %}
+</section>
+{% endblock %}
