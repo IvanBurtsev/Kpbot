@@ -112,6 +112,18 @@ CREATE TABLE IF NOT EXISTS users(
     created_at    TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS outbox(
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    rfq_id     TEXT NOT NULL,
+    to_addr    TEXT NOT NULL,
+    subject    TEXT NOT NULL,
+    body       TEXT NOT NULL,
+    attempts   INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    sent_at    TEXT
+);
+
 CREATE TABLE IF NOT EXISTS learned(
     key        TEXT PRIMARY KEY,
     sku        TEXT NOT NULL,
@@ -596,6 +608,47 @@ class Store:
                 (rfq_id, limit),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    # ---------- очередь отправки ----------
+
+    def enqueue_message(self, *, rfq_id: str, to_addr: str, subject: str, body: str, error: str = "") -> int:
+        """Письмо, которое не ушло: сохраняем, чтобы не потерять, и пробуем позже."""
+        with closing(self._connect()) as conn, conn:
+            cursor = conn.execute(
+                "INSERT INTO outbox(rfq_id, to_addr, subject, body, attempts, last_error, created_at)"
+                " VALUES (?, ?, ?, ?, 1, ?, ?)",
+                (rfq_id, to_addr, subject[:300], body, error[:300], utcnow()),
+            )
+            return int(cursor.lastrowid)
+
+    def pending_messages(self, limit: int = 20) -> list[dict]:
+        limit = max(1, min(int(limit), 100))
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT * FROM outbox WHERE sent_at IS NULL AND attempts < 5"
+                " ORDER BY id LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_sent(self, message_id: int) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute("UPDATE outbox SET sent_at = ? WHERE id = ?", (utcnow(), message_id))
+
+    def mark_attempt_failed(self, message_id: int, error: str) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "UPDATE outbox SET attempts = attempts + 1, last_error = ? WHERE id = ?",
+                (error[:300], message_id),
+            )
+
+    def outbox_stats(self) -> dict:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total, SUM(CASE WHEN sent_at IS NULL THEN 1 ELSE 0 END) AS pending"
+                " FROM outbox"
+            ).fetchone()
+        return {"total": int(row["total"] or 0), "pending": int(row["pending"] or 0)}
 
     # ---------- обучение на правках ----------
 

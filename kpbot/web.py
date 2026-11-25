@@ -998,8 +998,15 @@ async def ui_rfq_send(request: Request, rfq_id: str):
     try:
         mailer.send(message, to=to)
     except MailError as exc:
+        store.enqueue_message(
+            rfq_id=rfq_id,
+            to_addr=to,
+            subject=str(message["Subject"]),
+            body=body,
+            error=str(exc),
+        )
         store.log(rfq_id, "send_failed", f"ui:{client_ip(request)}", f"{to}: {exc}"[:300])
-        return back_to(rfq_id, f"не отправлено: {exc}")
+        return back_to(rfq_id, f"не отправлено: {exc}. Письмо в очереди, повторю автоматически")
 
     store.log(
         rfq_id,

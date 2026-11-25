@@ -627,6 +627,51 @@ def cmd_smtp_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_retry_outbox(args: argparse.Namespace) -> int:
+    """Повторяет отправку писем, которые не ушли с первого раза."""
+    from .mailer import MailError, Mailer, build_kp_message, load_attachments, reply_subject
+
+    store = Store(settings.db_path)
+    mailer = Mailer(settings)
+    pending = store.pending_messages(args.limit)
+    if not pending:
+        print("очередь пуста")
+        return 0
+
+    sent = failed = 0
+    for item in pending:
+        rfq = store.get_rfq(item["rfq_id"])
+        if rfq is None:
+            store.mark_attempt_failed(item["id"], "заявка удалена")
+            failed += 1
+            continue
+        attachments = load_attachments(settings.out_dir, item["rfq_id"], short=item["rfq_id"][:8])
+        message = build_kp_message(
+            sender=item["to_addr"],
+            from_addr=mailer.from_addr or settings.smtp_user or "no-reply@localhost",
+            subject=item["subject"] or reply_subject(str(rfq.get("subject", ""))),
+            body=item["body"],
+            attachments=attachments,
+            reply_to=settings.smtp_user or "",
+        )
+        try:
+            mailer.send(message, to=item["to_addr"])
+        except MailError as exc:
+            store.mark_attempt_failed(item["id"], str(exc))
+            store.log(item["rfq_id"], "send_retry_failed", "cli", f"{item['to_addr']}: {exc}"[:300])
+            print(f"  не ушло: {item['to_addr']} — {exc}")
+            failed += 1
+            continue
+        store.mark_sent(item["id"])
+        store.log(item["rfq_id"], "sent", "cli:retry", f"кому {item['to_addr']}, вложений {len(attachments)}")
+        print(f"  отправлено: {item['to_addr']}")
+        sent += 1
+
+    stats = store.outbox_stats()
+    print(f"итог: отправлено {sent}, не удалось {failed}, в очереди осталось {stats['pending']}")
+    return 0 if failed == 0 else 1
+
+
 def cmd_alert(args: argparse.Namespace) -> int:
     """Отправляет служебное сообщение в подключённые каналы (сторож, cron, деплой)."""
     from .notify import MaxConfig, NotifyError, TelegramConfig, send_max, send_telegram
@@ -933,6 +978,10 @@ def main(argv: list[str] | None = None) -> int:
     user_add.add_argument("--name", default="")
     user_add.add_argument("--password", default="", help="необязательно: иначе спросим скрыто")
     user_add.set_defaults(func=cmd_user_add)
+
+    retry = sub.add_parser("retry-outbox", help="повторить отправку писем из очереди")
+    retry.add_argument("--limit", type=int, default=20)
+    retry.set_defaults(func=cmd_retry_outbox)
 
     alert = sub.add_parser("alert", help="служебное сообщение в Telegram и MAX")
     alert.add_argument("--text", default="")
