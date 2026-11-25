@@ -919,6 +919,25 @@ async def ui_prices_stock(request: Request):
     )
 
 
+def stock_for_lines(lines: list[dict], stock: dict, items) -> dict[int, dict]:
+    """Остаток по строке заявки: сначала по артикулу, потом по наименованию.
+
+    Отчёты 1С часто идут без артикула — тогда ключом в файле остатков
+    становится наименование, а в заявке оно уже сопоставлено с прайсом.
+    """
+    by_name = {item.name.strip().lower(): item.sku for item in items}
+    result: dict[int, dict] = {}
+    for line in lines:
+        sku = line.get("matched_sku")
+        entry = stock.get(sku) if sku else None
+        if entry is None:
+            name = (line.get("matched_name") or "").strip().lower()
+            if name:
+                entry = stock.get(by_name.get(name, "")) or stock.get(name)
+        result[line["idx"]] = entry or {}
+    return result
+
+
 @app.get("/ui/rfq/{rfq_id}", response_class=HTMLResponse)
 async def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
     if not is_authenticated(request):
@@ -951,7 +970,7 @@ async def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
         llm_usage=store.llm_usage_for(rfq_id),
         timing=store.rfq_timing(rfq_id),
         sends=store.sent_history(rfq_id),
-        stock=store.stock_map(),
+        stock=stock_for_lines(rfq["lines"], store.stock_map(), store.price_items()),
         assignee=store.user_by_id(rfq["assignee"]) if rfq.get("assignee") else None,
         users=store.users() if is_admin_request else [],
         decisions=store.decisions(rfq_id),
