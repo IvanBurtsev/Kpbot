@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -145,6 +146,7 @@ class Pipeline:
             auto_threshold=self.cfg.match_auto_threshold,
             ambiguous_threshold=self.cfg.match_ambiguous_threshold,
         )
+        lines = self._drop_subsets_of_matched(lines)
         lines = self._dedupe_by_sku(lines)
         quote = price_quote(
             lines,
@@ -285,6 +287,43 @@ class Pipeline:
         )
         detail = ", ".join(f"{channel}={'ok' if ok else 'fail'}" for channel, ok in sent.items())
         self.store.log(rfq_id, "notified" if any(sent.values()) else "notify_failed", "system", detail)
+
+    def _drop_subsets_of_matched(self, lines: list[RfqLine]) -> list[RfqLine]:
+        """Выкидывает обрубки: строка без совпадения, чьи слова целиком входят
+        в другую строку с тем же количеством и найденной позицией.
+
+        Модель иногда дублирует «Шпаклевка финишная» отдельно от
+        «Шпаклевка финишная 25 кг» — человеку такой мусор показывать незачем.
+        """
+        result: list[RfqLine] = []
+        for line in lines:
+            if line.matched_sku:
+                result.append(line)
+                continue
+            words = self._name_words(line.raw_text)
+            duplicate = False
+            if words:
+                for other in lines:
+                    if other is line or not other.matched_sku:
+                        continue
+                    if words <= self._name_words(other.raw_text):
+                        duplicate = True
+                        break
+            if not duplicate:
+                result.append(line)
+        return result
+
+    UNITS = frozenset({"шт", "штук", "кг", "м", "м2", "м3", "меш", "мешок", "мешков", "уп", "упак",
+                       "л", "литр", "компл", "рул", "рулон", "пар", "пач", "пачка", "км", "тонн", "т"})
+
+    @classmethod
+    def _name_words(cls, text: str) -> set[str]:
+        """Слова названия без чисел и единиц: «Шпаклевка финишная — 10 меш» → {шпаклевка, финишная}."""
+        words = re.split(r"[^0-9a-zа-яё]+", (text or "").lower())
+        return {
+            word for word in words
+            if len(word) > 1 and not word.isdigit() and word not in cls.UNITS
+        }
 
     @staticmethod
     def _dedupe_by_sku(lines: list[RfqLine]) -> list[RfqLine]:

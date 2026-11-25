@@ -525,6 +525,17 @@ class Store:
             "median_wait_seconds": timing.get("median_wait_seconds"),
         }
 
+    def purge_demo_rfqs(self) -> int:
+        """Удаляет заявки демо-стенда (адреса @demo.local), не трогая настоящие."""
+        with closing(self._connect()) as conn, conn:
+            ids = [row["id"] for row in conn.execute(
+                "SELECT id FROM rfqs WHERE sender LIKE '%@demo.local%' OR sender LIKE '%demo.local>%'"
+            ).fetchall()]
+            for rfq_id in ids:
+                conn.execute("DELETE FROM artifacts WHERE rfq_id = ?", (rfq_id,))
+                conn.execute("DELETE FROM rfqs WHERE id = ?", (rfq_id,))
+        return len(ids)
+
     def stats(self) -> dict:
         with closing(self._connect()) as conn:
             row = conn.execute(

@@ -537,6 +537,49 @@ def cmd_smtp_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_demo_stand(args: argparse.Namespace) -> int:
+    """Демо-стенд на номенклатуре клиента: прайс из 1С + сгенерированные заявки."""
+    from .demo import build_letters, sender_address
+    from .pricelist import load_price_items
+
+    settings.ensure_dirs()
+    store = Store(settings.db_path)
+
+    if args.price:
+        path = Path(args.price)
+        items = load_price_items(path)
+        count = store.replace_price_items(items)
+        print(f"прайс: {count} позиций из {path.name}")
+    else:
+        count = store.price_count()
+        if not count:
+            print("прайса нет: укажите --price файл из 1С или запустите seed")
+            return 2
+        print(f"прайс: {count} позиций (уже загружен)")
+        items = store.price_items()
+
+    if args.reset:
+        removed = store.purge_demo_rfqs()
+        print(f"удалено старых демо-заявок: {removed}")
+
+    pipeline = Pipeline(store, settings)
+    letters = build_letters(items, count=args.letters, seed=args.seed)
+    print(f"заявок: {len(letters)}\n")
+    total = 0.0
+    for letter in letters:
+        result = pipeline.process_text(letter.body, sender=letter.sender, subject=letter.subject)
+        total += float(result.total)
+        print(f"--- {letter.subject} · {sender_address(letter.sender)}")
+        print(f"    {result.rfq_id[:8]} · {result.status} · строк {result.lines} · "
+              f"в расчёте {result.matched} · итого {result.total} ₽")
+        if result.excluded:
+            print(f"    ! вне расчёта: {', '.join(result.excluded)}")
+    print(f"\nитого по стенду: {total:.2f} ₽, заявок {len(letters)}")
+    if settings.public_base_url:
+        print(f"смотреть: {settings.public_base_url.rstrip('/')}/ui")
+    return 0
+
+
 def cmd_user_add(args: argparse.Namespace) -> int:
     """Добавить менеджера или администратора. Пароль спрашиваем скрыто."""
     import getpass
@@ -726,6 +769,13 @@ def main(argv: list[str] | None = None) -> int:
 
     seed = sub.add_parser("seed", help="создать демо-прайс и письма")
     seed.set_defaults(func=cmd_seed)
+
+    demo_stand = sub.add_parser("demo-stand", help="демо-стенд на номенклатуре клиента")
+    demo_stand.add_argument("--price", default="", help="файл выгрузки из 1С (xlsx/csv)")
+    demo_stand.add_argument("--letters", type=int, default=6)
+    demo_stand.add_argument("--seed", type=int, default=42)
+    demo_stand.add_argument("--reset", action="store_true", help="удалить прежние демо-заявки")
+    demo_stand.set_defaults(func=cmd_demo_stand)
 
     demo = sub.add_parser("demo", help="прогнать сквозной сценарий на демо-письмах")
     demo.add_argument("--fresh", action="store_true", help="удалить базу и артефакты перед прогоном")
