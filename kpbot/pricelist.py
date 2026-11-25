@@ -233,3 +233,66 @@ def _read_xlsx_with_header(path: Path, *, max_rows: int) -> tuple[list[object], 
         return header, rows
     finally:
         wb.close()
+
+def load_stock_items(path: Path) -> list[tuple[str, str, str, str]]:
+    """Остатки из выгрузки 1С: артикул, количество, единица, склад.
+
+    Понимает отчёты «Остатки товаров» и «Ведомость по товарам на складах»:
+    колонки ищутся по смыслу, лишние (цена, сумма) игнорируются.
+    """
+    if not path.exists():
+        raise ValidationError(f"файл остатков не найден: {path}")
+
+    suffix = path.suffix.lower()
+    header, rows = (
+        _read_xlsx_with_header(path, max_rows=100_000)
+        if suffix == ".xlsx"
+        else _read_csv_with_header(path, max_rows=100_000)
+    )
+    names = [str(cell or "").strip().lower().replace("ё", "е") for cell in header] if header else []
+
+    def find(*aliases: str) -> int | None:
+        for index, name in enumerate(names):
+            cleaned = name.replace(".", "").replace(" ", "")
+            for alias in aliases:
+                if cleaned == alias or cleaned.startswith(alias):
+                    return index
+        return None
+
+    sku_index = find("артикул", "код", "sku", "номенклатуракод")
+    qty_index = find("остаток", "количество", "колво", "qty")
+    unit_index = find("единица", "ед", "unit")
+    warehouse_index = find("склад", "warehouse")
+
+    if qty_index is None:
+        raise ValidationError("в файле не найдена колонка с остатком или количеством")
+
+    result: list[tuple[str, str, str, str]] = []
+    for row in rows:
+        if qty_index >= len(row):
+            continue
+        raw_qty = str(row[qty_index] or "").replace(" ", "").replace(",", ".").strip()
+        if not raw_qty:
+            continue
+        try:
+            qty = Decimal(raw_qty)
+        except Exception:
+            continue
+        sku = ""
+        if sku_index is not None and sku_index < len(row):
+            sku = str(row[sku_index] or "").strip()
+        name = next(
+            (str(cell or "").strip() for i, cell in enumerate(row)
+             if i not in (sku_index, qty_index, unit_index, warehouse_index) and str(cell or "").strip()),
+            "",
+        )
+        key = sku or name
+        if not key:
+            continue
+        unit = str(row[unit_index] or "").strip() if unit_index is not None and unit_index < len(row) else ""
+        warehouse = str(row[warehouse_index] or "").strip() if warehouse_index is not None and warehouse_index < len(row) else ""
+        result.append((key, str(qty), unit, warehouse))
+
+    if not result:
+        raise ValidationError("остатки не распознаны: нет строк с количеством")
+    return result

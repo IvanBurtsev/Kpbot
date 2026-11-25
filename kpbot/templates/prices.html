@@ -22,6 +22,19 @@
     <input type="file" name="file" accept=".xlsx,.csv" required>
     <button type="submit" class="primary mini">Загрузить прайс</button>
   </form>
+  {% if can_edit %}
+  <h3>Остатки</h3>
+  <p class="muted small">
+    Выгрузка из 1С («Остатки товаров»): артикул и количество. Показываются в заявке,
+    нехватка подсвечивается.
+    {% if stock_count %}Сейчас: {{ stock_count }} позиций{% if stock_updated_at %}, обновлено {{ stock_updated_at[:16].replace("T", " ") }}{% endif %}.{% endif %}
+  </p>
+  <form method="post" action="/ui/prices/stock" enctype="multipart/form-data" class="row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="file" name="file" accept=".xlsx,.csv" required>
+    <button type="submit" class="mini">Загрузить остатки</button>
+  </form>
+  {% endif %}
   <p class="muted small">
     Поддерживается выгрузка из 1С и наш шаблон: колонки ищутся по смыслу
     (Код/Артикул, Наименование/Номенклатура, Единица, Цена). Загрузка заменяет весь список.

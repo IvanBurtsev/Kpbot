@@ -112,6 +112,14 @@ CREATE TABLE IF NOT EXISTS users(
     created_at    TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS stock(
+    sku        TEXT PRIMARY KEY,
+    qty        TEXT NOT NULL,
+    unit       TEXT NOT NULL DEFAULT '',
+    warehouse  TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS outbox(
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     rfq_id     TEXT NOT NULL,
@@ -608,6 +616,33 @@ class Store:
                 (rfq_id, limit),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    # ---------- остатки ----------
+
+    def replace_stock(self, items: list[tuple[str, str, str, str]]) -> int:
+        """Заменяет остатки: (артикул, количество, единица, склад)."""
+        now = utcnow()
+        with closing(self._connect()) as conn, conn:
+            conn.execute("DELETE FROM stock")
+            conn.executemany(
+                "INSERT INTO stock(sku, qty, unit, warehouse, updated_at) VALUES (?, ?, ?, ?, ?)",
+                [(sku, qty, unit, warehouse, now) for sku, qty, unit, warehouse in items],
+            )
+        return len(items)
+
+    def stock_map(self) -> dict[str, dict]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute("SELECT sku, qty, unit, warehouse, updated_at FROM stock").fetchall()
+        return {row["sku"]: dict(row) for row in rows}
+
+    def stock_count(self) -> int:
+        with closing(self._connect()) as conn:
+            return int(conn.execute("SELECT COUNT(*) AS c FROM stock").fetchone()["c"])
+
+    def stock_updated_at(self) -> str:
+        with closing(self._connect()) as conn:
+            row = conn.execute("SELECT MAX(updated_at) AS t FROM stock").fetchone()
+        return row["t"] or ""
 
     # ---------- очередь отправки ----------
 

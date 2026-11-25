@@ -81,7 +81,7 @@
   <table class="cards-table lines-table">
     <thead>
       <tr><th>#</th><th>Как написано в письме</th><th class="num">Кол-во</th><th>Ед.</th>
-          <th>Совпадение</th><th class="num">Score</th><th>Статус</th><th>Действия</th></tr>
+          <th>Совпадение</th><th class="num">Score</th><th class="num">Остаток</th><th>Статус</th><th>Действия</th></tr>
     </thead>
     <tbody>
       {% for l in rfq.lines %}
@@ -92,6 +92,7 @@
         <td data-label="Ед.">{{ l.unit or "—" }}</td>
         <td data-label="Совпадение" class="small">{{ l.matched_name or "—" }}</td>
         <td data-label="Score" class="num">{{ "%.2f"|format(l.score) }}</td>
+        <td data-label="Остаток" class="num">{% set s = stock.get(l.matched_sku) if l.matched_sku else none %}{% if s %}{% if l.qty and l.qty|float > s.qty|float %}<span class="warn" title="на складе меньше">{{ s.qty }}</span>{% else %}{{ s.qty }}{% endif %}{% else %}—{% endif %}</td>
         <td data-label="Статус"><span class="badge {{ line_css.get(l.status, '') }}">{{ labels.get(l.status, l.status) }}</span></td>
         <td data-label="Действия" class="edit">
           <form method="post" action="/ui/rfq/{{ rfq.id }}/lines/{{ l.idx }}/update" class="line-form">

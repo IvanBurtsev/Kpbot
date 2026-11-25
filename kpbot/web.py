@@ -33,7 +33,7 @@ from .domain import LineStatus, RfqLine, RfqStatus, ValidationError, quantity
 from .export import build_rfq_xlsx
 from .mailer import MailError, Mailer, build_kp_message, load_attachments, reply_subject
 from .pipeline import NotAnRfq, Pipeline, build_reply_text_from_store
-from .pricelist import load_price_items
+from .pricelist import load_price_items, load_stock_items
 from .render import render_template
 from .security import (
     CSRF_FIELD,
@@ -428,6 +428,9 @@ async def ui_prices(request: Request, q: str = "", flash: str = ""):
         request,
         active_page="prices",
         items=items[:300],
+        stock=store.stock_map(),
+        stock_count=store.stock_count(),
+        stock_updated_at=store.stock_updated_at(),
         total=store.price_count(),
         shown=len(items),
         query=q.strip(),
@@ -873,6 +876,49 @@ async def ui_admin_events(request: Request):
     return await render_admin(request, tab="events")
 
 
+@app.post("/ui/prices/stock")
+async def ui_prices_stock(request: Request):
+    """Загрузка остатков из выгрузки 1С: подсказывает, чего не хватает."""
+    if not is_authenticated(request):
+        return login_redirect(request)
+    if not is_admin_request(request):
+        return PlainTextResponse("остатки загружает только администратор", status_code=403)
+
+    form = await request.form()
+    if not verify_csrf(settings.session_secret, session_of(request), str(form.get(CSRF_FIELD, ""))):
+        return PlainTextResponse("csrf failed", status_code=403)
+
+    upload = form.get("file")
+    if not isinstance(upload, StarletteUploadFile) or not upload.filename:
+        return RedirectResponse("/ui/prices?flash=файл+не+выбран", status_code=status.HTTP_303_SEE_OTHER)
+
+    filename = (upload.filename or "").lower()
+    if not filename.endswith((".xlsx", ".csv")):
+        return RedirectResponse(
+            f"/ui/prices?flash={quote('нужен .xlsx или .csv')}", status_code=status.HTTP_303_SEE_OTHER
+        )
+    raw = await upload.read(settings.max_upload_bytes + 1)
+    if len(raw) > settings.max_upload_bytes:
+        return RedirectResponse(
+            f"/ui/prices?flash={quote('файл больше 2 МБ')}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    suffix = ".xlsx" if filename.endswith(".xlsx") else ".csv"
+    temp_path = settings.data_dir / f"stock_upload{suffix}"
+    temp_path.write_bytes(raw)
+    try:
+        items = load_stock_items(temp_path)
+    except ValidationError as exc:
+        temp_path.unlink(missing_ok=True)
+        return RedirectResponse(f"/ui/prices?flash={quote(str(exc))}", status_code=status.HTTP_303_SEE_OTHER)
+
+    count = store.replace_stock(items)
+    store.log_event("stock_upload", f"ui:{client_ip(request)}", f"позиций {count}, файл {filename}")
+    return RedirectResponse(
+        f"/ui/prices?flash={quote(f'остатки обновлены: {count} позиций')}", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
 @app.get("/ui/rfq/{rfq_id}", response_class=HTMLResponse)
 async def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
     if not is_authenticated(request):
@@ -905,6 +951,7 @@ async def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
         llm_usage=store.llm_usage_for(rfq_id),
         timing=store.rfq_timing(rfq_id),
         sends=store.sent_history(rfq_id),
+        stock=store.stock_map(),
         assignee=store.user_by_id(rfq["assignee"]) if rfq.get("assignee") else None,
         users=store.users() if is_admin_request else [],
         decisions=store.decisions(rfq_id),
