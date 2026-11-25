@@ -33,9 +33,12 @@ from .security import (
     constant_time_equal,
     csrf_for,
     make_session,
+    make_user_session,
+    user_from_session,
     verify_csrf,
     verify_session,
 )
+from .users import ROLE_ADMIN, User
 from .store import Store
 
 from .logs import mask, register_settings_secrets, setup_logging
@@ -85,6 +88,9 @@ async def hardening(request: Request, call_next):
 
 @app.on_event("startup")
 async def check_production_config() -> None:
+    created = store.ensure_default_admin(settings.ui_password)
+    if created is not None:
+        log.info("создан администратор %s (пароль — из KPBOT_UI_PASSWORD)", created.email)
     if not settings.is_production:
         return
     problems = settings.production_problems()
@@ -112,15 +118,29 @@ def session_of(request: Request) -> str | None:
     return request.cookies.get(SESSION_COOKIE)
 
 
+def current_user(request: Request) -> User | None:
+    """Кто пришёл: из подписанной куки. None — не авторизован."""
+    user_id = user_from_session(settings.session_secret, session_of(request), settings.session_ttl_seconds)
+    if user_id:
+        return store.user_by_id(user_id)
+    return None
+
+
 def is_authenticated(request: Request) -> bool:
+    if current_user(request) is not None:
+        return True
+    # совместимость: одиночный пароль из конфигурации работает как вход администратора
     return verify_session(settings.session_secret, session_of(request), settings.session_ttl_seconds)
 
 
 def page(name: str, request: Request, *, code: int = 200, **context: object) -> HTMLResponse:
     session = session_of(request)
+    user = current_user(request)
     body = render_template(
         name,
         authenticated=is_authenticated(request),
+        current_user=user,
+        is_admin=bool(user and user.is_admin),
         csrf_token=csrf_for(settings.session_secret, session),
         price_count=store.price_count(),
         **context,
@@ -144,10 +164,13 @@ async def root() -> RedirectResponse:
 async def ui_inbox(request: Request, flash: str = ""):
     if not is_authenticated(request):
         return login_redirect(request)
+    user = current_user(request)
+    rfqs = store.list_rfqs(100, assignee=None if (user is None or user.is_admin) else user.id)
     return page(
         "inbox.html",
         request,
-        rfqs=store.list_rfqs(100),
+        rfqs=rfqs,
+        users=store.users() if (user and user.is_admin) else [],
         flash=flash[:200],
     )
 
@@ -164,14 +187,23 @@ async def ui_login(request: Request):
     if not limiter.allow(f"login:{client_ip(request)}"):
         return page("login.html", request, code=429, error="слишком много попыток, подождите минуту")
     form = await request.form()
+    email = str(form.get("email", "")).strip()
     password = str(form.get("password", ""))
-    if not constant_time_equal(password, settings.ui_password):
-        log.warning("неудачный вход с %s", client_ip(request))
-        return page("login.html", request, code=401, error="неверный пароль")
+
+    user = store.authenticate(email, password) if email else None
+    if user is not None:
+        token = make_user_session(settings.session_secret, user.id, settings.session_ttl_seconds)
+    elif not email and constant_time_equal(password, settings.ui_password):
+        # вход администратора общим паролем (обратная совместимость)
+        token = make_session(settings.session_secret, settings.session_ttl_seconds)
+    else:
+        log.warning("неудачный вход с %s (%s)", client_ip(request), email or "без логина")
+        return page("login.html", request, code=401, error="неверный логин или пароль")
+
     response = RedirectResponse("/ui", status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
         SESSION_COOKIE,
-        make_session(settings.session_secret, settings.session_ttl_seconds),
+        token,
         httponly=True,
         samesite="lax",
         max_age=settings.session_ttl_seconds,
@@ -228,9 +260,19 @@ async def ui_upload(request: Request, file: UploadFile):
 async def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
     if not is_authenticated(request):
         return login_redirect(request)
+    user = current_user(request)
+    is_admin_request = bool(user and user.is_admin)
     rfq = store.get_rfq(rfq_id)
     if rfq is None:
         return page("inbox.html", request, code=404, rfqs=store.list_rfqs(100), error="заявка не найдена")
+    if not is_admin_request and user is not None and rfq.get("assignee") not in (None, "", user.id):
+        return page(
+            "inbox.html",
+            request,
+            code=403,
+            rfqs=store.list_rfqs(100, assignee=user.id),
+            error="заявка закреплена за другим менеджером",
+        )
     quote = store.get_quote(rfq_id)
     reply_text = build_reply_text_from_store(rfq, quote, rfq_id) if quote else ""
     artifacts = {a["kind"] for a in store.artifacts(rfq_id)}
@@ -244,6 +286,8 @@ async def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
         items=store.price_items(),
         llm_usage=store.llm_usage_for(rfq_id),
         timing=store.rfq_timing(rfq_id),
+        assignee=store.user_by_id(rfq["assignee"]) if rfq.get("assignee") else None,
+        users=store.users() if is_admin_request else [],
         decisions=store.decisions(rfq_id),
         flash=flash[:200],
     )
@@ -471,6 +515,28 @@ async def ui_line_add(request: Request, rfq_id: str):
         )
     )
     return save_edits(rfq_id, lines, f"ui:{client_ip(request)}", f"добавлена позиция {item.sku}")
+
+
+@app.post("/ui/rfq/{rfq_id}/assign")
+async def ui_rfq_assign(request: Request, rfq_id: str):
+    """Менеджер берёт свободную заявку себе; администратор назначает любому."""
+    if not is_authenticated(request):
+        return login_redirect(request)
+    form = await verified_form(request)
+    user = current_user(request)
+    rfq = store.get_rfq(rfq_id)
+    if rfq is None:
+        raise HTTPException(status_code=404, detail="заявка не найдена")
+
+    target = str(form.get("user_id", "")).strip() or (user.id if user else "")
+    if not target:
+        return back_to(rfq_id, "не выбран исполнитель")
+    if user is None or (not user.is_admin and rfq.get("assignee") not in (None, "", user.id)):
+        return back_to(rfq_id, "эту заявку ведёт другой менеджер")
+
+    store.set_assignee(rfq_id, target)
+    store.log(rfq_id, "assigned", f"ui:{client_ip(request)}", f"исполнитель {target[:8]}")
+    return back_to(rfq_id, "исполнитель назначен")
 
 
 @app.get("/ui/rfq/{rfq_id}/export.xlsx")

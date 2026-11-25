@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block title %}Входящие · kpbot{% endblock %}
 {% block content %}
 {% set labels = {"received": "принято", "parsed": "разобрано", "priced": "посчитано",
@@ -27,6 +27,7 @@
         <th>Получено</th>
         <th>От кого</th>
         <th>Тема</th>
+        <th>Исполнитель</th>
         <th class="num">Строк</th>
         <th class="num">Проблем</th>
         <th class="num">Итого, ₽</th>
@@ -39,6 +40,10 @@
         <td class="small muted">{{ r.created_at[:19] }}</td>
         <td>{{ r.sender }}</td>
         <td><a href="/ui/rfq/{{ r.id }}">{{ r.subject }}</a></td>
+        <td class="small">
+          {% set owner = users|selectattr("id", "equalto", r.assignee)|list %}
+          {% if owner %}{{ owner[0].title }}{% elif r.assignee %}<span class="muted">закреплена</span>{% else %}<span class="muted">свободна</span>{% endif %}
+        </td>
         <td class="num">{{ r.line_count }}</td>
         <td class="num">{% if r.line_issues %}<span class="warn">{{ r.line_issues }}</span>{% else %}0{% endif %}</td>
         <td class="num">{{ r.total or "—" }}</td>

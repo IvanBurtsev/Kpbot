@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import uuid
 from contextlib import closing
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
 from .domain import PriceItem, Quote, QuoteLine, RfqLine
+from .users import ROLE_ADMIN, User, check_role, hash_password, normalize_email, verify_password
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -100,6 +102,16 @@ CREATE TABLE IF NOT EXISTS decisions(
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS users(
+    id            TEXT PRIMARY KEY,
+    email         TEXT NOT NULL UNIQUE,
+    name          TEXT NOT NULL DEFAULT '',
+    role          TEXT NOT NULL DEFAULT 'manager',
+    salt          TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS llm_usage(
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     rfq_id            TEXT NOT NULL REFERENCES rfqs(id) ON DELETE CASCADE,
@@ -141,6 +153,10 @@ class Store:
                 pass
             try:
                 conn.execute("ALTER TABLE quotes ADD COLUMN duration_ms INTEGER")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE rfqs ADD COLUMN assignee TEXT")
             except sqlite3.OperationalError:
                 pass
 
@@ -261,20 +277,37 @@ class Store:
         with closing(self._connect()) as conn, conn:
             conn.execute("UPDATE rfqs SET status = ? WHERE id = ?", (status, rfq_id))
 
-    def list_rfqs(self, limit: int = 100) -> list[dict]:
+    def list_rfqs(
+        self,
+        limit: int = 100,
+        *,
+        assignee: str | None = None,
+        include_unassigned: bool = True,
+    ) -> list[dict]:
+        """assignee=None — без фильтра (админ). Иначе только свои и свободные."""
         limit = max(1, min(int(limit), 500))
+        where = ""
+        params: list[object] = []
+        if assignee is not None:
+            if include_unassigned:
+                where = "WHERE (r.assignee = ? OR r.assignee IS NULL)"
+            else:
+                where = "WHERE r.assignee = ?"
+            params.append(assignee)
         with closing(self._connect()) as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT r.id, r.sender, r.subject, r.received_at, r.status, r.created_at,
+                       r.assignee,
                        (SELECT COUNT(*) FROM rfq_lines l WHERE l.rfq_id = r.id) AS line_count,
                        (SELECT COUNT(*) FROM rfq_lines l WHERE l.rfq_id = r.id AND l.status <> 'ok') AS line_issues,
                        (SELECT q.total FROM quotes q WHERE q.rfq_id = r.id ORDER BY q.rowid DESC LIMIT 1) AS total
                 FROM rfqs r
+                {where}
                 ORDER BY r.created_at DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (*params, limit),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -448,6 +481,64 @@ class Store:
                 conn.execute(
                     "UPDATE quotes SET duration_ms = ? WHERE id = ?", (int(duration_ms), quote_id)
                 )
+
+    # ---------- пользователи ----------
+
+    def create_user(self, *, email: str, password: str, role: str = "manager", name: str = "") -> User:
+        email = normalize_email(email)
+        if not email or "@" not in email:
+            raise ValueError("нужен корректный e-mail")
+        if len(password or "") < 8:
+            raise ValueError("пароль короче 8 символов")
+        salt, digest = hash_password(password)
+        user = User(id=uuid.uuid4().hex, email=email, role=check_role(role), name=name.strip())
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "INSERT INTO users(id, email, name, role, salt, password_hash, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (user.id, user.email, user.name, user.role, salt, digest, utcnow()),
+            )
+        return user
+
+    def users(self) -> list[User]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute("SELECT id, email, role, name FROM users ORDER BY role, email").fetchall()
+        return [User(id=r["id"], email=r["email"], role=r["role"], name=r["name"]) for r in rows]
+
+    def user_count(self) -> int:
+        with closing(self._connect()) as conn:
+            return int(conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"])
+
+    def authenticate(self, email: str, password: str) -> User | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT id, email, role, name, salt, password_hash FROM users WHERE email = ?",
+                (normalize_email(email),),
+            ).fetchone()
+        if row is None:
+            return None
+        if not verify_password(password, row["salt"], row["password_hash"]):
+            return None
+        return User(id=row["id"], email=row["email"], role=row["role"], name=row["name"])
+
+    def user_by_id(self, user_id: str) -> User | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT id, email, role, name FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return User(id=row["id"], email=row["email"], role=row["role"], name=row["name"])
+
+    def set_assignee(self, rfq_id: str, user_id: str | None) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute("UPDATE rfqs SET assignee = ? WHERE id = ?", (user_id, rfq_id))
+
+    def ensure_default_admin(self, password: str, email: str = "admin@local") -> User | None:
+        """Первый запуск: создаём администратора из пароля в конфигурации."""
+        if self.user_count() > 0:
+            return None
+        return self.create_user(email=email, password=password, role=ROLE_ADMIN, name="Администратор")
 
     # ---------- метрики времени ----------
 

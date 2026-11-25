@@ -6,6 +6,10 @@
   <p class="muted">Интерфейс показывает персональные данные из писем, поэтому закрыт паролем.</p>
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
   <form method="post" action="/ui/login" class="stack">
+    <label>Логин (e-mail)
+      <input type="email" name="email" autocomplete="username" placeholder="admin@local">
+      <span class="muted small">у администратора можно оставить пустым</span>
+    </label>
     <label>Пароль
       <input type="password" name="password" autocomplete="current-password" required autofocus>
     </label>

@@ -31,6 +31,30 @@ def make_session(secret: str, ttl: int) -> str:
     return f"{payload}.{_hmac(secret, payload)}"
 
 
+def make_user_session(secret: str, user_id: str, ttl: int) -> str:
+    """Сессия конкретного пользователя: uid.время.подпись."""
+    payload = f"{user_id}.{int(time.time())}"
+    return f"{payload}.{_hmac(secret, payload)}"
+
+
+def user_from_session(secret: str, token: str | None, ttl: int) -> str | None:
+    """Возвращает id пользователя, если подпись и срок в порядке."""
+    if not token:
+        return None
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    user_id, issued, signature = parts
+    if not issued.isdigit():
+        return None
+    if not constant_time_equal(_hmac(secret, f"{user_id}.{issued}"), signature):
+        return None
+    issued_at = int(issued)
+    if issued_at > time.time() + 60 or time.time() - issued_at > ttl:
+        return None
+    return user_id
+
+
 def verify_session(secret: str, token: str | None, ttl: int) -> bool:
     if not token or "." not in token:
         return False

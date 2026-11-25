@@ -129,6 +129,25 @@
 
 <section class="card">
   <h2>Действия</h2>
+  <p class="small">
+    Исполнитель:
+    {% if assignee %}<b>{{ assignee.title }}</b>{% else %}<span class="muted">не назначен</span>{% endif %}
+  </p>
+  {% if is_admin and users %}
+  <form method="post" action="/ui/rfq/{{ rfq.id }}/assign" class="row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <select name="user_id" required>
+      <option value="">— выбрать исполнителя —</option>
+      {% for u in users %}<option value="{{ u.id }}">{{ u.title }} · {{ u.role }}</option>{% endfor %}
+    </select>
+    <button type="submit" class="mini">Назначить</button>
+  </form>
+  {% elif not assignee %}
+  <form method="post" action="/ui/rfq/{{ rfq.id }}/assign" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="mini ok">Взять себе</button>
+  </form>
+  {% endif %}
   <p class="muted small">Отправка в прототипе не выполняется: черновик ответа сохраняется в <code>data/out/sent/</code>.</p>
   <div class="row">
     <form method="post" action="/ui/rfq/{{ rfq.id }}/approve" class="inline">

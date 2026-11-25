@@ -455,6 +455,35 @@ def cmd_max_test(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_user_add(args: argparse.Namespace) -> int:
+    """Добавить менеджера или администратора. Пароль спрашиваем скрыто."""
+    import getpass
+
+    store = Store(settings.db_path)
+    password = args.password or getpass.getpass("Пароль (мин. 8 символов): ")
+    if password != (args.password or getpass.getpass("Повторите пароль: ")) and not args.password:
+        print("пароли не совпадают")
+        return 2
+    try:
+        user = store.create_user(email=args.email, password=password, role=args.role, name=args.name or "")
+    except (ValueError, Exception) as exc:  # noqa: BLE001 - показываем причину человеку
+        print(f"не создан: {exc}")
+        return 2
+    print(f"создан: {user.email} · {user.role} · {user.id[:8]}")
+    return 0
+
+
+def cmd_users(args: argparse.Namespace) -> int:
+    store = Store(settings.db_path)
+    rows = store.users()
+    if not rows:
+        print("пользователей нет")
+        return 0
+    for user in rows:
+        print(f"  {user.email:28} {user.role:8} {user.name or '—'}")
+    return 0
+
+
 def cmd_costs(args: argparse.Namespace) -> int:
     """Сколько токенов и рублей съел разбор писем, и за сколько он их разбирает."""
     store = Store(settings.db_path)
@@ -679,6 +708,16 @@ def main(argv: list[str] | None = None) -> int:
 
     costs = sub.add_parser("costs", help="расход токенов и рублей на разбор писем")
     costs.set_defaults(func=cmd_costs)
+
+    user_add = sub.add_parser("user-add", help="добавить пользователя (менеджера или админа)")
+    user_add.add_argument("--email", required=True)
+    user_add.add_argument("--role", default="manager", choices=("manager", "admin"))
+    user_add.add_argument("--name", default="")
+    user_add.add_argument("--password", default="", help="необязательно: иначе спросим скрыто")
+    user_add.set_defaults(func=cmd_user_add)
+
+    users_cmd = sub.add_parser("users", help="список пользователей")
+    users_cmd.set_defaults(func=cmd_users)
 
     args = parser.parse_args(argv)
     return int(args.func(args) or 0)
