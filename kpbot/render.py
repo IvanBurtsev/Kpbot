@@ -68,9 +68,16 @@ def write_html(path: Path, html: str) -> Path:
 
 def _browser_candidates() -> list[Path]:
     candidates = [
+        # Windows
         Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
         Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
         Path(settings.edge_path),
+        # Linux (сервер)
+        Path("/usr/bin/google-chrome"),
+        Path("/usr/bin/google-chrome-stable"),
+        Path("/usr/bin/chromium"),
+        Path("/usr/bin/chromium-browser"),
+        Path("/snap/bin/chromium"),
     ]
     return [path for path in candidates if path.exists()]
 
