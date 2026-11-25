@@ -1,4 +1,4 @@
-﻿"""HTTP-слой: интерфейс рекрутера-продавца и версионированное API.
+"""HTTP-слой: интерфейс рекрутера-продавца и версионированное API.
 
 Принципы:
   * интерфейс закрыт паролем (в письмах ПДн), API — ключом в заголовке;
@@ -267,6 +267,21 @@ async def ui_upload(request: Request, file: UploadFile):
     target = f"/ui/rfq/{result.rfq_id}"
     flash = "письмо уже было обработано" if result.duplicate else "письмо разобрано"
     return RedirectResponse(f"{target}?flash={quote(flash)}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.get("/ui/stats", response_class=HTMLResponse)
+async def ui_stats(request: Request, days: int = 30):
+    """Сводка: сколько заявок, на какую сумму, за сколько разобрано."""
+    if not is_authenticated(request):
+        return login_redirect(request)
+    days = max(1, min(int(days or 30), 365))
+    return page(
+        "stats.html",
+        request,
+        report=store.report(days),
+        days=days,
+        totals=store.stats(),
+    )
 
 
 @app.get("/ui/prices", response_class=HTMLResponse)

@@ -77,6 +77,16 @@ class TimingTest(unittest.TestCase):
         self.assertEqual(stats["count"], 1)
         self.assertIsNotNone(stats["median_seconds"])
 
+    def test_report_counts_rfq_and_auto_share(self) -> None:
+        result = self.pipeline.process_text("200 шт уголок 50х50", sender="r@test.ru", subject="Заявка")
+        self.assertTrue(result.rfq_id)
+        report = self.store.report(30)
+        self.assertEqual(report["rfqs"], 1)
+        self.assertEqual(report["quotes"], 1)
+        self.assertGreater(report["total_sum"], 0)
+        self.assertGreater(report["auto_share"], 0)
+        self.assertIsNotNone(report["median_seconds"])
+
 
 class Export1cTest(unittest.TestCase):
     def test_exported_sheet_is_valid_for_1c(self) -> None:
@@ -115,6 +125,7 @@ class Export1cTest(unittest.TestCase):
         wb.save(buffer)
         problems = check_1c_sheet(buffer.getvalue())
         self.assertTrue(any("количество не число" in p for p in problems))
+
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ import hashlib
 import sqlite3
 import uuid
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -478,6 +478,53 @@ class Store:
             "balance_rub": (round(float(balance["balance_rub"]), 2) if balance else None),
         }
 
+    def report(self, days: int = 30) -> dict:
+        """Сводка для разговора с клиентом: сколько, на какую сумму, за какое время."""
+        since = (datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))).isoformat()
+        with closing(self._connect()) as conn:
+            head = conn.execute(
+                """
+                SELECT COUNT(DISTINCT r.id) AS rfqs,
+                       COUNT(DISTINCT q.id) AS quotes,
+                       COALESCE(SUM(CAST(q.total AS REAL)), 0) AS total_sum
+                FROM rfqs r LEFT JOIN quotes q ON q.rfq_id = r.id
+                WHERE r.created_at >= ?
+                """,
+                (since,),
+            ).fetchone()
+            lines = conn.execute(
+                """
+                SELECT COUNT(*) AS lines,
+                       SUM(CASE WHEN l.status = 'ok' THEN 1 ELSE 0 END) AS auto_lines
+                FROM rfq_lines l JOIN rfqs r ON r.id = l.rfq_id
+                WHERE r.created_at >= ?
+                """,
+                (since,),
+            ).fetchone()
+            cost = conn.execute(
+                "SELECT COALESCE(SUM(CAST(cost_rub AS REAL)), 0) AS cost FROM llm_usage WHERE created_at >= ?",
+                (since,),
+            ).fetchone()
+            statuses = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM rfqs WHERE created_at >= ? GROUP BY status", (since,)
+            ).fetchall()
+        timing = self.timing_stats()
+        total_lines = int(lines["lines"] or 0)
+        auto_lines = int(lines["auto_lines"] or 0)
+        return {
+            "days": int(days),
+            "rfqs": int(head["rfqs"] or 0),
+            "quotes": int(head["quotes"] or 0),
+            "total_sum": round(float(head["total_sum"] or 0), 2),
+            "lines": total_lines,
+            "auto_lines": auto_lines,
+            "auto_share": round(auto_lines / total_lines * 100, 1) if total_lines else 0.0,
+            "llm_cost": round(float(cost["cost"] or 0), 4),
+            "statuses": {row["status"]: int(row["n"]) for row in statuses},
+            "median_seconds": timing.get("median_seconds"),
+            "median_wait_seconds": timing.get("median_wait_seconds"),
+        }
+
     def stats(self) -> dict:
         with closing(self._connect()) as conn:
             row = conn.execute(
@@ -649,4 +696,5 @@ def _seconds_between(start: str, end: str) -> float | None:
     if first is None or second is None:
         return None
     return max((second - first).total_seconds(), 0.0)
+
 
