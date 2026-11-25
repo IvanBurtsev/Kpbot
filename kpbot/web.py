@@ -1,4 +1,4 @@
-"""HTTP-слой: интерфейс рекрутера-продавца и версионированное API.
+﻿"""HTTP-слой: интерфейс рекрутера-продавца и версионированное API.
 
 Принципы:
   * интерфейс закрыт паролем (в письмах ПДн), API — ключом в заголовке;
@@ -19,12 +19,14 @@ from urllib.parse import quote
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import UploadFile as StarletteUploadFile
 from pydantic import BaseModel, Field, field_validator
 
 from .config import settings
-from .domain import LineStatus, RfqLine, RfqStatus, quantity
+from .domain import LineStatus, RfqLine, RfqStatus, ValidationError, quantity
 from .export import build_rfq_xlsx
 from .pipeline import NotAnRfq, Pipeline, build_reply_text_from_store
+from .pricelist import load_price_items
 from .render import render_template
 from .security import (
     CSRF_FIELD,
@@ -130,6 +132,14 @@ def is_authenticated(request: Request) -> bool:
     if current_user(request) is not None:
         return True
     # совместимость: одиночный пароль из конфигурации работает как вход администратора
+    return verify_session(settings.session_secret, session_of(request), settings.session_ttl_seconds)
+
+
+def is_admin_request(request: Request) -> bool:
+    """Администратор: пользователь с ролью admin или вход общим паролем."""
+    user = current_user(request)
+    if user is not None:
+        return user.is_admin
     return verify_session(settings.session_secret, session_of(request), settings.session_ttl_seconds)
 
 
@@ -254,6 +264,80 @@ async def ui_upload(request: Request, file: UploadFile):
     target = f"/ui/rfq/{result.rfq_id}"
     flash = "письмо уже было обработано" if result.duplicate else "письмо разобрано"
     return RedirectResponse(f"{target}?flash={quote(flash)}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.get("/ui/prices", response_class=HTMLResponse)
+async def ui_prices(request: Request, q: str = "", flash: str = ""):
+    """Прайс: сколько позиций, когда обновляли, поиск и загрузка файла."""
+    if not is_authenticated(request):
+        return login_redirect(request)
+    user = current_user(request)
+    items = store.price_items()
+    query = q.strip().lower()
+    if query:
+        items = [item for item in items if query in item.name.lower() or query in item.sku.lower()]
+    return page(
+        "prices.html",
+        request,
+        items=items[:300],
+        total=store.price_count(),
+        shown=len(items),
+        query=q.strip(),
+        updated_at=store.price_updated_at(),
+        can_edit=is_admin_request(request),
+        flash=flash[:200],
+    )
+
+
+@app.post("/ui/prices/upload")
+async def ui_prices_upload(request: Request):
+    """Загрузка прайса из файла 1С/Excel: заменяет весь список."""
+    if not is_authenticated(request):
+        return login_redirect(request)
+    if not is_admin_request(request):
+        return PlainTextResponse("прайс меняет только администратор", status_code=403)
+
+    form = await request.form()
+    if not verify_csrf(settings.session_secret, session_of(request), str(form.get(CSRF_FIELD, ""))):
+        return PlainTextResponse("csrf failed", status_code=403)
+    if not limiter.allow(f"upload:{client_ip(request)}"):
+        return PlainTextResponse("слишком много загрузок", status_code=429)
+
+    upload = form.get("file")
+    if not isinstance(upload, StarletteUploadFile):
+        return RedirectResponse("/ui/prices?flash=файл+не+выбран", status_code=status.HTTP_303_SEE_OTHER)
+
+    filename = (upload.filename or "").lower()
+    if not filename.endswith((".xlsx", ".csv")):
+        return RedirectResponse(
+            f"/ui/prices?flash={quote('поддерживаются .xlsx и .csv')}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    raw = await upload.read(settings.max_upload_bytes + 1)
+    if len(raw) > settings.max_upload_bytes:
+        return RedirectResponse(
+            f"/ui/prices?flash={quote('файл больше 2 МБ')}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    suffix = ".xlsx" if filename.endswith(".xlsx") else ".csv"
+    temp_path = settings.data_dir / f"price_upload{suffix}"
+    temp_path.write_bytes(raw)
+    try:
+        items = load_price_items(temp_path)
+    except ValidationError as exc:
+        temp_path.unlink(missing_ok=True)
+        return RedirectResponse(f"/ui/prices?flash={quote(str(exc))}", status_code=status.HTTP_303_SEE_OTHER)
+    except Exception as exc:  # noqa: BLE001 - файл клиента может быть любым
+        temp_path.unlink(missing_ok=True)
+        log.warning("прайс не разобран: %s", exc)
+        return RedirectResponse(
+            f"/ui/prices?flash={quote('файл не разобран: ' + str(exc)[:120])}", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    count = store.replace_price_items(items)
+    store.log_event("price_upload", f"ui:{client_ip(request)}", f"позиций {count}, файл {filename}")
+    flash = f"прайс обновлён: {count} позиций"
+    return RedirectResponse(f"/ui/prices?flash={quote(flash)}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.get("/ui/rfq/{rfq_id}", response_class=HTMLResponse)
@@ -628,3 +712,5 @@ async def api_approve(rfq_id: str) -> dict:
 @app.get("/api/v1/stats", dependencies=[Depends(api_auth)])
 async def api_stats() -> dict:
     return store.stats()
+
+

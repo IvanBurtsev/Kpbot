@@ -1,4 +1,4 @@
-"""Хранилище на SQLite. Все запросы — параметризованные (?), без склейки строк."""
+﻿"""Хранилище на SQLite. Все запросы — параметризованные (?), без склейки строк."""
 
 from __future__ import annotations
 
@@ -110,6 +110,14 @@ CREATE TABLE IF NOT EXISTS users(
     salt          TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     created_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS events(
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    action     TEXT NOT NULL,
+    actor      TEXT NOT NULL DEFAULT '',
+    detail     TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS llm_usage(
@@ -380,6 +388,14 @@ class Store:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def log_event(self, action: str, actor: str = "", detail: str = "") -> None:
+        """События вне заявок: загрузка прайса, вход, действия администратора."""
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "INSERT INTO events(action, actor, detail, created_at) VALUES (?, ?, ?, ?)",
+                (action, actor, detail, utcnow()),
+            )
+
     def log(self, rfq_id: str, action: str, actor: str, detail: str = "") -> None:
         with closing(self._connect()) as conn, conn:
             conn.execute(
@@ -633,3 +649,4 @@ def _seconds_between(start: str, end: str) -> float | None:
     if first is None or second is None:
         return None
     return max((second - first).total_seconds(), 0.0)
+
