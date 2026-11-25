@@ -33,6 +33,11 @@ def csrf(client: TestClient) -> str:
 class PriceUploadTest(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(app, follow_redirects=False)
+        # прайс общий на весь тестовый прогон: после проверки возвращаем как было
+        self.saved = store.price_items()
+
+    def tearDown(self) -> None:
+        store.replace_price_items(self.saved)
 
     def test_page_requires_login(self) -> None:
         self.assertEqual(self.client.get("/ui/prices").status_code, 303)
