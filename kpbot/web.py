@@ -370,6 +370,30 @@ def admin_only(request: Request):
     return None
 
 
+@app.get("/ui/settings", response_class=HTMLResponse)
+async def ui_settings(request: Request, flash: str = ""):
+    """Реквизиты компании, подпись письма и вводный текст КП."""
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    return page("settings.html", request, company=pipeline.company(), flash=flash[:200])
+
+
+@app.post("/ui/settings")
+async def ui_settings_save(request: Request):
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    form = await verified_form(request)
+    allowed = ("name", "inn", "kpp", "address", "phone", "email", "signer", "signature", "kp_intro")
+    values = {f"company_{key}": str(form.get(key, "")).strip()[:500] for key in allowed}
+    store.set_settings(values)
+    store.log_event("company_settings", f"ui:{client_ip(request)}", values.get("company_name", "")[:120])
+    return RedirectResponse(
+        f"/ui/settings?flash={quote('настройки сохранены')}", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
 @app.get("/ui/admin", response_class=HTMLResponse)
 async def ui_admin(request: Request, flash: str = ""):
     denied = admin_only(request)
@@ -508,7 +532,7 @@ async def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
             error="заявка закреплена за другим менеджером",
         )
     quote = store.get_quote(rfq_id)
-    reply_text = build_reply_text_from_store(rfq, quote, rfq_id) if quote else ""
+    reply_text = build_reply_text_from_store(rfq, quote, rfq_id, pipeline.company()) if quote else ""
     artifacts = {a["kind"] for a in store.artifacts(rfq_id)}
     return page(
         "rfq.html",
@@ -769,7 +793,7 @@ async def ui_rfq_send(request: Request, rfq_id: str):
     if quote is None:
         return back_to(rfq_id, "КП ещё не рассчитано")
 
-    body = str(form.get("body", "")).strip() or build_reply_text_from_store(rfq, quote, rfq_id)
+    body = str(form.get("body", "")).strip() or build_reply_text_from_store(rfq, quote, rfq_id, pipeline.company())
     attachments = load_attachments(settings.out_dir, rfq_id, short=rfq_id[:8])
     message = build_kp_message(
         sender=to,

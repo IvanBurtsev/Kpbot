@@ -14,7 +14,8 @@
     <a href="/ui">Входящие</a>
 <a href="/ui/prices">Прайс</a>
 <a href="/ui/stats">Сводка</a>
-{% if is_admin %}<a href="/ui/admin">Админка</a>{% endif %}
+{% if is_admin %}<a href="/ui/settings">Настройки</a>
+<a href="/ui/admin">Админка</a>{% endif %}
     <span class="muted small">{{ price_count }} позиций в прайсе</span>
     <form method="post" action="/ui/logout" class="inline">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

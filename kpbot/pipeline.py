@@ -416,11 +416,10 @@ class Pipeline:
 
     # ---------- документы ----------
 
-    def _render_documents(
-        self, rfq_id: str, parsed: ParsedEmail, lines: list, quote: Quote
-    ) -> dict[str, object]:
-        global _pdf_works
-        company = {
+    def company(self) -> dict[str, str]:
+        """Реквизиты для КП: сначала то, что задано в интерфейсе, потом .env."""
+        saved = self.store.get_settings()
+        defaults = {
             "name": self.cfg.company_name,
             "inn": self.cfg.company_inn,
             "kpp": self.cfg.company_kpp,
@@ -428,7 +427,16 @@ class Pipeline:
             "phone": self.cfg.company_phone,
             "email": self.cfg.company_email,
             "signer": self.cfg.company_signer,
+            "signature": "",
+            "kp_intro": "",
         }
+        return {key: (saved.get(f"company_{key}") or value) for key, value in defaults.items()}
+
+    def _render_documents(
+        self, rfq_id: str, parsed: ParsedEmail, lines: list, quote: Quote
+    ) -> dict[str, object]:
+        global _pdf_works
+        company = self.company()
         client = {"sender": parsed.sender, "subject": parsed.subject}
         rfq_meta = {"id": rfq_id, "received_at": parsed.received_at}
         context = {
@@ -535,7 +543,7 @@ def _money_text(value: object) -> str:
     return f"{amount:,.2f}".replace(",", " ").replace(".", ",")
 
 
-def build_reply_text(parsed: ParsedEmail, quote: Quote, rfq_id: str) -> str:
+def build_reply_text(parsed: ParsedEmail, quote: Quote, rfq_id: str, company: dict | None = None) -> str:
     head = [
         "Здравствуйте!",
         "",
@@ -556,12 +564,25 @@ def build_reply_text(parsed: ParsedEmail, quote: Quote, rfq_id: str) -> str:
         "Если всё подходит — ответьте на это письмо, и мы выставим счёт.",
         "",
         "С уважением,",
-        "отдел продаж",
     ]
+    signature = (company or {}).get("signature") or ""
+    signer = (company or {}).get("signer") or ""
+    name = (company or {}).get("name") or ""
+    if signature:
+        # в подписи можно использовать {{компания}}, {{подписант}}, {{телефон}}, {{почта}}
+        filled = (
+            signature.replace("{{компания}}", name)
+            .replace("{{подписант}}", signer)
+            .replace("{{телефон}}", (company or {}).get("phone") or "")
+            .replace("{{почта}}", (company or {}).get("email") or "")
+        )
+        head.extend(filled.splitlines())
+    else:
+        head.append(signer or name or "отдел продаж")
     return "\n".join(head)
 
 
-def build_reply_text_from_store(rfq: dict, quote: dict, rfq_id: str) -> str:
+def build_reply_text_from_store(rfq: dict, quote: dict, rfq_id: str, company: dict | None = None) -> str:
     lines_count = len(quote.get("lines", []))
     unmatched = int(quote.get("unmatched", 0) or 0)
     head = [
@@ -582,6 +603,18 @@ def build_reply_text_from_store(rfq: dict, quote: dict, rfq_id: str) -> str:
         "Если всё подходит — ответьте на это письмо, и мы выставим счёт.",
         "",
         "С уважением,",
-        "отдел продаж",
     ]
+    signature = (company or {}).get("signature") or ""
+    signer = (company or {}).get("signer") or ""
+    name = (company or {}).get("name") or ""
+    if signature:
+        head.extend(
+            signature.replace("{{компания}}", name)
+            .replace("{{подписант}}", signer)
+            .replace("{{телефон}}", (company or {}).get("phone") or "")
+            .replace("{{почта}}", (company or {}).get("email") or "")
+            .splitlines()
+        )
+    else:
+        head.append(signer or name or "отдел продаж")
     return "\n".join(head)

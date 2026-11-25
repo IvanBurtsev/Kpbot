@@ -35,6 +35,7 @@
 </head>
 <body>
 
+{% if company and company.kp_intro %}<p class="note">{{ company.kp_intro }}</p>{% endif %}
 <div class="head">
   <div>
     <p class="company-name">{{ company.name }}</p>

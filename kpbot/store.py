@@ -112,6 +112,11 @@ CREATE TABLE IF NOT EXISTS users(
     created_at    TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS app_settings(
+    k TEXT PRIMARY KEY,
+    v TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS events(
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     action     TEXT NOT NULL,
@@ -535,6 +540,21 @@ class Store:
                 conn.execute("DELETE FROM artifacts WHERE rfq_id = ?", (rfq_id,))
                 conn.execute("DELETE FROM rfqs WHERE id = ?", (rfq_id,))
         return len(ids)
+
+    def get_settings(self) -> dict[str, str]:
+        """Настройки компании, которые правятся из интерфейса (перекрывают .env)."""
+        with closing(self._connect()) as conn:
+            rows = conn.execute("SELECT k, v FROM app_settings").fetchall()
+        return {row["k"]: row["v"] for row in rows}
+
+    def set_settings(self, values: dict[str, str]) -> None:
+        with closing(self._connect()) as conn, conn:
+            for key, value in values.items():
+                conn.execute(
+                    "INSERT INTO app_settings(k, v) VALUES (?, ?)"
+                    " ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+                    (key, str(value)),
+                )
 
     def stats(self) -> dict:
         with closing(self._connect()) as conn:
