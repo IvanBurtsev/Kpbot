@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, field_validator
 from .config import settings
 from .domain import LineStatus, RfqLine, RfqStatus, ValidationError, quantity
 from .export import build_rfq_xlsx
+from .mailer import MailError, Mailer, build_kp_message, load_attachments, reply_subject
 from .pipeline import NotAnRfq, Pipeline, build_reply_text_from_store
 from .pricelist import load_price_items
 from .render import render_template
@@ -40,7 +41,7 @@ from .security import (
     verify_csrf,
     verify_session,
 )
-from .users import ROLE_ADMIN, User
+from .users import ROLE_ADMIN, User, normalize_email
 from .store import Store
 
 from .logs import mask, register_settings_secrets, setup_logging
@@ -55,6 +56,7 @@ app.mount("/static", StaticFiles(directory=str(settings.static_dir)), name="stat
 settings.ensure_dirs()
 store = Store(settings.db_path)
 pipeline = Pipeline(store, settings)
+mailer = Mailer(settings)
 limiter = RateLimiter(settings.rate_limit_per_minute)
 
 CSP = (
@@ -153,6 +155,7 @@ def page(name: str, request: Request, *, code: int = 200, **context: object) -> 
         is_admin=bool(user and user.is_admin),
         csrf_token=csrf_for(settings.session_secret, session),
         price_count=store.price_count(),
+        smtp_ready=bool(mailer.enabled and mailer.host),
         **context,
     )
     return HTMLResponse(body, status_code=code)
@@ -601,6 +604,49 @@ async def ui_line_add(request: Request, rfq_id: str):
     return save_edits(rfq_id, lines, f"ui:{client_ip(request)}", f"добавлена позиция {item.sku}")
 
 
+@app.post("/ui/rfq/{rfq_id}/send")
+async def ui_rfq_send(request: Request, rfq_id: str):
+    """Отправляет готовое КП клиенту письмом с PDF и DOCX."""
+    if not is_authenticated(request):
+        return login_redirect(request)
+    form = await verified_form(request)
+    rfq = store.get_rfq(rfq_id)
+    if rfq is None:
+        raise HTTPException(status_code=404, detail="заявка не найдена")
+
+    to = normalize_email(str(form.get("to", "")).strip() or str(rfq.get("sender", "")))
+    if "@" not in to:
+        return back_to(rfq_id, "нужен корректный адрес получателя")
+
+    quote = store.get_quote(rfq_id)
+    if quote is None:
+        return back_to(rfq_id, "КП ещё не рассчитано")
+
+    body = str(form.get("body", "")).strip() or build_reply_text_from_store(rfq, quote, rfq_id)
+    attachments = load_attachments(settings.out_dir, rfq_id, short=rfq_id[:8])
+    message = build_kp_message(
+        sender=to,
+        from_addr=mailer.from_addr or settings.smtp_user or "no-reply@localhost",
+        subject=reply_subject(str(rfq.get("subject", ""))),
+        body=body,
+        attachments=attachments,
+        reply_to=settings.smtp_user or "",
+    )
+    try:
+        mailer.send(message, to=to)
+    except MailError as exc:
+        store.log(rfq_id, "send_failed", f"ui:{client_ip(request)}", f"{to}: {exc}"[:300])
+        return back_to(rfq_id, f"не отправлено: {exc}")
+
+    store.log(
+        rfq_id,
+        "sent",
+        f"ui:{client_ip(request)}",
+        f"кому {to}, вложений {len(attachments)}",
+    )
+    return back_to(rfq_id, f"КП отправлено на {to}")
+
+
 @app.post("/ui/rfq/{rfq_id}/assign")
 async def ui_rfq_assign(request: Request, rfq_id: str):
     """Менеджер берёт свободную заявку себе; администратор назначает любому."""
@@ -712,5 +758,8 @@ async def api_approve(rfq_id: str) -> dict:
 @app.get("/api/v1/stats", dependencies=[Depends(api_auth)])
 async def api_stats() -> dict:
     return store.stats()
+
+
+
 
 

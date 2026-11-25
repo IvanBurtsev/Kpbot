@@ -75,7 +75,15 @@ class Settings(BaseSettings):
     # тариф провайдера за 1 млн токенов, ₽. 0 = тариф не задан, считаем только токены
     llm_price_input_rub_per_1m: float = 0.0
     llm_price_output_rub_per_1m: float = 0.0
+    # --- отправка КП клиенту (SMTP) ---
     smtp_enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_starttls: bool = True
+    smtp_timeout_seconds: int = 30
 
     # --- уведомления (Telegram) ---
     telegram_enabled: bool = False

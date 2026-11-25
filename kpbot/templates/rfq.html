@@ -128,6 +128,32 @@
 </section>
 
 <section class="card">
+  <h2>Отправить клиенту</h2>
+  {% if smtp_ready %}
+  <form method="post" action="/ui/rfq/{{ rfq.id }}/send" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Кому
+      <input type="email" name="to" value="{{ rfq.sender }}" required>
+    </label>
+    <label>Текст письма
+      <textarea name="body" rows="10">{{ reply_text }}</textarea>
+    </label>
+    <button class="primary" type="submit">Отправить КП с PDF и DOCX</button>
+  </form>
+  {% else %}
+  <p class="muted small">
+    Отправка писем выключена. Включить: заполнить в настройках
+    <code>KPBOT_SMTP_HOST</code>, <code>KPBOT_SMTP_USER</code>,
+    <code>KPBOT_SMTP_PASSWORD</code>, <code>KPBOT_SMTP_FROM</code>
+    и поставить <code>KPBOT_SMTP_ENABLED=true</code>.
+    Пока КП можно скачать и отправить вручную.
+  </p>
+  {% endif %}
+  {% if reply_text %}<details><summary class="small">готовый текст ответа</summary>
+    <pre class="small">{{ reply_text }}</pre></details>{% endif %}
+</section>
+
+<section class="card">
   <h2>Действия</h2>
   <p class="small">
     Исполнитель:

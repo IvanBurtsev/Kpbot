@@ -484,6 +484,47 @@ def cmd_export_1c(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_send_kp(args: argparse.Namespace) -> int:
+    """Отправляет готовое КП клиенту тем же путём, что и кнопка в интерфейсе."""
+    from .mailer import MailError, Mailer, build_kp_message, load_attachments, reply_subject
+    from .pipeline import build_reply_text_from_store
+
+    store = Store(settings.db_path)
+    rfq = store.get_rfq(args.rfq_id) if args.rfq_id else None
+    if rfq is None:
+        print("заявка не найдена")
+        return 2
+    quote = store.get_quote(rfq["id"])
+    if quote is None:
+        print("КП ещё не рассчитано")
+        return 2
+
+    to = args.to or str(rfq.get("sender", ""))
+    if "@" not in to:
+        print("нужен корректный адрес получателя")
+        return 2
+
+    mailer = Mailer(settings)
+    attachments = load_attachments(settings.out_dir, rfq["id"], short=rfq["id"][:8])
+    message = build_kp_message(
+        sender=to,
+        from_addr=mailer.from_addr or settings.smtp_user or "no-reply@localhost",
+        subject=reply_subject(str(rfq.get("subject", ""))),
+        body=args.body or build_reply_text_from_store(rfq, quote, rfq["id"]),
+        attachments=attachments,
+        reply_to=settings.smtp_user or "",
+    )
+    try:
+        mailer.send(message, to=to)
+    except MailError as exc:
+        store.log(rfq["id"], "send_failed", "cli", f"{to}: {exc}"[:300])
+        print(f"не отправлено: {exc}")
+        return 1
+    store.log(rfq["id"], "sent", "cli", f"кому {to}, вложений {len(attachments)}")
+    print(f"отправлено: {to} · вложений {len(attachments)}")
+    return 0
+
+
 def cmd_user_add(args: argparse.Namespace) -> int:
     """Добавить менеджера или администратора. Пароль спрашиваем скрыто."""
     import getpass
@@ -752,6 +793,12 @@ def main(argv: list[str] | None = None) -> int:
     export_1c.add_argument("rfq_id", nargs="?", default="")
     export_1c.add_argument("--out", default="")
     export_1c.set_defaults(func=cmd_export_1c)
+
+    send_kp = sub.add_parser("send-kp", help="отправить готовое КП клиенту письмом")
+    send_kp.add_argument("rfq_id")
+    send_kp.add_argument("--to", default="")
+    send_kp.add_argument("--body", default="")
+    send_kp.set_defaults(func=cmd_send_kp)
 
     args = parser.parse_args(argv)
     return int(args.func(args) or 0)
