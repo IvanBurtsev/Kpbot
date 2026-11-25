@@ -839,6 +839,367 @@ tr.needs-attention td {
   }
 }
 
+/* ========== ТАБЛИЦЫ → КАРТОЧКИ НА МОБИЛЬНОМ ========== */
+/* При ширине ≤ 768px каждая строка таблицы становится карточкой.
+   Класс .cards-table + data-label в <td> для подписей колонок.
+   На десктопе ≥ 1025px выглядит как обычная таблица. */
+
+.cards-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.cards-table th,
+.cards-table td {
+  text-align: left;
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  font-size: 15px;
+}
+
+.cards-table th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.cards-table tbody tr:hover td {
+  background: #fbfcfd;
+}
+
+.cards-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.cards-table td.num,
+.cards-table th.num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ========== МОБИЛЬНЫЕ: 768px ========== */
+
+@media (max-width: 768px) {
+  .cards-table {
+    display: block;
+  }
+
+  .cards-table thead {
+    display: none;
+  }
+
+  .cards-table tbody {
+    display: block;
+  }
+
+  .cards-table tr {
+    display: block;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    margin-bottom: 12px;
+    background: var(--card);
+  }
+
+  .cards-table td {
+    display: grid;
+    grid-template-columns: 100px 1fr;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line-strong);
+    text-align: left;
+  }
+
+  .cards-table td:last-child {
+    border-bottom: none;
+  }
+
+  .cards-table td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    min-width: 100px;
+  }
+
+  .cards-table td.num {
+    text-align: left;
+  }
+
+  .cards-table td[data-label="Статус"] {
+    grid-template-columns: 1fr;
+  }
+
+  .cards-table td[data-label="Статус"]::before {
+    content: none;
+  }
+
+  .cards-table td.edit {
+    display: block;
+    padding: 12px;
+  }
+
+  .cards-table td.edit::before {
+    content: none;
+  }
+
+  .cards-table .line-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: stretch;
+  }
+
+  .cards-table .line-form select,
+  .cards-table .line-form input[type=text] {
+    width: 100%;
+    padding: 10px 12px;
+    font-size: 14px;
+    border-radius: 8px;
+  }
+
+  .cards-table .line-form .form-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .cards-table .line-form .form-actions button {
+    flex: 1;
+    min-width: 100px;
+    min-height: 44px;
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+
+  .lines-table td {
+    grid-template-columns: 1fr;
+  }
+
+  .lines-table td::before {
+    content: none;
+  }
+
+  .lines-table td[data-label="Позиция"] {
+    grid-template-columns: 1fr;
+    font-weight: 600;
+    padding: 12px;
+    background: #fbfcfd;
+  }
+
+  .lines-table td[data-label="Кол-во"],
+  .lines-table td[data-label="Ед."],
+  .lines-table td[data-label="Совпадение"] {
+    display: grid;
+    grid-template-columns: 100px 1fr;
+    gap: 8px;
+  }
+
+  .lines-table td[data-label="Кол-во"]::before {
+    content: "Кол-во";
+  }
+
+  .lines-table td[data-label="Ед."]::before {
+    content: "Ед.";
+  }
+
+  .lines-table td[data-label="Совпадение"]::before {
+    content: "Совпадение";
+  }
+
+  .lines-table tr.needs-attention {
+    background: var(--warn-soft);
+    border-color: var(--warn);
+  }
+
+  .cards-table td.edit {
+    grid-template-columns: 1fr;
+  }
+
+  .form-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .form-actions form {
+    display: contents;
+  }
+
+  .form-actions .line-form {
+    flex: 1;
+    min-width: 150px;
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .form-actions .line-form select,
+  .form-actions .line-form input {
+    flex: 1;
+    min-width: 100px;
+    padding: 8px 10px;
+    font-size: 13px;
+    min-height: 36px;
+  }
+
+  .form-actions .line-form button {
+    min-width: 80px;
+    padding: 8px 12px;
+    min-height: 36px;
+  }
+}
+
+/* ========== СУПЕР-УЗКИЕ: 480px ========== */
+
+@media (max-width: 480px) {
+  .cards-table td {
+    grid-template-columns: 80px 1fr;
+    gap: 6px;
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+
+  .cards-table td::before {
+    font-size: 10px;
+    min-width: 80px;
+  }
+
+  .cards-table tr {
+    margin-bottom: 10px;
+    border-radius: 8px;
+  }
+
+  .cards-table .line-form select,
+  .cards-table .line-form input[type=text] {
+    font-size: 16px;
+    padding: 12px;
+    min-height: 44px;
+  }
+
+  .cards-table .form-actions {
+    gap: 6px;
+  }
+
+  .cards-table .form-actions button,
+  .cards-table .form-actions .mini {
+    flex: 1;
+    min-width: 90px;
+    min-height: 44px;
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+
+  .form-actions .line-form {
+    flex-direction: column;
+  }
+
+  .form-actions .line-form select,
+  .form-actions .line-form input {
+    width: 100%;
+    min-height: 44px;
+  }
+
+  .form-actions .line-form button {
+    width: 100%;
+    min-height: 44px;
+  }
+}
+
+/* ========== ДЕСКТОП: 1025px+ ========== */
+
+@media (min-width: 1025px) {
+  .cards-table {
+    display: table;
+  }
+
+  .cards-table thead {
+    display: table-header-group;
+  }
+
+  .cards-table tbody {
+    display: table-row-group;
+  }
+
+  .cards-table tr {
+    display: table-row;
+    border: none;
+    margin-bottom: 0;
+  }
+
+  .cards-table td {
+    display: table-cell;
+    grid-template-columns: none;
+    gap: 0;
+    padding: 12px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+  }
+
+  .cards-table td::before {
+    content: none;
+  }
+
+  .cards-table td.num {
+    text-align: right;
+  }
+
+  .cards-table td.edit {
+    display: table-cell;
+    padding: 12px;
+  }
+
+  .cards-table .line-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .cards-table .line-form select {
+    max-width: 220px;
+    font-size: 13px;
+    padding: 8px 10px;
+  }
+
+  .cards-table .line-form input[type=text] {
+    width: 78px;
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+
+  .cards-table .form-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .form-actions .line-form {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .form-actions .line-form select,
+  .form-actions .line-form input {
+    flex: none;
+    width: auto;
+  }
+
+  .form-actions .line-form button {
+    padding: 8px 12px;
+    min-height: auto;
+  }
+}
+
 @media (prefers-color-scheme: dark) {
   /* На случай, если браузер пользователя в тёмной теме,
      но данный продукт проектируется под светлую схему.

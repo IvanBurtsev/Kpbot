@@ -45,7 +45,7 @@
 
 <section class="card">
   {% if rfqs %}
-  <table>
+  <table class="cards-table">
     <thead>
       <tr>
         <th>Получено</th>
@@ -61,17 +61,17 @@
     <tbody>
       {% for r in rfqs %}
       <tr>
-        <td class="small muted">{{ r.created_at[:16].replace("T", " ") }}</td>
-        <td class="small">{{ r.sender }}</td>
-        <td><a href="/ui/rfq/{{ r.id }}">{{ r.subject }}</a></td>
-        <td class="small">
+        <td data-label="Получено" class="small muted">{{ r.created_at[:16].replace("T", " ") }}</td>
+        <td data-label="От кого" class="small">{{ r.sender }}</td>
+        <td data-label="Тема"><a href="/ui/rfq/{{ r.id }}">{{ r.subject }}</a></td>
+        <td data-label="Исполнитель" class="small">
           {% set owner = users|selectattr("id", "equalto", r.assignee)|list %}
           {% if owner %}{{ owner[0].title }}{% elif r.assignee %}<span class="muted">закреплена</span>{% else %}<span class="muted">свободна</span>{% endif %}
         </td>
-        <td class="num">{{ r.line_count }}</td>
-        <td class="num">{% if r.line_issues %}<span class="warn">{{ r.line_issues }}</span>{% else %}0{% endif %}</td>
-        <td class="num">{{ r.total or "—" }}</td>
-        <td><span class="badge s-{{ r.status }}">{{ labels.get(r.status, r.status) }}</span></td>
+        <td data-label="Строк" class="num">{{ r.line_count }}</td>
+        <td data-label="Проблем" class="num">{% if r.line_issues %}<span class="warn">{{ r.line_issues }}</span>{% else %}0{% endif %}</td>
+        <td data-label="Итого, ₽" class="num">{{ r.total or "—" }}</td>
+        <td data-label="Статус"><span class="badge s-{{ r.status }}">{{ labels.get(r.status, r.status) }}</span></td>
       </tr>
       {% endfor %}
     </tbody>

@@ -78,7 +78,7 @@
 <section class="card">
   <h2>Что понял сервис</h2>
   <p class="muted small">Позицию можно подтвердить, заменить, изменить количество или удалить — КП пересчитается сразу.</p>
-  <table class="grid lines">
+  <table class="cards-table lines-table">
     <thead>
       <tr><th>#</th><th>Как написано в письме</th><th class="num">Кол-во</th><th>Ед.</th>
           <th>Совпадение</th><th class="num">Score</th><th>Статус</th><th>Действия</th></tr>
@@ -86,14 +86,14 @@
     <tbody>
       {% for l in rfq.lines %}
       <tr{% if l.status != "ok" %} class="needs-attention"{% endif %}>
-        <td class="muted">{{ l.idx }}</td>
-        <td>{{ l.raw_text }}{% if l.note %}<br><span class="muted small">{{ l.note }}</span>{% endif %}</td>
-        <td class="num">{{ l.qty or "—" }}</td>
-        <td>{{ l.unit or "—" }}</td>
-        <td class="small">{{ l.matched_name or "—" }}</td>
-        <td class="num">{{ "%.2f"|format(l.score) }}</td>
-        <td><span class="badge {{ line_css.get(l.status, '') }}">{{ labels.get(l.status, l.status) }}</span></td>
-        <td class="edit">
+        <td data-label="#" class="muted">{{ l.idx }}</td>
+        <td data-label="Позиция">{{ l.raw_text }}{% if l.note %}<br><span class="muted small">{{ l.note }}</span>{% endif %}</td>
+        <td data-label="Кол-во" class="num">{{ l.qty or "—" }}</td>
+        <td data-label="Ед.">{{ l.unit or "—" }}</td>
+        <td data-label="Совпадение" class="small">{{ l.matched_name or "—" }}</td>
+        <td data-label="Score" class="num">{{ "%.2f"|format(l.score) }}</td>
+        <td data-label="Статус"><span class="badge {{ line_css.get(l.status, '') }}">{{ labels.get(l.status, l.status) }}</span></td>
+        <td data-label="Действия" class="edit">
           <form method="post" action="/ui/rfq/{{ rfq.id }}/lines/{{ l.idx }}/update" class="line-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <select name="sku" title="позиция прайса">
@@ -105,15 +105,17 @@
               {% endfor %}
             </select>
             <input type="text" name="qty" value="{{ l.qty or '' }}" size="5" inputmode="decimal" title="количество">
-            <button type="submit" class="mini">Сохранить</button>
-            {% if l.status == "ambiguous" and l.matched_sku %}
-            <button type="submit" class="mini ok" formaction="/ui/rfq/{{ rfq.id }}/lines/{{ l.idx }}/confirm">
-              Подтвердить
-            </button>
-            {% endif %}
-            <button type="submit" class="mini danger" formaction="/ui/rfq/{{ rfq.id }}/lines/{{ l.idx }}/delete">
-              Удалить
-            </button>
+            <div class="form-actions">
+              <button type="submit" class="mini">Сохранить</button>
+              {% if l.status == "ambiguous" and l.matched_sku %}
+              <button type="submit" class="mini ok" formaction="/ui/rfq/{{ rfq.id }}/lines/{{ l.idx }}/confirm">
+                Подтвердить
+              </button>
+              {% endif %}
+              <button type="submit" class="mini danger" formaction="/ui/rfq/{{ rfq.id }}/lines/{{ l.idx }}/delete">
+                Удалить
+              </button>
+            </div>
           </form>
         </td>
       </tr>
