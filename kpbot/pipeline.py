@@ -146,6 +146,7 @@ class Pipeline:
             auto_threshold=self.cfg.match_auto_threshold,
             ambiguous_threshold=self.cfg.match_ambiguous_threshold,
         )
+        lines = self._apply_learned(lines, index)
         lines = self._drop_subsets_of_matched(lines)
         lines = self._dedupe_by_sku(lines)
         quote = price_quote(
@@ -288,6 +289,56 @@ class Pipeline:
         detail = ", ".join(f"{channel}={'ok' if ok else 'fail'}" for channel, ok in sent.items())
         self.store.log(rfq_id, "notified" if any(sent.values()) else "notify_failed", "system", detail)
 
+    @classmethod
+    def learn_key(cls, raw_text: str) -> str:
+        """Ключ обучения: название без чисел и единиц, слова по алфавиту."""
+        words = re.split(r"[^0-9a-zа-яё]+", (raw_text or "").lower())
+        cleaned = sorted({
+            word for word in words
+            if len(word) > 1 and not word.isdigit() and word not in cls.UNITS
+        })
+        return " ".join(cleaned)
+
+    def _apply_learned(self, lines: list[RfqLine], index) -> list[RfqLine]:
+        """Подставляет то, чему научились на правках менеджера."""
+        items = {item.sku: item for item in index.items}
+        for line in lines:
+            if line.status == LineStatus.OK:
+                continue
+            key = self.learn_key(line.raw_text)
+            if not key:
+                continue
+            sku = self.store.learned_sku(key)
+            if not sku or sku not in items:
+                continue
+            item = items[sku]
+            line.matched_sku = item.sku
+            line.matched_name = item.name
+            line.match_score = 1.0
+            line.status = LineStatus.OK
+            line.note = "выучено на правках"
+        return lines
+
+    def _learn_from_edits(self, before: dict[int, RfqLine], after: list[RfqLine]) -> None:
+        """Учится на том, что человек подтвердил, заменил или удалил."""
+        kept = set()
+        for line in after:
+            key = self.learn_key(line.raw_text)
+            previous = before.get(line.idx)
+            if line.matched_sku and key:
+                # подтверждение или замена: запоминаем новое соответствие
+                if previous is None or previous.matched_sku != line.matched_sku:
+                    self.store.learn_match(key, line.matched_sku)
+                kept.add(line.idx)
+            if previous is not None and previous.matched_sku and previous.matched_sku != line.matched_sku:
+                # старое совпадение человек отменил
+                self.store.learn_miss(self.learn_key(previous.raw_text), previous.matched_sku)
+
+        for idx, previous in before.items():
+            if idx not in kept and previous.matched_sku:
+                # строку удалили — значит предложенное не подходило
+                self.store.learn_miss(self.learn_key(previous.raw_text), previous.matched_sku)
+
     def _drop_subsets_of_matched(self, lines: list[RfqLine]) -> list[RfqLine]:
         """Выкидывает обрубки: строка без совпадения, чьи слова целиком входят
         в другую строку с тем же количеством и найденной позицией.
@@ -384,6 +435,12 @@ class Pipeline:
         if rfq["status"] == RfqStatus.SENT.value:
             raise PermissionError("отправленную заявку менять нельзя")
 
+        before = {line["idx"]: RfqLine(
+            idx=line["idx"], raw_text=line["raw_text"], qty=Decimal(line["qty"]) if line["qty"] else None,
+            unit=line["unit"], matched_sku=line["matched_sku"], match_score=line["score"],
+            matched_name=line["matched_name"], status=LineStatus(line["status"]), note=line["note"],
+        ) for line in rfq["lines"]}
+
         for position, line in enumerate(lines, start=1):
             line.idx = position
         self.store.replace_lines(rfq_id, lines)
@@ -396,6 +453,7 @@ class Pipeline:
             delivery=self.cfg.delivery_price,
             max_qty=self.cfg.max_qty,
         )
+        self._learn_from_edits(before, lines)
         self.store.save_quote(uuid.uuid4().hex, rfq_id, quote)
         self.store.set_status(rfq_id, status_for(quote).value)
 

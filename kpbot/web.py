@@ -536,6 +536,34 @@ async def ui_admin_user_delete(request: Request, user_id: str):
     return RedirectResponse(f"/ui/admin/users?flash={quote('пользователь удалён')}", status_code=303)
 
 
+@app.get("/ui/admin/learned", response_class=HTMLResponse)
+async def ui_admin_learned(request: Request, flash: str = ""):
+    """Что сервис выучил на правках менеджеров."""
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    return page(
+        "admin_learned.html",
+        request,
+        pairs=store.learned_pairs(300),
+        total=store.learned_count(),
+        flash=flash[:200],
+    )
+
+
+@app.post("/ui/admin/learned/forget")
+async def ui_admin_learned_forget(request: Request):
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    form = await verified_form(request)
+    key = str(form.get("key", "")).strip()
+    removed = store.forget_learned(key or None)
+    store.log_event("learned_forget", f"ui:{client_ip(request)}", key or "всё обучение")
+    flash = f"удалено пар: {removed}"
+    return RedirectResponse(f"/ui/admin/learned?flash={quote(flash)}", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @app.get("/ui/admin/events", response_class=HTMLResponse)
 async def ui_admin_events(request: Request):
     denied = admin_only(request)

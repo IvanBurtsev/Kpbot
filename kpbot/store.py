@@ -112,6 +112,14 @@ CREATE TABLE IF NOT EXISTS users(
     created_at    TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS learned(
+    key        TEXT PRIMARY KEY,
+    sku        TEXT NOT NULL,
+    hits       INTEGER NOT NULL DEFAULT 0,
+    misses     INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS app_settings(
     k TEXT PRIMARY KEY,
     v TEXT NOT NULL
@@ -576,6 +584,67 @@ class Store:
                 conn.execute(
                     "UPDATE quotes SET duration_ms = ? WHERE id = ?", (int(duration_ms), quote_id)
                 )
+
+    # ---------- обучение на правках ----------
+
+    def learn_match(self, key: str, sku: str) -> None:
+        """Человек подтвердил соответствие: «эта формулировка = этот артикул»."""
+        if not key or not sku:
+            return
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "INSERT INTO learned(key, sku, hits, misses, updated_at) VALUES (?, ?, 1, 0, ?)"
+                " ON CONFLICT(key) DO UPDATE SET hits = hits + 1, sku = excluded.sku,"
+                " updated_at = excluded.updated_at",
+                (key, sku, utcnow()),
+            )
+
+    def learn_miss(self, key: str, sku: str | None = None) -> None:
+        """Человек убрал или заменил совпадение: доверие к паре падает."""
+        if not key:
+            return
+        with closing(self._connect()) as conn, conn:
+            if sku:
+                conn.execute(
+                    "UPDATE learned SET misses = misses + 1, updated_at = ? WHERE key = ? AND sku = ?",
+                    (utcnow(), key, sku),
+                )
+            else:
+                conn.execute(
+                    "UPDATE learned SET misses = misses + 1, updated_at = ? WHERE key = ?",
+                    (utcnow(), key),
+                )
+
+    def learned_sku(self, key: str) -> str | None:
+        """Пара считается выученной, если подтверждений минимум два и они перевешивают правки."""
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT sku FROM learned WHERE key = ? AND hits >= 2 AND hits >= misses + 2",
+                (key,),
+            ).fetchone()
+        return row["sku"] if row else None
+
+    def learned_pairs(self, limit: int = 200) -> list[dict]:
+        limit = max(1, min(int(limit), 500))
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT key, sku, hits, misses, updated_at FROM learned"
+                " ORDER BY hits - misses DESC, updated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def learned_count(self) -> int:
+        with closing(self._connect()) as conn:
+            return int(conn.execute("SELECT COUNT(*) AS c FROM learned").fetchone()["c"])
+
+    def forget_learned(self, key: str | None = None) -> int:
+        with closing(self._connect()) as conn, conn:
+            if key:
+                cur = conn.execute("DELETE FROM learned WHERE key = ?", (key,))
+            else:
+                cur = conn.execute("DELETE FROM learned")
+            return cur.rowcount
 
     # ---------- пользователи ----------
 
