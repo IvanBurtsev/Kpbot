@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
 import time
@@ -307,6 +308,28 @@ async def ui_upload(request: Request, file: UploadFile):
     return RedirectResponse(f"{target}?flash={quote(flash)}", status_code=status.HTTP_303_SEE_OTHER)
 
 
+async def apply_company_form(form) -> None:
+    """Реквизиты, цвет и логотип — общая логика для настроек и визарда."""
+    allowed = ("name", "inn", "kpp", "address", "phone", "email", "signer", "signature", "kp_intro")
+    values = {f"company_{key}": str(form.get(key, "")).strip()[:500] for key in allowed}
+
+    color = str(form.get("color", "")).strip()
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        values["company_color"] = color.lower()
+
+    logo = form.get("logo")
+    if isinstance(logo, StarletteUploadFile) and logo.filename:
+        raw = await logo.read(settings.max_logo_bytes + 1)
+        if len(raw) > settings.max_logo_bytes:
+            log.warning("логотип больше %s байт — пропущен", settings.max_logo_bytes)
+        else:
+            kind = (logo.content_type or "").split("/")[-1].lower()
+            if kind in ("png", "jpeg", "jpg", "webp", "svg+xml"):
+                values["company_logo"] = "data:image/%s;base64,%s" % (kind, base64.b64encode(raw).decode("ascii"))
+
+    store.set_settings(values)
+
+
 @app.get("/ui/stats", response_class=HTMLResponse)
 async def ui_stats(request: Request, days: str = "30"):
     """Сводка живёт на главной: отдельная страница больше не нужна."""
@@ -423,57 +446,11 @@ async def ui_settings_save(request: Request):
     if denied is not None:
         return denied
     form = await verified_form(request)
-    allowed = ("name", "inn", "kpp", "address", "phone", "email", "signer", "signature", "kp_intro")
-    values = {f"company_{key}": str(form.get(key, "")).strip()[:500] for key in allowed}
-    store.set_settings(values)
-    store.log_event("company_settings", f"ui:{client_ip(request)}", values.get("company_name", "")[:120])
+    await apply_company_form(form)
+    store.log_event("company_settings", f"ui:{client_ip(request)}", str(form.get("name", ""))[:120])
     return RedirectResponse(
         f"/ui/settings?flash={quote('настройки сохранены')}", status_code=status.HTTP_303_SEE_OTHER
     )
-
-
-def admin_context(request: Request) -> dict:
-    """Всё, что нужно любой вкладке админки: одна выборка, один рендер."""
-    db_path = settings.db_path
-    return {
-        "users": store.users(),
-        "events": store.list_events(100),
-        "pairs": store.learned_pairs(300),
-        "learned_total": store.learned_count(),
-        "company": pipeline.company(),
-        "totals": store.stats(),
-        "report": store.report(30),
-        "diagnostics": {
-            "llm": bool(settings.llm_enabled and settings.llm_base_url),
-            "llm_model": settings.llm_model or "—",
-            "smtp": bool(mailer.enabled and mailer.host),
-            "telegram": bool(settings.telegram_enabled and settings.telegram_bot_token),
-            "max": bool(settings.max_enabled and settings.max_bot_token),
-            "imap": settings.imap_user or "—",
-            "imap_folder": settings.imap_folder,
-            "pdf": settings.pdf_enabled,
-            "env": "боевой" if settings.is_production else "разработка",
-            "db_mb": round(db_path.stat().st_size / 1024 / 1024, 2) if db_path.exists() else 0,
-        },
-    }
-
-
-async def render_admin(request: Request, *, tab: str = "state", flash: str = ""):
-    denied = admin_only(request)
-    if denied is not None:
-        return denied
-    return page(
-        "admin.html",
-        request,
-        active_page="admin",
-        tab=tab if tab in ("state", "users", "learned", "events", "company") else "state",
-        flash=flash[:200],
-        **admin_context(request),
-    )
-
-
-# ---------- подключение (визард) ----------
-
 
 def setup_state() -> dict:
     """Три условия готовности: реквизиты, прайс, почта."""
@@ -481,13 +458,12 @@ def setup_state() -> dict:
     saved = store.get_settings()
     price = store.price_count()
     mail_ready = bool(mailer.enabled and mailer.host)
-    company_ready = bool(saved.get("company_name") or (company.get("name") and company["name"] != settings.company_name))
-    done = company_ready and price > 0 and mail_ready
+    company_ready = bool(saved.get("company_name"))
     return {
         "company_ready": company_ready,
         "price_count": price,
         "mail_ready": mail_ready,
-        "done": done,
+        "done": company_ready and price > 0 and mail_ready,
         "company": company,
         "smtp_host": settings.smtp_host,
         "smtp_port": settings.smtp_port,
@@ -511,8 +487,7 @@ async def ui_setup_company(request: Request):
     if denied is not None:
         return denied
     form = await verified_form(request)
-    allowed = ("name", "inn", "kpp", "address", "phone", "email", "signer", "signature", "kp_intro")
-    store.set_settings({f"company_{key}": str(form.get(key, "")).strip()[:500] for key in allowed})
+    await apply_company_form(form)
     store.log_event("setup_company", f"ui:{client_ip(request)}", str(form.get("name", ""))[:120])
     return RedirectResponse(
         f"/ui/setup?flash={quote('шаг 1 готов: реквизиты сохранены')}", status_code=status.HTTP_303_SEE_OTHER
@@ -581,6 +556,46 @@ async def ui_setup_mail(request: Request):
     store.log_event("setup_mail", f"ui:{client_ip(request)}", message[:160])
     return RedirectResponse(
         f"/ui/setup?flash={quote('шаг 3 готов: ' + message[:140])}", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
+def admin_context(request: Request) -> dict:
+    """Всё, что нужно любой вкладке админки: одна выборка, один рендер."""
+    db_path = settings.db_path
+    return {
+        "users": store.users(),
+        "events": store.list_events(100),
+        "pairs": store.learned_pairs(300),
+        "learned_total": store.learned_count(),
+        "company": pipeline.company(),
+        "totals": store.stats(),
+        "report": store.report(30),
+        "diagnostics": {
+            "llm": bool(settings.llm_enabled and settings.llm_base_url),
+            "llm_model": settings.llm_model or "—",
+            "smtp": bool(mailer.enabled and mailer.host),
+            "telegram": bool(settings.telegram_enabled and settings.telegram_bot_token),
+            "max": bool(settings.max_enabled and settings.max_bot_token),
+            "imap": settings.imap_user or "—",
+            "imap_folder": settings.imap_folder,
+            "pdf": settings.pdf_enabled,
+            "env": "боевой" if settings.is_production else "разработка",
+            "db_mb": round(db_path.stat().st_size / 1024 / 1024, 2) if db_path.exists() else 0,
+        },
+    }
+
+
+async def render_admin(request: Request, *, tab: str = "state", flash: str = ""):
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    return page(
+        "admin.html",
+        request,
+        active_page="admin",
+        tab=tab if tab in ("state", "users", "learned", "events", "company") else "state",
+        flash=flash[:200],
+        **admin_context(request),
     )
 
 

@@ -157,7 +157,7 @@
     Эти данные попадают в шапку КП, в подпись письма и в контакты для клиента.
     Значения из интерфейса важнее того, что прописано в файле настроек сервера.
   </p>
-  <form method="post" action="/ui/settings" class="stack">
+  <form method="post" action="/ui/settings" enctype="multipart/form-data" class="stack">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>Название компании
       <input type="text" name="name" value="{{ company.name }}" required maxlength="200">
@@ -179,6 +179,16 @@
     <label>Вводный текст КП (необязательно)
       <textarea name="kp_intro" rows="3" placeholder="Например: Цены действительны при заказе от 50 000 ₽">{{ company.kp_intro }}</textarea>
     </label>
+    <div class="row">
+      <label>Цвет компании
+        <input type="color" name="color" value="{{ company.color or '#1a5fd0' }}">
+      </label>
+      <label>Логотип (png, jpg, svg, до 200 КБ)
+        <input type="file" name="logo" accept="image/png,image/jpeg,image/webp,image/svg+xml">
+      </label>
+    </div>
+    {% if company.logo %}<p class="small"><img src="{{ company.logo }}" alt="логотип" style="max-height:48px"></p>{% endif %}
+
     <button class="primary" type="submit">Сохранить</button>
   </form>
   {% endif %}

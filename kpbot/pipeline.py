@@ -487,6 +487,8 @@ class Pipeline:
             "signer": self.cfg.company_signer,
             "signature": "",
             "kp_intro": "",
+            "logo": "",
+            "color": "",
         }
         return {key: (saved.get(f"company_{key}") or value) for key, value in defaults.items()}
 

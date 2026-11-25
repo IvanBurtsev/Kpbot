@@ -65,6 +65,7 @@ class Settings(BaseSettings):
 
     # --- лимиты (защита от дурака и от DoS) ---
     max_upload_bytes: int = 2 * 1024 * 1024
+    max_logo_bytes: int = 200 * 1024
     max_email_text_chars: int = 200_000
     max_rfq_lines: int = 200
     rate_limit_per_minute: int = 60

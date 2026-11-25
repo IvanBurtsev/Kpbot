@@ -31,7 +31,7 @@
 <section class="card">
   <h2>Шаг 1. Реквизиты компании</h2>
   <p class="muted small">Попадут в шапку КП и подпись письма. Без них КП уходит от «Ромашки».</p>
-  <form method="post" action="/ui/setup/company" class="stack">
+  <form method="post" action="/ui/setup/company" enctype="multipart/form-data" class="stack">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>Название компании
       <input type="text" name="name" value="{{ state.company.name }}" required maxlength="200">
@@ -46,6 +46,16 @@
       <label>Почта для клиентов <input type="email" name="email" value="{{ state.company.email }}" maxlength="120"></label>
     </div>
     <label>Подписант <input type="text" name="signer" value="{{ state.company.signer }}" maxlength="200"></label>
+    <div class="row">
+      <label>Цвет компании
+        <input type="color" name="color" value="{{ state.company.color or '#1a5fd0' }}">
+      </label>
+      <label>Логотип (png, jpg, svg, до 200 КБ)
+        <input type="file" name="logo" accept="image/png,image/jpeg,image/webp,image/svg+xml">
+      </label>
+    </div>
+    {% if state.company.logo %}<p class="small"><img src="{{ state.company.logo }}" alt="логотип" style="max-height:48px"></p>{% endif %}
+
     <button class="primary" type="submit">Сохранить реквизиты</button>
   </form>
 </section>
