@@ -627,12 +627,56 @@ def cmd_smtp_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _retry_one(store: Store, mailer, limit: int) -> tuple[int, int]:
+    """Повтор отправки в одной базе: возвращает (отправлено, не удалось)."""
+    from .mailer import MailError, build_kp_message, load_attachments, reply_subject
+
+    sent = failed = 0
+    for item in store.pending_messages(limit):
+        rfq = store.get_rfq(item["rfq_id"])
+        if rfq is None:
+            store.mark_attempt_failed(item["id"], "заявка удалена")
+            failed += 1
+            continue
+        attachments = load_attachments(settings.out_dir, item["rfq_id"], short=item["rfq_id"][:8])
+        message = build_kp_message(
+            sender=item["to_addr"],
+            from_addr=mailer.from_addr or settings.smtp_user or "no-reply@localhost",
+            subject=item["subject"] or reply_subject(str(rfq.get("subject", ""))),
+            body=item["body"],
+            attachments=attachments,
+            reply_to=settings.smtp_user or "",
+        )
+        try:
+            mailer.send(message, to=item["to_addr"])
+        except MailError as exc:
+            store.mark_attempt_failed(item["id"], str(exc))
+            store.log(item["rfq_id"], "send_retry_failed", "cli", f"{item['to_addr']}: {exc}"[:300])
+            failed += 1
+            continue
+        store.mark_sent(item["id"])
+        store.log(item["rfq_id"], "sent", "cli:retry", f"кому {item['to_addr']}, вложений {len(attachments)}")
+        sent += 1
+    return sent, failed
+
+
 def cmd_retry_outbox(args: argparse.Namespace) -> int:
     """Повторяет отправку писем, которые не ушли с первого раза."""
     from .mailer import MailError, Mailer, build_kp_message, load_attachments, reply_subject
 
-    store = Store(settings.db_path)
     mailer = Mailer(settings)
+    if getattr(args, "all", False):
+        total_sent = total_failed = 0
+        for tenant_id, name, tenant_store in tenant_stores():
+            sent, failed = _retry_one(tenant_store, mailer, args.limit)
+            stats = tenant_store.outbox_stats()
+            print(f"  {name}: отправлено {sent}, не удалось {failed}, в очереди {stats['pending']}")
+            total_sent += sent
+            total_failed += failed
+        print(f"итог по клиентам: отправлено {total_sent}, не удалось {total_failed}")
+        return 0 if total_failed == 0 else 1
+
+    store = Store(settings.db_path)
     pending = store.pending_messages(args.limit)
     if not pending:
         print("очередь пуста")
@@ -787,38 +831,75 @@ def cmd_eval(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_backup(args: argparse.Namespace) -> int:
-    """Консистентная копия базы через sqlite backup API + ротация старых копий."""
+def _backup_one(source: Path, keep: int, suffix: str = "") -> str:
+    """Копия одной базы с ротацией. Возвращает путь и размер для отчёта."""
     import contextlib
     import sqlite3
 
-    source = settings.db_path
     if not source.exists():
-        print(f"базы нет: {source}")
-        return 2
-
+        return f"нет базы {source}"
     target_dir = settings.data_dir / "backups"
     target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / f"kpbot-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.sqlite3"
-
+    name_part = f"kpbot-{suffix}-" if suffix else "kpbot-"
+    target = target_dir / f"{name_part}{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.sqlite3"
     with contextlib.closing(sqlite3.connect(str(source))) as src, contextlib.closing(
         sqlite3.connect(str(target))
     ) as dst:
         src.backup(dst)
 
-    copies = sorted(target_dir.glob("kpbot-*.sqlite3"))
+    copies = sorted(target_dir.glob(f"{name_part}*.sqlite3"))
     removed = 0
-    for old in copies[: max(0, len(copies) - args.keep)]:
+    for old in copies[: max(0, len(copies) - max(1, keep))]:
         try:
             old.unlink()
             removed += 1
         except OSError:
-            # файл занят другим процессом — не повод падать, удалим в следующий раз
-            continue
+            pass
+    size_kb = target.stat().st_size // 1024
+    return f"{target.name} ({size_kb} КБ), удалено старых: {removed}"
 
-    size_kb = target.stat().st_size / 1024
-    print(f"бэкап: {target} ({size_kb:.0f} КБ), удалено старых: {removed}, храним: {args.keep}")
+
+def tenant_stores():
+    """Пары (код, название, Store) по всем активным клиентам.
+
+    Если реестра нет — работает одна основная база, как раньше.
+    """
+    from .tenancy import TenantRegistry
+
+    registry = TenantRegistry(settings.tenants_db_path, settings.db_path)
+    tenants = registry.list()
+    if not tenants:
+        yield "default", "Основной", Store(settings.db_path)
+        return
+    for tenant in tenants:
+        if tenant["status"] != "active":
+            continue
+        path = Path(tenant["db_path"])
+        if path.exists():
+            yield tenant["id"], tenant["name"], Store(path)
+
+
+def cmd_backup(args: argparse.Namespace) -> int:
+    """Консистентная копия базы через sqlite backup API + ротация старых копий."""
+    import contextlib
+    import sqlite3
+
+    if getattr(args, "all", False):
+        total = 0
+        for tenant_id, name, tenant_store in tenant_stores():
+            result = _backup_one(tenant_store.db_path, args.keep, suffix=tenant_id)
+            print(f"  {name} ({tenant_id}): {result}")
+            total += 1
+        print(f"клиентов в бэкапе: {total}")
+        return 0
+
+    source = settings.db_path
+    if not source.exists():
+        print(f"базы нет: {source}")
+        return 2
+    print(f"бэкап: {_backup_one(source, args.keep)}")
     return 0
+
 
 
 def cmd_mail_seed(args: argparse.Namespace) -> int:
@@ -949,6 +1030,7 @@ def main(argv: list[str] | None = None) -> int:
 
     backup = sub.add_parser("backup", help="сделать копию базы и удалить старые")
     backup.add_argument("--keep", type=int, default=7, help="сколько копий хранить")
+    backup.add_argument("--all", action="store_true", help="все клиенты, не только основная база")
     backup.set_defaults(func=cmd_backup)
 
     evaluate_cmd = sub.add_parser("eval", help="замерить качество разбора на размеченных письмах")
@@ -981,6 +1063,7 @@ def main(argv: list[str] | None = None) -> int:
 
     retry = sub.add_parser("retry-outbox", help="повторить отправку писем из очереди")
     retry.add_argument("--limit", type=int, default=20)
+    retry.add_argument("--all", action="store_true", help="обойти все базы клиентов")
     retry.set_defaults(func=cmd_retry_outbox)
 
     alert = sub.add_parser("alert", help="служебное сообщение в Telegram и MAX")
