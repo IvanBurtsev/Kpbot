@@ -525,6 +525,18 @@ def cmd_send_kp(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_smtp_check(args: argparse.Namespace) -> int:
+    """Проверяет почтовые настройки, ничего не отправляя."""
+    from .mailer import MailError, check_connection
+
+    try:
+        print(check_connection(settings))
+    except MailError as exc:
+        print(f"не настроено: {exc}")
+        return 1
+    return 0
+
+
 def cmd_user_add(args: argparse.Namespace) -> int:
     """Добавить менеджера или администратора. Пароль спрашиваем скрыто."""
     import getpass
@@ -799,6 +811,9 @@ def main(argv: list[str] | None = None) -> int:
     send_kp.add_argument("--to", default="")
     send_kp.add_argument("--body", default="")
     send_kp.set_defaults(func=cmd_send_kp)
+
+    smtp_check = sub.add_parser("smtp-check", help="проверить настройки отправки почты")
+    smtp_check.set_defaults(func=cmd_smtp_check)
 
     args = parser.parse_args(argv)
     return int(args.func(args) or 0)

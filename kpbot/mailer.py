@@ -124,3 +124,23 @@ def reply_subject(subject: str) -> str:
     if base.lower().startswith("re:"):
         return base
     return f"Re: {base}"
+
+
+def check_connection(cfg: Settings) -> str:
+    """Проверяет связь и логин, ничего не отправляя. Возвращает текст для человека."""
+    mailer = Mailer(cfg)
+    mailer.check()
+    context = ssl.create_default_context()
+    try:
+        with smtplib.SMTP(mailer.host, mailer.port, timeout=mailer.timeout) as client:
+            client.ehlo()
+            if mailer.starttls:
+                client.starttls(context=context)
+                client.ehlo()
+            if mailer.user:
+                client.login(mailer.user, mailer.password)
+    except smtplib.SMTPAuthenticationError as exc:
+        raise MailError(f"логин отклонён: {exc.smtp_code}") from exc
+    except (smtplib.SMTPException, OSError) as exc:
+        raise MailError(f"связи нет: {exc}") from exc
+    return f"связь есть, вход выполнен: {mailer.host}:{mailer.port} · отправитель {mailer.from_addr}"
