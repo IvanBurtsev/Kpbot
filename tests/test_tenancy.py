@@ -29,18 +29,23 @@ def csrf(client: TestClient, url: str) -> str:
 
 class TenantRegistryTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.registry = TenantRegistry(_TMP / "registry-test.sqlite3", _TMP / "main.sqlite3")
+        # каждый тест — чистый реестр и своя база клиента
+        import uuid
+
+        run = uuid.uuid4().hex[:8]
+        self.main_db = _TMP / f"main-{run}.sqlite3"
+        self.registry = TenantRegistry(_TMP / f"registry-{run}.sqlite3", self.main_db)
 
     def test_default_tenant_is_created_once(self) -> None:
         first = self.registry.ensure_default()
         second = self.registry.ensure_default()
         self.assertEqual(first, second)
-        main = [t for t in self.registry.list() if t["db_path"] == str(_TMP / "main.sqlite3")]
+        main = [t for t in self.registry.list() if t["db_path"] == str(self.main_db)]
         self.assertEqual(len(main), 1, "основная база должна быть ровно одним клиентом")
         self.assertEqual(main[0]["id"], "default")
 
     def test_create_and_find_by_login(self) -> None:
-        path = _TMP / "tenant-a.sqlite3"
+        path = _TMP / f"tenant-a-{self.registry.path.stem}.sqlite3"
         tenant = self.registry.create("Клиент А", path)
         store = Store(path)
         store.init_schema()
@@ -51,7 +56,7 @@ class TenantRegistryTest(unittest.TestCase):
         self.assertEqual(self.registry.find_by_login("никого@нет.ру"), [])
 
     def test_status_toggle(self) -> None:
-        tenant = self.registry.create("Клиент Б", _TMP / "tenant-b.sqlite3")
+        tenant = self.registry.create("Клиент Б", _TMP / f"tenant-b-{self.registry.path.stem}.sqlite3")
         self.registry.set_status(tenant["id"], "paused")
         self.assertEqual(self.registry.get(tenant["id"])["status"], "paused")
         with self.assertRaises(ValueError):

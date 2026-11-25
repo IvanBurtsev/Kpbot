@@ -72,17 +72,24 @@ class TenantRegistry:
         return tenant_id
 
     def list(self) -> list[dict]:
-        self.init()
-        with closing(self._connect()) as conn:
-            rows = conn.execute(
-                "SELECT id, name, db_path, status, created_at FROM tenants ORDER BY created_at"
-            ).fetchall()
-        return [dict(row) for row in rows]
+        """Битый или чужой файл реестра не должен ронять интерфейс."""
+        try:
+            self.init()
+            with closing(self._connect()) as conn:
+                rows = conn.execute(
+                    "SELECT id, name, db_path, status, created_at FROM tenants ORDER BY created_at"
+                ).fetchall()
+            return [dict(row) for row in rows]
+        except sqlite3.Error:
+            return []
 
     def get(self, tenant_id: str) -> dict | None:
         if not tenant_id:
             return None
-        self.init()
+        try:
+            self.init()
+        except sqlite3.Error:
+            return None
         with closing(self._connect()) as conn:
             row = conn.execute(
                 "SELECT id, name, db_path, status, created_at FROM tenants WHERE id = ?", (tenant_id,)

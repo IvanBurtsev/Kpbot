@@ -137,8 +137,10 @@ async def check_production_config() -> None:
 
 @app.get("/healthz", include_in_schema=False)
 async def healthz() -> dict:
-    """Для reverse proxy и systemd: без авторизации, ничего не раскрывает."""
-    return {"status": "ok"}
+    """Для reverse proxy и systemd: без авторизации, ничего чувствительного."""
+    from . import __version__
+
+    return {"status": "ok", "version": __version__}
 
 
 # ---------- helpers ----------
