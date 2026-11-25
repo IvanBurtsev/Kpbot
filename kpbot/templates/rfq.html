@@ -206,7 +206,7 @@
     </form>
     <form method="post" action="/ui/rfq/{{ rfq.id }}/reject" class="inline">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <input type="text" name="reason" placeholder="причина отказа" class="short">
+      <input type="text" name="reason" placeholder="причина отказа">
       <button class="danger" type="submit">Отклонить</button>
     </form>
     {% if "kp_html" in artifacts %}<a class="button" href="/ui/rfq/{{ rfq.id }}/kp.html" target="_blank" rel="noopener">КП (HTML)</a>{% endif %}
