@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import socket
 import ssl
 import threading
@@ -189,6 +190,19 @@ def _api_url(config: TelegramConfig) -> str:
     return f"{config.api_base.rstrip('/')}/bot{config.token}/sendMessage"
 
 
+def _with_retry(action, *args, attempts: int = 2, delay: float = 0.7, **kwargs):
+    """Повторяет сетевой вызов: короткий сбой провайдера не должен съедать уведомление."""
+    last: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return action(*args, **kwargs)
+        except NotifyError as exc:
+            last = exc
+            if attempt < attempts:
+                time.sleep(delay * attempt)
+    raise last if last is not None else NotifyError("неизвестная ошибка")
+
+
 def _is_local_url(url: str) -> bool:
     lowered = url.lower()
     return any(host in lowered for host in ("127.0.0.1", "localhost", "0.0.0.0", "::1"))
@@ -317,7 +331,7 @@ class Notifier:
 
         if self.telegram is not None and self.telegram.chat_id:
             try:
-                send_telegram(self.telegram, text, button_url=link)
+                _with_retry(send_telegram, self.telegram, text, button_url=link)
                 results["telegram"] = True
             except NotifyError as exc:
                 log.warning("telegram: уведомление не отправлено: %s", redact(str(exc)))
@@ -325,7 +339,7 @@ class Notifier:
 
         if self.max is not None and self.max.addressed:
             try:
-                send_max(self.max, text)
+                _with_retry(send_max, self.max, text)
                 results["max"] = True
             except NotifyError as exc:
                 log.warning("max: уведомление не отправлено: %s", redact(str(exc)))

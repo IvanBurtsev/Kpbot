@@ -167,11 +167,13 @@ class MaxChannelTest(unittest.TestCase):
             TelegramConfig(token=TOKEN, chat_id="1"),
             MaxConfig(token="max-token", user_id="777"),
         )
-        call_results = [
-            httpx.ConnectError("telegram недоступен"),
-            response(200, {"message": {}}),
-        ]
-        with patch("kpbot.notify.httpx.post", side_effect=call_results):
+        def fake_post(url, *args, **kwargs):
+            # телеграм падает всегда (в том числе на повторе), MAX отвечает
+            if "telegram" in str(url):
+                raise httpx.ConnectError("telegram недоступен")
+            return response(200, {"message": {}})
+
+        with patch("kpbot.notify.httpx.post", side_effect=fake_post):
             result = notifier.notify_new_rfq(
                 rfq_id="1", subject="s", sender="a", total="100", lines=1, matched=1
             )
@@ -236,6 +238,30 @@ class MaxTokenRedactionTest(unittest.TestCase):
 
         text = format_new_rfq(subject="Заявка", sender="a@b.ru", total="100", lines=2, matched=2, link="")
         self.assertFalse(text.endswith("\n"))
+
+
+    def test_retry_wraps_transient_failure(self) -> None:
+        from kpbot.notify import NotifyError, _with_retry
+
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise NotifyError("сеть моргнула")
+            return "ok"
+
+        self.assertEqual(_with_retry(flaky, attempts=2, delay=0), "ok")
+        self.assertEqual(calls["n"], 2)
+
+    def test_retry_gives_up_and_raises(self) -> None:
+        from kpbot.notify import NotifyError, _with_retry
+
+        def always_fails():
+            raise NotifyError("канал недоступен")
+
+        with self.assertRaises(NotifyError):
+            _with_retry(always_fails, attempts=2, delay=0)
 
 
 
