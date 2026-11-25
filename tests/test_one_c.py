@@ -7,6 +7,7 @@ $metadata, создание документа).
 
 import support  # общий стенд: изолированные данные, сеть запрещена
 
+import json
 import unittest
 from decimal import Decimal
 
@@ -144,6 +145,8 @@ def documents_handler(request: httpx.Request) -> httpx.Response:
     path = request.url.path
     if "AccumulationRegister" in path:
         return httpx.Response(404, text="not found")
+    if "Catalog_КлассификаторЕдиницИзмерения" in path:
+        return httpx.Response(200, json=UNITS)
     if "Catalog_Номенклатура" in path:
         return httpx.Response(200, json=NOMENCLATURE)
     if "Catalog_Склады" in path:
@@ -153,6 +156,38 @@ def documents_handler(request: httpx.Request) -> httpx.Response:
     if "Document_РеализацияТоваровУслуг" in path:
         return httpx.Response(200, json=OUTGOING)
     return httpx.Response(404, text="not found")
+
+
+UNITS = {"value": [{"Ref_Key": "u-1", "Description": "шт"}, {"Ref_Key": "u-2", "Description": "м"}]}
+
+
+def base_handler(request: httpx.Request) -> httpx.Response:
+    """Справочники, которые нужны почти любому сценарию."""
+    path = request.url.path
+    if "Catalog_КлассификаторЕдиницИзмерения" in path:
+        return httpx.Response(200, json=UNITS)
+    if "Catalog_Номенклатура" in path:
+        return httpx.Response(200, json=NOMENCLATURE)
+    if "Catalog_Склады" in path:
+        return httpx.Response(200, json=WAREHOUSES)
+    if "Catalog_Организации" in path:
+        return httpx.Response(200, json={"value": [{"Ref_Key": "org-1", "Description": "ООО Тест"}]})
+    if "Catalog_Валюты" in path:
+        return httpx.Response(200, json={"value": [{"Ref_Key": "cur-1", "Description": "руб."}]})
+    return httpx.Response(404)
+
+
+def order_handler(request: httpx.Request) -> httpx.Response:
+    """Заказ клиента существует; POST перехватываем и запоминаем тело."""
+    if "Document_ЗаказКлиента" in request.url.path:
+        if request.method == "POST":
+            order_handler.captured["payload"] = json.loads(request.content)
+            return httpx.Response(201, json={"Ref_Key": "order-1"})
+        return httpx.Response(200, json={"value": []})
+    return base_handler(request)
+
+
+order_handler.captured = {}
 
 
 class DocumentStockTest(unittest.TestCase):
@@ -205,48 +240,50 @@ class DocumentStockTest(unittest.TestCase):
         self.assertIn("документы", str(ctx.exception))
 
 
+class NomenclatureUnitsTest(unittest.TestCase):
+    def test_unit_name_is_resolved_from_classifier(self) -> None:
+        rows = client_with(base_handler).nomenclature()
+        self.assertEqual(rows["n-1"][0], "KR-001")
+        self.assertEqual(rows["n-1"][2], "шт")
+        self.assertEqual(rows["n-2"][2], "м")
+
+
+class StockSourceTest(unittest.TestCase):
+    def test_missing_registers_are_listed(self) -> None:
+        client = client_with(lambda request: httpx.Response(404, text="not found"))
+        with self.assertRaises(OneCError) as ctx:
+            client.stock()
+        message = str(ctx.exception)
+        self.assertIn("пробовали", message)
+        self.assertIn("ТоварыНаСкладах", message)
+
+
 class OrderCreationTest(unittest.TestCase):
     def test_order_payload_uses_refs_and_string_numbers(self) -> None:
-        import json
-
-        captured: dict = {}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            if "Catalog_Номенклатура" in request.url.path:
-                return httpx.Response(200, json=NOMENCLATURE)
-            if "Document_ЗаказКлиента" in request.url.path:
-                captured["method"] = request.method
-                captured["payload"] = json.loads(request.content)
-                return httpx.Response(201, json={"Ref_Key": "order-1"})
-            return httpx.Response(404)
-
-        result = client_with(handler).create_order(
+        order_handler.captured.clear()
+        result = client_with(order_handler).create_order(
             [("KR-001", "10", "34.50"), ("EL-001", "2", "128")]
         )
         self.assertEqual(result, "order-1")
-        self.assertEqual(captured["method"], "POST")
-        payload = captured["payload"]
+        payload = order_handler.captured["payload"]
         self.assertIn("Date", payload)
         self.assertEqual(payload["Товары"][0]["Номенклатура_Key"], "n-1")
         self.assertEqual(payload["Товары"][0]["Количество"], "10")
         self.assertEqual(payload["Товары"][1]["Цена"], "128")
 
     def test_unknown_sku_is_explained(self) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            if "Catalog_Номенклатура" in request.url.path:
-                return httpx.Response(200, json=NOMENCLATURE)
-            return httpx.Response(404)
-
         with self.assertRaises(OneCError) as ctx:
-            client_with(handler).create_order([("NO-SUCH", "1", "10")])
+            client_with(order_handler).create_order([("NO-SUCH", "1", "10")])
         self.assertIn("NO-SUCH", str(ctx.exception))
         self.assertIn("нет артикулов", str(ctx.exception))
 
     def test_1c_rejection_text_is_kept(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
-            if "Catalog_Номенклатура" in request.url.path:
-                return httpx.Response(200, json=NOMENCLATURE)
-            return httpx.Response(400, text="ПередЗаписью: не заполнен склад")
+            if "Document_ЗаказКлиента" in request.url.path:
+                if request.method == "POST":
+                    return httpx.Response(400, text="ПередЗаписью: не заполнен склад")
+                return httpx.Response(200, json={"value": []})
+            return base_handler(request)
 
         with self.assertRaises(OneCError) as ctx:
             client_with(handler).create_order([("KR-001", "1", "10")])
@@ -258,6 +295,57 @@ class OrderCreationTest(unittest.TestCase):
 
         with self.assertRaises(OneCError):
             client_with(handler).create_order([])
+
+    def test_bukhbase_without_orders_is_explained(self) -> None:
+        # в Бухгалтерии нет «Заказа клиента» — 404 на сущность
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, text="not found")
+
+        with self.assertRaises(OneCError) as ctx:
+            client_with(handler).create_order([("KR-001", "1", "10")])
+        self.assertIn("Бухгалтерию", str(ctx.exception))
+
+
+class InvoiceCreationTest(unittest.TestCase):
+    def _handler(self, capture: dict, status: int = 201):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "Document_СчетНаОплатуПокупателю" in request.url.path:
+                if request.method == "POST":
+                    capture["payload"] = json.loads(request.content)
+                    if status >= 400:
+                        return httpx.Response(status, text="внутренняя ошибка OData")
+                    return httpx.Response(201, json={"Ref_Key": "inv-1"})
+                return httpx.Response(200, json={"value": []})
+            return base_handler(request)
+
+        return handler
+
+    def test_header_fields_follow_real_schema(self) -> None:
+        capture: dict = {}
+        result = client_with(self._handler(capture)).create_invoice(
+            counterparty="cp-1", lines=[("KR-001", "2", "100")]
+        )
+        self.assertEqual(result, "inv-1")
+        payload = capture["payload"]
+        self.assertEqual(payload["Организация_Key"], "org-1")
+        self.assertEqual(payload["ВалютаДокумента_Key"], "cur-1")
+        self.assertEqual(payload["Склад_Key"], "w-1")
+        self.assertEqual(payload["СуммаДокумента"], "200")
+        self.assertIs(payload["СуммаВключаетНДС"], True)
+        self.assertEqual(payload["Товары"][0]["Номенклатура_Key"], "n-1")
+        self.assertEqual(payload["Товары"][0]["Количество"], "2")
+
+    def test_500_hints_at_file_export(self) -> None:
+        with self.assertRaises(OneCError) as ctx:
+            client_with(self._handler({}, status=500)).create_invoice(
+                counterparty="cp-1", lines=[("KR-001", "1", "100")]
+            )
+        self.assertIn("табличную часть", str(ctx.exception).lower())
+
+    def test_counterparty_is_required(self) -> None:
+        with self.assertRaises(OneCError) as ctx:
+            client_with(base_handler).create_invoice(counterparty="", lines=[("KR-001", "1", "1")])
+        self.assertIn("контрагент", str(ctx.exception))
 
 
 if __name__ == "__main__":

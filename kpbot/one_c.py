@@ -26,6 +26,14 @@ class OneCError(RuntimeError):
     """1С недоступна, отказала в доступе или вернула неожиданный ответ."""
 
 
+class OneCResponseError(OneCError):
+    """Ответ 1С с HTTP-кодом: нужен, чтобы отличать 404 от прочих ошибок."""
+
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
+
+
 @dataclass(slots=True)
 class StockRow:
     sku: str
@@ -110,6 +118,14 @@ def _line_items(document: dict) -> list[dict]:
 # Имена документов зависят от конфигурации: пробуем по очереди, что ответит.
 INCOMING_DOCUMENTS = ("Document_ПоступлениеТоваровУслуг", "Document_ПриходнаяНакладная")
 OUTGOING_DOCUMENTS = ("Document_РеализацияТоваровУслуг", "Document_РасходнаяНакладная")
+# Регистры остатков: в УТ это «Товары на складах», в других конфигурациях — иначе.
+STOCK_REGISTERS = (
+    "AccumulationRegister_ТоварыНаСкладах",
+    "AccumulationRegister_ЗапасыНаСкладах",
+    "AccumulationRegister_СвободныеОстатки",
+)
+# «Заказ клиента» есть в УТ/ERP, но не в Бухгалтерии.
+CUSTOMER_ORDER_DOCUMENTS = ("Document_ЗаказКлиента", "Document_ЗаказПокупателя")
 
 
 class OneCClient:
@@ -141,12 +157,12 @@ class OneCClient:
         except httpx.HTTPError as exc:
             raise OneCError(f"сеть: {type(exc).__name__}: {str(exc)[:120]}") from exc
         if response.status_code == 401:
-            raise OneCError("1С не приняла логин или пароль (401)")
+            raise OneCResponseError("1С не приняла логин или пароль (401)", 401)
         if response.status_code == 403:
-            raise OneCError("у пользователя нет прав на чтение (403)")
+            raise OneCResponseError("у пользователя нет прав на чтение (403)", 403)
         if response.status_code >= 400:
             body = response.text[:200].replace("\n", " ")
-            raise OneCError(f"1С ответила {response.status_code}: {body}")
+            raise OneCResponseError(f"1С ответила {response.status_code}: {body}", response.status_code)
         return response
 
     def check(self) -> str:
@@ -157,19 +173,57 @@ class OneCClient:
         return f"доступ есть, метаданные {len(response.text)} символов"
 
     def stock(self, limit: int = 1000) -> list[tuple[str, str, str, str]]:
-        """Остатки товаров на складах из регистра «Товары на складах»."""
-        response = self._get(
-            "/AccumulationRegister_ТоварыНаСкладах/Balance",
-            params={"$format": "json", "$top": limit},
+        """Остатки из регистра. Регистр зависит от конфигурации: пробуем известные."""
+        tried: list[str] = []
+        for register in STOCK_REGISTERS:
+            try:
+                payload = self._json(
+                    f"/{register}/Balance", {"$format": "json", "$top": limit}
+                )
+            except OneCResponseError as exc:
+                if exc.status == 404:  # такого регистра в конфигурации нет
+                    tried.append(register)
+                    continue
+                raise
+            rows = parse_balance(payload)
+            if rows:
+                return rows
+            tried.append(register)
+        raise OneCError(
+            "регистр остатков не найден или в нём нет остатков; пробовали: "
+            + ", ".join(tried)
+            + ". Для Бухгалтерии остатки считаются по документам: --source documents"
         )
+
+    # ---------- справочники ----------
+
+    def units(self, limit: int = 1000) -> dict[str, str]:
+        """Единицы измерения: Ref_Key → «шт», «кг». Нет справочника — пусто."""
         try:
-            payload = response.json()
-        except ValueError as exc:
-            raise OneCError("1С вернула не JSON (вероятно, открылась веб-страница)") from exc
-        rows = parse_balance(payload)
-        if not rows:
-            raise OneCError("в ответе нет остатков: проверьте склад и права пользователя")
-        return rows
+            payload = self._json(
+                "/Catalog_КлассификаторЕдиницИзмерения", {"$format": "json", "$top": limit}
+            )
+        except OneCError:
+            return {}
+        result: dict[str, str] = {}
+        for record in payload.get("value") or []:
+            if not isinstance(record, dict):
+                continue
+            ref = _text(_exact(record, "ref_key", "ref"))
+            if ref:
+                result[ref] = _text(_exact(record, "description", "наименование"))
+        return result
+
+    def _first(self, entity: str, *, select: str = "Ref_Key") -> str:
+        """Первый Ref_Key справочника: организация, склад, валюта по умолчанию."""
+        try:
+            payload = self._json(f"/{entity}", {"$format": "json", "$top": 1, "$select": select})
+        except OneCError:
+            return ""
+        for record in payload.get("value") or []:
+            if isinstance(record, dict):
+                return _text(_exact(record, "ref_key"))
+        return ""
 
     # ---------- остатки по документам (когда регистр не опубликован) ----------
 
@@ -181,18 +235,24 @@ class OneCClient:
             raise OneCError("1С вернула не JSON (вероятно, открылась веб-страница)") from exc
 
     def nomenclature(self, limit: int = 5000) -> dict[str, tuple[str, str, str]]:
-        """Справочник номенклатуры: Ref_Key → (артикул, наименование, единица)."""
+        """Справочник номенклатуры: Ref_Key → (артикул, наименование, единица).
+
+        Единица в справочнике хранится ссылкой, поэтому её название берём
+        из классификатора единиц измерения. Папки пропускаем.
+        """
         payload = self._json("/Catalog_Номенклатура", {"$format": "json", "$top": limit})
+        units = self.units()
         result: dict[str, tuple[str, str, str]] = {}
         for record in payload.get("value") or []:
-            if not isinstance(record, dict):
+            if not isinstance(record, dict) or record.get("IsFolder"):
                 continue
             ref = _text(_exact(record, "ref_key", "ref"))
             if not ref:
                 continue
             sku = _text(_exact(record, "артикул", "код", "code"))
             name = _text(_exact(record, "наименование", "description"))
-            unit = _text(_exact(record, "единицаизмерения", "единица", "unit"))
+            unit_ref = _text(_exact(record, "единицаизмерения_key", "единицаизмерения"))
+            unit = units.get(unit_ref) or _text(_exact(record, "единицаизмерения", "unit"))
             result[ref] = (sku or name, name, unit)
         return result
 
@@ -290,6 +350,16 @@ class OneCClient:
                 result.setdefault(sku, ref)
         return result
 
+    def _entity_exists(self, entity: str) -> bool:
+        """Есть ли такая сущность в конфигурации (404 = нет)."""
+        try:
+            self._json(f"/{entity}", {"$format": "json", "$top": 1})
+            return True
+        except OneCResponseError as exc:
+            if exc.status == 404:
+                return False
+            raise
+
     def create_order(
         self,
         lines: list[tuple[str, str, str]],
@@ -299,13 +369,71 @@ class OneCClient:
     ) -> str:
         """Создаёт «Заказ клиента» по строкам (артикул, количество, цена).
 
-        Пишем только то, что знаем наверняка: дату, товары и — если передан —
-        контрагента. Остальные реквизиты 1С заполнит сама. Если конфигурация
-        не принимает запись, вернём её текст как есть: это не наша ошибка.
+        В Бухгалтерии такого документа нет — тогда честно говорим об этом.
         """
         if not lines:
             raise OneCError("пустой заказ: в расчёте нет строк")
 
+        entity = next(
+            (name for name in CUSTOMER_ORDER_DOCUMENTS if self._entity_exists(name)), ""
+        )
+        if not entity:
+            raise OneCError(
+                "в этой конфигурации нет «Заказа клиента» (похоже на Бухгалтерию). "
+                "Для неё используйте счёт на оплату или файл для 1С"
+            )
+        return self._create_document(entity, "Товары", lines, counterparty_key, date)
+
+    def create_invoice(
+        self,
+        *,
+        counterparty: str,
+        lines: list[tuple[str, str, str]],
+        organization: str = "",
+        warehouse: str = "",
+        currency: str = "",
+        date: str | None = None,
+    ) -> str:
+        """Создаёт «Счёт на оплату покупателю». Возвращает ссылку или номер.
+
+        Реквизиты, которые можно взять из базы (организация, склад, валюта),
+        подставляем из первых записей справочников: их обычно одна.
+        """
+        if not lines:
+            raise OneCError("пустой счёт: в расчёте нет строк")
+        if not counterparty:
+            raise OneCError("не передан контрагент: без него 1С счёт не запишет")
+
+        organization = organization or self._first("Catalog_Организации")
+        warehouse = warehouse or self._first("Catalog_Склады")
+        currency = currency or self._first("Catalog_Валюты")
+        if not organization:
+            raise OneCError("в базе 1С нет организации — заполните её и повторите")
+
+        return self._create_document(
+            "Document_СчетНаОплатуПокупателю",
+            "Товары",
+            lines,
+            counterparty,
+            date,
+            extra={
+                "Организация_Key": organization,
+                "ВалютаДокумента_Key": currency,
+                "СуммаДокумента": _total(lines),
+                "СуммаВключаетНДС": True,
+                **({"Склад_Key": warehouse} if warehouse else {}),
+            },
+        )
+
+    def _create_document(
+        self,
+        entity: str,
+        tabular: str,
+        lines: list[tuple[str, str, str]],
+        counterparty: str,
+        date: str | None,
+        extra: dict | None = None,
+    ) -> str:
         refs = self.ref_by_sku()
         missing = [sku for sku, _qty, _price in lines if sku not in refs]
         if missing:
@@ -314,57 +442,48 @@ class OneCClient:
                 + (" и ещё " + str(len(missing) - 5) if len(missing) > 5 else "")
             )
 
-        goods = [
-            {
-                "Номенклатура_Key": refs[sku],
-                "Количество": str(qty),
-                "Цена": str(price),
-            }
-            for sku, qty, price in lines
-        ]
         payload: dict[str, object] = {
             "Date": date or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
-            "Товары": goods,
+            tabular: [
+                {
+                    "Номенклатура_Key": refs[sku],
+                    "Количество": str(qty),
+                    "Цена": str(price),
+                }
+                for sku, qty, price in lines
+            ],
         }
-        if counterparty_key:
-            payload["Контрагент_Key"] = counterparty_key
+        if counterparty:
+            payload["Контрагент_Key"] = counterparty
+        payload.update(extra or {})
 
-        url = f"{self.base_url}{ODATA}/Document_ЗаказКлиента?$format=json"
+        url = f"{self.base_url}{ODATA}/{entity}?$format=json"
         try:
             response = self._http.post(url, headers=self._headers(), json=payload)
         except httpx.HTTPError as exc:
             raise OneCError(f"сеть: {type(exc).__name__}: {str(exc)[:120]}") from exc
         if response.status_code >= 400:
             body = response.text[:300].replace("\n", " ")
-            raise OneCError(f"1С отказала в создании заказа ({response.status_code}): {body}")
+            hint = (
+                " Табличную часть 1С Fresh часто не принимает через OData — "
+                "тогда выгрузите файл для 1С и загрузите вручную."
+                if response.status_code == 500
+                else ""
+            )
+            raise OneCError(f"1С отказала в создании документа ({response.status_code}): {body}.{hint}")
         try:
             created = response.json()
         except ValueError:
             return "создан"
         return str(created.get("Ref_Key") or created.get("Number") or "создан")
 
-    def create_invoice(self, *, counterparty: str, lines: list[tuple[str, str, str]]) -> str:
-        """Создаёт счёт на оплату. Возвращает ссылку на документ.
 
-        lines: (ключ номенклатуры, количество, цена).
-        """
-        payload = {
-            "Date": None,
-            "Контрагент_Key": counterparty,
-            "Товары": [
-                {"Номенклатура_Key": sku, "Количество": qty, "Цена": price}
-                for sku, qty, price in lines
-            ],
-        }
-        url = f"{self.base_url}{ODATA}/Document_СчетНаОплатуПокупателю?$format=json"
+def _total(lines: list[tuple[str, str, str]]) -> str:
+    """Сумма документа по строкам (количество × цена)."""
+    total = Decimal(0)
+    for _sku, qty, price in lines:
         try:
-            response = self._http.post(url, headers=self._headers(), json=payload)
-        except httpx.HTTPError as exc:
-            raise OneCError(f"сеть: {type(exc).__name__}: {str(exc)[:120]}") from exc
-        if response.status_code >= 400:
-            raise OneCError(f"1С отказала в создании документа ({response.status_code}): {response.text[:180]}")
-        try:
-            created = response.json()
-        except ValueError:
-            return "создан"
-        return str(created.get("Ref_Key") or created.get("Number") or "создан")
+            total += Decimal(str(qty)) * Decimal(str(price))
+        except InvalidOperation:
+            continue
+    return format(total.normalize(), "f")

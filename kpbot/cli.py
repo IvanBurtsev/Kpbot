@@ -1102,6 +1102,41 @@ def cmd_one_c_order(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_one_c_invoice(args: argparse.Namespace) -> int:
+    """Создаёт «Счёт на оплату покупателю» по подтверждённому расчёту заявки."""
+    from .one_c import OneCError
+
+    store = Store(settings.db_path)
+    rfq = store.get_rfq(args.rfq_id) if args.rfq_id else None
+    if rfq is None:
+        rows = store.list_rfqs(1)
+        rfq = store.get_rfq(rows[0]["id"]) if rows else None
+    if rfq is None:
+        print("заявок нет — создавать счёт не из чего")
+        return 2
+
+    quote = store.get_quote(rfq["id"])
+    if not quote or not quote.get("lines"):
+        print("в заявке нет расчёта: сначала подтвердите строки в интерфейсе")
+        return 2
+    if not args.counterparty:
+        print("нужен --counterparty (Ref_Key контрагента из 1С)")
+        return 2
+
+    lines = [(line["sku"], line["qty"], line["price"]) for line in quote["lines"]]
+    try:
+        result = _one_c_client().create_invoice(
+            counterparty=args.counterparty, lines=lines
+        )
+    except (OneCError, SystemExit) as exc:
+        print(f"1С: {exc}")
+        return 1
+    store.log(rfq["id"], "invoice_1c", "cli", str(result)[:200])
+    print(f"счёт создан в 1С: {result} · заявка {rfq['id'][:8]}")
+    print("проверьте документ в 1С: часть реквизитов заполняет сама 1С")
+    return 0
+
+
 def cmd_backup(args: argparse.Namespace) -> int:
     """Консистентная копия базы через sqlite backup API + ротация старых копий."""
     import contextlib
@@ -1289,9 +1324,14 @@ def main(argv: list[str] | None = None) -> int:
     one_c_stock.set_defaults(func=cmd_one_c_stock)
 
     one_c_order = sub.add_parser("1c-order", help="создать «Заказ клиента» в 1С по расчёту заявки")
-    one_c_order.add_argument("--rfq", default="", help="id заявки; по умолчанию последняя")
+    one_c_order.add_argument("--rfq", dest="rfq_id", default="", help="id заявки; по умолчанию последняя")
     one_c_order.add_argument("--counterparty", default="", help="Ref_Key контрагента (необязательно)")
     one_c_order.set_defaults(func=cmd_one_c_order)
+
+    one_c_invoice = sub.add_parser("1c-invoice", help="создать «Счёт на оплату» в 1С по расчёту")
+    one_c_invoice.add_argument("--rfq", dest="rfq_id", default="", help="id заявки; по умолчанию последняя")
+    one_c_invoice.add_argument("--counterparty", default="", help="Ref_Key контрагента из 1С")
+    one_c_invoice.set_defaults(func=cmd_one_c_invoice)
 
     backup = sub.add_parser("backup", help="сделать копию базы и удалить старые")
     backup.add_argument("--keep", type=int, default=7, help="сколько копий хранить")
