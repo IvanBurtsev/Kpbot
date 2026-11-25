@@ -113,3 +113,15 @@ ul.log li { margin-bottom: 4px; }
 .crumbs a { color: var(--muted); text-decoration: none; }
 
 .foot { text-align: center; padding: 10px 0 30px; }
+/* рабочее место заявки: письмо слева, разбор справа */
+.workdesk { display: grid; grid-template-columns: minmax(300px, 420px) 1fr; gap: 16px; align-items: start; }
+@media (max-width: 960px) { .workdesk { grid-template-columns: 1fr; } }
+.letter {
+  white-space: pre-wrap; word-break: break-word;
+  font: 13px/1.55 ui-monospace, Consolas, monospace;
+  background: #fafbfc; border: 1px solid var(--line); border-radius: 8px;
+  padding: 12px; max-height: 460px; overflow: auto;
+}
+tr.needs-attention td { background: #fff9ec; }
+.attention { color: var(--warn); font-weight: 600; }
+.sends th, .sends td { font-size: 13px; }

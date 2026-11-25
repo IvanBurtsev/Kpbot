@@ -585,6 +585,18 @@ class Store:
                     "UPDATE quotes SET duration_ms = ? WHERE id = ?", (int(duration_ms), quote_id)
                 )
 
+    def sent_history(self, rfq_id: str, limit: int = 20) -> list[dict]:
+        """История отправок КП: что ушло, кому и когда."""
+        limit = max(1, min(int(limit), 100))
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT action, actor, detail, created_at FROM decisions"
+                " WHERE rfq_id = ? AND action IN ('sent', 'send_failed')"
+                " ORDER BY id DESC LIMIT ?",
+                (rfq_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     # ---------- обучение на правках ----------
 
     def learn_match(self, key: str, sku: str) -> None:

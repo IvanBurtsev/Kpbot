@@ -24,7 +24,7 @@
   {% endif %}
   <p class="small muted">Разобрано автоматически: {{ rfq.lines|selectattr("status", "equalto", "ok")|list|length }} из {{ rfq.lines|length }}
     {%- set issues = rfq.lines|rejectattr("status", "equalto", "ok")|list|length -%}
-    {% if issues %} · требуют внимания: {{ issues }}{% endif %}</p>
+    {% if issues %} · <span class="attention">требуют внимания: {{ issues }}</span>{% endif %}</p>
   {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
 </section>
@@ -68,8 +68,15 @@
 </section>
 {% endif %}
 
+<div class="workdesk">
 <section class="card">
-  <h2>Строки из письма</h2>
+  <h2>Письмо клиента</h2>
+  <p class="muted small">{{ rfq.sender }}{% if rfq.received_at %} · {{ rfq.received_at[:25] }}{% endif %}</p>
+  <div class="letter">{{ rfq.raw_text or "текст письма не сохранён" }}</div>
+</section>
+
+<section class="card">
+  <h2>Что понял сервис</h2>
   <p class="muted small">Позицию можно подтвердить, заменить, изменить количество или удалить — КП пересчитается сразу.</p>
   <table class="grid lines">
     <thead>
@@ -78,7 +85,7 @@
     </thead>
     <tbody>
       {% for l in rfq.lines %}
-      <tr>
+      <tr{% if l.status != "ok" %} class="needs-attention"{% endif %}>
         <td class="muted">{{ l.idx }}</td>
         <td>{{ l.raw_text }}{% if l.note %}<br><span class="muted small">{{ l.note }}</span>{% endif %}</td>
         <td class="num">{{ l.qty or "—" }}</td>
@@ -126,9 +133,26 @@
     <button type="submit" class="primary">Добавить позицию</button>
   </form>
 </section>
+</div>
 
 <section class="card">
   <h2>Отправить клиенту</h2>
+  {% if sends %}
+  <h3>История отправок</h3>
+  <table class="sends">
+    <thead><tr><th>Когда</th><th>Кому</th><th>Результат</th></tr></thead>
+    <tbody>
+      {% for item in sends %}
+      <tr>
+        <td class="small muted">{{ item.created_at[:19] }}</td>
+        <td class="small">{{ item.detail.split(", ")[0].replace("кому ", "") }}</td>
+        <td class="small">{% if item.action == "sent" %}<span class="ok">отправлено</span>{% else %}<span class="error">не ушло</span>{% endif %}
+          <span class="muted">· {{ item.detail }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
   {% if smtp_ready %}
   <form method="post" action="/ui/rfq/{{ rfq.id }}/send" class="stack">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

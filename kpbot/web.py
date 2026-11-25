@@ -141,6 +141,12 @@ def safe_int(value: object, default: int, low: int, high: int) -> int:
     return max(low, min(number, high))
 
 
+def rate_key(request: Request) -> str:
+    """Лимит считаем по пользователю, иначе несколько менеджеров за одним IP делят квоту."""
+    user = current_user(request)
+    return f"user:{user.id}" if user else f"ip:{client_ip(request)}"
+
+
 def client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
@@ -272,7 +278,7 @@ async def ui_upload(request: Request, file: UploadFile):
     form = await request.form()
     if not verify_csrf(settings.session_secret, session_of(request), str(form.get(CSRF_FIELD, ""))):
         return PlainTextResponse("csrf failed", status_code=403)
-    if not limiter.allow(f"upload:{client_ip(request)}"):
+    if not limiter.allow(f"upload:{rate_key(request)}"):
         return PlainTextResponse("слишком много загрузок", status_code=429)
 
     filename = (file.filename or "").lower()
@@ -348,7 +354,7 @@ async def ui_prices_upload(request: Request):
     form = await request.form()
     if not verify_csrf(settings.session_secret, session_of(request), str(form.get(CSRF_FIELD, ""))):
         return PlainTextResponse("csrf failed", status_code=403)
-    if not limiter.allow(f"upload:{client_ip(request)}"):
+    if not limiter.allow(f"upload:{rate_key(request)}"):
         return PlainTextResponse("слишком много загрузок", status_code=429)
 
     upload = form.get("file")
@@ -603,6 +609,7 @@ async def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
         items=store.price_items(),
         llm_usage=store.llm_usage_for(rfq_id),
         timing=store.rfq_timing(rfq_id),
+        sends=store.sent_history(rfq_id),
         assignee=store.user_by_id(rfq["assignee"]) if rfq.get("assignee") else None,
         users=store.users() if is_admin_request else [],
         decisions=store.decisions(rfq_id),
@@ -850,6 +857,8 @@ async def ui_rfq_send(request: Request, rfq_id: str):
         return login_redirect(request)
     ensure_rfq_id(rfq_id)
     form = await verified_form(request)
+    if not limiter.allow(f"send:{rate_key(request)}"):
+        return back_to(rfq_id, "слишком часто: подождите минуту")
     rfq = store.get_rfq(rfq_id)
     if rfq is None:
         raise HTTPException(status_code=404, detail="заявка не найдена")
