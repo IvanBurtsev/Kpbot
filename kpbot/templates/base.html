@@ -35,12 +35,5 @@
 <main class="wrap">
   {% block content %}{% endblock %}
 </main>
-<footer class="foot">
-  {% if smtp_ready %}
-  <span class="muted small">Письма отправляются с настроенного ящика</span>
-  {% else %}
-  <span class="muted small">Отправка писем не настроена</span>
-  {% endif %}
-</footer>
 </body>
 </html>
