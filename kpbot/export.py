@@ -88,6 +88,18 @@ def build_rfq_xlsx(rfq: dict, quote: dict | None) -> bytes:
         sheet.column_dimensions[column].width = width
     sheet.freeze_panes = f"A{table_row + 1}"
 
+    # лист под справочник «Номенклатура»: так 1С создаст/обновит карточки товара
+    nom = wb.create_sheet("Номенклатура")
+    nom.append(("Наименование", "Артикул", "Единица измерения"))
+    seen: set[str] = set()
+    for line in lines:
+        if line["sku"] in seen:
+            continue
+        seen.add(line["sku"])
+        nom.append((line["name"], line["sku"], line["unit"]))
+    for column, width in {"A": 60, "B": 16, "C": 18}.items():
+        nom.column_dimensions[column].width = width
+
     # лист для загрузки в 1С: только нужные колонки, без оформления
     one_c = wb.create_sheet("Для 1С")
     one_c.append(("Код", "Наименование", "Количество", "Цена", "Сумма"))
@@ -139,6 +151,8 @@ def check_1c_sheet(content: bytes) -> list[str]:
     try:
         if "Для 1С" not in wb.sheetnames:
             return ["нет листа «Для 1С»"]
+        if "Номенклатура" not in wb.sheetnames:
+            problems.append("нет листа «Номенклатура»")
         sheet = wb["Для 1С"]
         rows = list(sheet.iter_rows(values_only=True))
         if not rows:
