@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from decimal import Decimal, InvalidOperation
@@ -19,6 +20,7 @@ from urllib.parse import quote
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from pydantic import BaseModel, Field, field_validator
 
@@ -77,6 +79,8 @@ async def hardening(request: Request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("Content-Security-Policy", CSP)
+    if settings.public_base_url.lower().startswith("https"):
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     response.headers.setdefault("X-Request-ID", request_id)
     duration_ms = (time.perf_counter() - started) * 1000
     log.info(
@@ -112,6 +116,29 @@ async def healthz() -> dict:
 
 
 # ---------- helpers ----------
+
+
+RFQ_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def ensure_rfq_id(rfq_id: str) -> str:
+    """Идентификатор заявки — только 32 hex-символа.
+
+    Без проверки значение из адреса попадает в путь к файлу: это и обход
+    каталогов, и 500-е на длинных строках.
+    """
+    if not RFQ_ID_RE.fullmatch(rfq_id or ""):
+        raise HTTPException(status_code=404, detail="заявка не найдена")
+    return rfq_id
+
+
+def safe_int(value: object, default: int, low: int, high: int) -> int:
+    """int из входных данных без падения на мусоре."""
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(number, high))
 
 
 def client_ip(request: Request) -> str:
@@ -219,6 +246,7 @@ async def ui_login(request: Request):
         token,
         httponly=True,
         samesite="lax",
+        secure=settings.public_base_url.lower().startswith("https"),
         max_age=settings.session_ttl_seconds,
         path="/",
     )
@@ -257,7 +285,9 @@ async def ui_upload(request: Request, file: UploadFile):
         return page("inbox.html", request, code=413, rfqs=store.list_rfqs(100),
                     error="файл больше 2 МБ")
     try:
-        result = pipeline.process_eml_bytes(raw, actor=f"ui:{client_ip(request)}")
+        result = await run_in_threadpool(
+            pipeline.process_eml_bytes, raw, actor=f"ui:{client_ip(request)}"
+        )
     except NotAnRfq:
         return page("inbox.html", request, code=422, rfqs=store.list_rfqs(100),
                     error="в письме не найдено ни одной позиции с количеством — это не заявка")
@@ -270,11 +300,11 @@ async def ui_upload(request: Request, file: UploadFile):
 
 
 @app.get("/ui/stats", response_class=HTMLResponse)
-async def ui_stats(request: Request, days: int = 30):
+async def ui_stats(request: Request, days: str = "30"):
     """Сводка: сколько заявок, на какую сумму, за сколько разобрано."""
     if not is_authenticated(request):
         return login_redirect(request)
-    days = max(1, min(int(days or 30), 365))
+    days = safe_int(days, 30, 1, 365)
     return page(
         "stats.html",
         request,
@@ -518,6 +548,7 @@ async def ui_admin_events(request: Request):
 async def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
     if not is_authenticated(request):
         return login_redirect(request)
+    ensure_rfq_id(rfq_id)
     user = current_user(request)
     is_admin_request = bool(user and user.is_admin)
     rfq = store.get_rfq(rfq_id)
@@ -555,6 +586,7 @@ async def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
 async def ui_approve(request: Request, rfq_id: str):
     if not is_authenticated(request):
         return login_redirect(request)
+    ensure_rfq_id(rfq_id)
     form = await request.form()
     if not verify_csrf(settings.session_secret, session_of(request), str(form.get(CSRF_FIELD, ""))):
         return PlainTextResponse("csrf failed", status_code=403)
@@ -572,6 +604,7 @@ async def ui_approve(request: Request, rfq_id: str):
 async def ui_reject(request: Request, rfq_id: str):
     if not is_authenticated(request):
         return login_redirect(request)
+    ensure_rfq_id(rfq_id)
     form = await request.form()
     if not verify_csrf(settings.session_secret, session_of(request), str(form.get(CSRF_FIELD, ""))):
         return PlainTextResponse("csrf failed", status_code=403)
@@ -588,6 +621,7 @@ async def ui_reject(request: Request, rfq_id: str):
 async def ui_kp_html(request: Request, rfq_id: str):
     if not is_authenticated(request):
         return login_redirect(request)
+    ensure_rfq_id(rfq_id)
     path = settings.out_dir / f"{rfq_id}.html"
     if not path.exists():
         raise HTTPException(status_code=404, detail="КП ещё не сформировано")
@@ -598,6 +632,7 @@ async def ui_kp_html(request: Request, rfq_id: str):
 async def ui_kp_pdf(request: Request, rfq_id: str):
     if not is_authenticated(request):
         return login_redirect(request)
+    ensure_rfq_id(rfq_id)
     path = settings.out_dir / f"{rfq_id}.pdf"
     if not path.exists():
         raise HTTPException(status_code=404, detail="PDF не сформирован — смотрите HTML или DOCX")
@@ -609,6 +644,7 @@ async def ui_kp_pdf(request: Request, rfq_id: str):
 async def ui_kp_docx(request: Request, rfq_id: str):
     if not is_authenticated(request):
         return login_redirect(request)
+    ensure_rfq_id(rfq_id)
     path = settings.out_dir / f"{rfq_id}.docx"
     if not path.exists():
         raise HTTPException(status_code=404, detail="DOCX не сформирован")
@@ -662,9 +698,9 @@ def back_to(rfq_id: str, message: str) -> RedirectResponse:
     )
 
 
-def save_edits(rfq_id: str, lines: list[RfqLine], actor: str, note: str) -> RedirectResponse:
+async def save_edits(rfq_id: str, lines: list[RfqLine], actor: str, note: str) -> RedirectResponse:
     try:
-        pipeline.apply_edits(rfq_id, lines, actor=actor, note=note)
+        await run_in_threadpool(pipeline.apply_edits, rfq_id, lines, actor=actor, note=note)
     except PermissionError as exc:
         return back_to(rfq_id, str(exc))
     except KeyError:
@@ -687,6 +723,7 @@ def parse_qty(raw: str) -> Decimal | None:
 async def ui_line_confirm(request: Request, rfq_id: str, idx: int):
     if not is_authenticated(request):
         return login_redirect(request)
+    ensure_rfq_id(rfq_id)
     await verified_form(request)
     _rfq, lines = lines_from_db(rfq_id)
     target = next((line for line in lines if line.idx == idx), None)
@@ -696,13 +733,14 @@ async def ui_line_confirm(request: Request, rfq_id: str, idx: int):
         return back_to(rfq_id, "у строки нет подобранной позиции — выберите её вручную")
     target.status = LineStatus.OK
     target.note = ""
-    return save_edits(rfq_id, lines, f"ui:{client_ip(request)}", f"подтверждена строка {idx}")
+    return await save_edits(rfq_id, lines, f"ui:{client_ip(request)}", f"подтверждена строка {idx}")
 
 
 @app.post("/ui/rfq/{rfq_id}/lines/{idx}/update")
 async def ui_line_update(request: Request, rfq_id: str, idx: int):
     if not is_authenticated(request):
         return login_redirect(request)
+    ensure_rfq_id(rfq_id)
     form = await verified_form(request)
 
     qty = parse_qty(str(form.get("qty", "")))
@@ -726,25 +764,27 @@ async def ui_line_update(request: Request, rfq_id: str, idx: int):
         target.status = LineStatus.OK
         target.note = ""
         target.match_score = 1.0
-    return save_edits(rfq_id, lines, f"ui:{client_ip(request)}", f"изменена строка {idx}")
+    return await save_edits(rfq_id, lines, f"ui:{client_ip(request)}", f"изменена строка {idx}")
 
 
 @app.post("/ui/rfq/{rfq_id}/lines/{idx}/delete")
 async def ui_line_delete(request: Request, rfq_id: str, idx: int):
     if not is_authenticated(request):
         return login_redirect(request)
+    ensure_rfq_id(rfq_id)
     await verified_form(request)
     _rfq, lines = lines_from_db(rfq_id)
     remaining = [line for line in lines if line.idx != idx]
     if len(remaining) == len(lines):
         return back_to(rfq_id, "строка не найдена")
-    return save_edits(rfq_id, remaining, f"ui:{client_ip(request)}", f"удалена строка {idx}")
+    return await save_edits(rfq_id, remaining, f"ui:{client_ip(request)}", f"удалена строка {idx}")
 
 
 @app.post("/ui/rfq/{rfq_id}/lines/add")
 async def ui_line_add(request: Request, rfq_id: str):
     if not is_authenticated(request):
         return login_redirect(request)
+    ensure_rfq_id(rfq_id)
     form = await verified_form(request)
 
     sku = str(form.get("sku", "")).strip()
@@ -772,7 +812,7 @@ async def ui_line_add(request: Request, rfq_id: str):
             note="",
         )
     )
-    return save_edits(rfq_id, lines, f"ui:{client_ip(request)}", f"добавлена позиция {item.sku}")
+    return await save_edits(rfq_id, lines, f"ui:{client_ip(request)}", f"добавлена позиция {item.sku}")
 
 
 @app.post("/ui/rfq/{rfq_id}/send")
@@ -780,6 +820,7 @@ async def ui_rfq_send(request: Request, rfq_id: str):
     """Отправляет готовое КП клиенту письмом с PDF и DOCX."""
     if not is_authenticated(request):
         return login_redirect(request)
+    ensure_rfq_id(rfq_id)
     form = await verified_form(request)
     rfq = store.get_rfq(rfq_id)
     if rfq is None:
@@ -823,6 +864,7 @@ async def ui_rfq_assign(request: Request, rfq_id: str):
     """Менеджер берёт свободную заявку себе; администратор назначает любому."""
     if not is_authenticated(request):
         return login_redirect(request)
+    ensure_rfq_id(rfq_id)
     form = await verified_form(request)
     user = current_user(request)
     rfq = store.get_rfq(rfq_id)
@@ -844,6 +886,7 @@ async def ui_rfq_assign(request: Request, rfq_id: str):
 async def ui_export_xlsx(request: Request, rfq_id: str):
     if not is_authenticated(request):
         return login_redirect(request)
+    ensure_rfq_id(rfq_id)
     rfq = store.get_rfq(rfq_id)
     if rfq is None:
         raise HTTPException(status_code=404, detail="заявка не найдена")
@@ -888,7 +931,7 @@ async def health() -> dict:
 async def api_create_rfq(payload: RfqIn) -> JSONResponse:
     if not limiter.allow("api:rfqs"):
         raise HTTPException(status_code=429, detail="rate limit")
-    result = pipeline.process_text(
+    result = await run_in_threadpool(pipeline.process_text, 
         payload.text,
         sender=payload.sender,
         subject=payload.subject,
@@ -911,6 +954,7 @@ async def api_create_rfq(payload: RfqIn) -> JSONResponse:
 
 @app.get("/api/v1/rfqs/{rfq_id}", dependencies=[Depends(api_auth)])
 async def api_get_rfq(rfq_id: str) -> dict:
+    ensure_rfq_id(rfq_id)
     rfq = store.get_rfq(rfq_id)
     if rfq is None:
         raise HTTPException(status_code=404, detail="заявка не найдена")
@@ -919,6 +963,7 @@ async def api_get_rfq(rfq_id: str) -> dict:
 
 @app.post("/api/v1/rfqs/{rfq_id}/approve", dependencies=[Depends(api_auth)])
 async def api_approve(rfq_id: str) -> dict:
+    ensure_rfq_id(rfq_id)
     try:
         result = pipeline.approve(rfq_id, actor="api")
     except KeyError:
