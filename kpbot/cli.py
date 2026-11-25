@@ -1015,6 +1015,12 @@ def cmd_mail_preview(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     from .logs import register_settings_secrets, setup_logging
 
+    # Консоль Windows не умеет часть символов (→, ≥): не падаем на --help.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(errors="replace")
+
     setup_logging()
     register_settings_secrets(settings)
     parser = argparse.ArgumentParser(prog="kpbot", description="заявка из письма → КП")
