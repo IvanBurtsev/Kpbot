@@ -85,6 +85,32 @@ def parse_balance(payload: dict) -> list[tuple[str, str, str, str]]:
     return result
 
 
+def _exact(record: dict, *names: str) -> object | None:
+    """Значение по точному имени поля (без регистра): «Номенклатура_Key» и т.п."""
+    lowered = {str(key).lower(): value for key, value in record.items()}
+    for name in names:
+        if name in lowered:
+            return lowered[name]
+    return None
+
+
+def _line_items(document: dict) -> list[dict]:
+    """Табличная часть документа: первый список словарей с количеством."""
+    for value in document.values():
+        if not isinstance(value, list) or not value:
+            continue
+        if not all(isinstance(item, dict) for item in value):
+            continue
+        if any(_exact(item, "количество", "quantity") is not None for item in value):
+            return value
+    return []
+
+
+# Имена документов зависят от конфигурации: пробуем по очереди, что ответит.
+INCOMING_DOCUMENTS = ("Document_ПоступлениеТоваровУслуг", "Document_ПриходнаяНакладная")
+OUTGOING_DOCUMENTS = ("Document_РеализацияТоваровУслуг", "Document_РасходнаяНакладная")
+
+
 class OneCClient:
     """Тонкий клиент: Basic-авторизация и JSON OData."""
 
@@ -130,7 +156,7 @@ class OneCClient:
         return f"доступ есть, метаданные {len(response.text)} символов"
 
     def stock(self, limit: int = 1000) -> list[tuple[str, str, str, str]]:
-        """Остатки товаров на складах."""
+        """Остатки товаров на складах из регистра «Товары на складах»."""
         response = self._get(
             "/AccumulationRegister_ТоварыНаСкладах/Balance",
             params={"$format": "json", "$top": limit},
@@ -143,6 +169,117 @@ class OneCClient:
         if not rows:
             raise OneCError("в ответе нет остатков: проверьте склад и права пользователя")
         return rows
+
+    # ---------- остатки по документам (когда регистр не опубликован) ----------
+
+    def _json(self, path: str, params: dict | None = None) -> dict:
+        response = self._get(path, params=params)
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise OneCError("1С вернула не JSON (вероятно, открылась веб-страница)") from exc
+
+    def nomenclature(self, limit: int = 5000) -> dict[str, tuple[str, str, str]]:
+        """Справочник номенклатуры: Ref_Key → (артикул, наименование, единица)."""
+        payload = self._json("/Catalog_Номенклатура", {"$format": "json", "$top": limit})
+        result: dict[str, tuple[str, str, str]] = {}
+        for record in payload.get("value") or []:
+            if not isinstance(record, dict):
+                continue
+            ref = _text(_exact(record, "ref_key", "ref"))
+            if not ref:
+                continue
+            sku = _text(_exact(record, "артикул", "код", "code"))
+            name = _text(_exact(record, "наименование", "description"))
+            unit = _text(_exact(record, "единицаизмерения", "единица", "unit"))
+            result[ref] = (sku or name, name, unit)
+        return result
+
+    def warehouses(self, limit: int = 1000) -> dict[str, str]:
+        """Склады: Ref_Key → название. Нет справочника — пустая карта."""
+        try:
+            payload = self._json("/Catalog_Склады", {"$format": "json", "$top": limit})
+        except OneCError:
+            return {}
+        result: dict[str, str] = {}
+        for record in payload.get("value") or []:
+            if not isinstance(record, dict):
+                continue
+            ref = _text(_exact(record, "ref_key", "ref"))
+            if ref:
+                result[ref] = _text(_exact(record, "description", "наименование"))
+        return result
+
+    def documents(self, entity: str, limit: int = 1000) -> list[dict]:
+        """Документы указанного вида. Нет такого вида в конфигурации — пусто."""
+        try:
+            payload = self._json(f"/{entity}", {"$format": "json", "$top": limit})
+        except OneCError:
+            return []
+        return [item for item in payload.get("value") or [] if isinstance(item, dict)]
+
+    def stock_from_documents(self, limit: int = 1000) -> list[tuple[str, str, str, str]]:
+        """Остатки как «приход − расход» по документам.
+
+        Нужен, когда регистр остатков не опубликован, а документы поступления
+        и реализации в базе есть. Артикул берём из справочника номенклатуры
+        по Ref_Key: в табличной части документа лежит ссылка, а не артикул.
+        """
+        nomenclature = self.nomenclature()
+        warehouses = self.warehouses()
+        totals: dict[str, Decimal] = {}
+        units: dict[str, str] = {}
+        warehouse_by_sku: dict[str, str] = {}
+        found = False
+
+        for entities, sign in ((INCOMING_DOCUMENTS, 1), (OUTGOING_DOCUMENTS, -1)):
+            for entity in entities:
+                for document in self.documents(entity, limit):
+                    items = _line_items(document)
+                    if not items:
+                        continue
+                    found = True
+                    warehouse_ref = _text(_exact(document, "склад_key", "склад"))
+                    warehouse = warehouses.get(warehouse_ref, "") or warehouse_ref
+                    for item in items:
+                        ref = _text(_exact(item, "номенклатура_key", "номенклатура_ref"))
+                        qty = _number(_exact(item, "количество", "quantity"))
+                        if qty is None:
+                            continue
+                        sku, _, unit = nomenclature.get(ref, ("", "", ""))
+                        if not sku:
+                            # бывает, что табличная часть развёрнута: артикул рядом
+                            sku = _text(_exact(item, "артикул", "sku")) or ref
+                            unit = unit or _text(_exact(item, "единицаизмерения", "единица", "unit"))
+                        if not sku:
+                            continue
+                        totals[sku] = totals.get(sku, Decimal(0)) + qty * sign
+                        units.setdefault(sku, unit)
+                        if warehouse:
+                            warehouse_by_sku.setdefault(sku, warehouse)
+
+        if not found:
+            raise OneCError(
+                "нет документов поступления/реализации: нечего считать. "
+                "Либо опубликуйте регистр остатков, либо заведите документы в 1С"
+            )
+
+        return [
+            (sku, format(qty.normalize(), "f"), units.get(sku, ""), warehouse_by_sku.get(sku, ""))
+            for sku, qty in sorted(totals.items())
+        ]
+
+    def stock_auto(self, limit: int = 1000) -> list[tuple[str, str, str, str]]:
+        """Сначала регистр, при отказе — документы. Ошибку отдаём только если не вышло ни то, ни другое."""
+        try:
+            return self.stock(limit)
+        except OneCError as register_error:
+            try:
+                return self.stock_from_documents(limit)
+            except OneCError as documents_error:
+                raise OneCError(
+                    f"регистр: {register_error}; документы: {documents_error}"
+                ) from documents_error
 
     def create_invoice(self, *, counterparty: str, lines: list[tuple[str, str, str]]) -> str:
         """Создаёт счёт на оплату. Возвращает ссылку на документ.

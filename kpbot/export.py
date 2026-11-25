@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from pathlib import Path
 
@@ -21,8 +21,16 @@ STATUS_LABELS = {
 }
 
 
-def build_rfq_xlsx(rfq: dict, quote: dict | None) -> bytes:
-    """Собирает книгу: лист «Расчёт» и лист «Строки из письма»."""
+def build_rfq_xlsx(
+    rfq: dict,
+    quote: dict | None,
+    stock: dict[str, dict] | None = None,
+) -> bytes:
+    """Собирает книгу: лист «Расчёт», лист «Для 1С» и строки письма.
+
+    stock — остатки по артикулу (из store.stock_map()): нужны, чтобы менеджер
+    видел склад и нехватку ещё до загрузки в 1С.
+    """
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -100,10 +108,14 @@ def build_rfq_xlsx(rfq: dict, quote: dict | None) -> bytes:
     for column, width in {"A": 60, "B": 16, "C": 18}.items():
         nom.column_dimensions[column].width = width
 
-    # лист для загрузки в 1С: только нужные колонки, без оформления
+    # лист для загрузки в 1С: только нужные колонки, без оформления.
+    # Склад и ставка НДС — дополнительные: если обработка клиента их не знает,
+    # достаточно удалить две последние колонки.
     one_c = wb.create_sheet("Для 1С")
-    one_c.append(("Код", "Наименование", "Количество", "Цена", "Сумма"))
+    one_c.append(("Код", "Наименование", "Количество", "Цена", "Сумма", "Склад", "Ставка НДС"))
+    vat_percent = _vat_percent(quote)
     for line in lines:
+        entry = (stock or {}).get(line["sku"]) or {}
         one_c.append(
             (
                 line["sku"],
@@ -111,9 +123,11 @@ def build_rfq_xlsx(rfq: dict, quote: dict | None) -> bytes:
                 float(Decimal(str(line["qty"]))),
                 float(Decimal(str(line["price"]))),
                 float(Decimal(str(line["amount"]))),
+                entry.get("warehouse") or "",
+                vat_percent,
             )
         )
-    for column, width in {"A": 14, "B": 52, "C": 12, "D": 12, "E": 14}.items():
+    for column, width in {"A": 14, "B": 52, "C": 12, "D": 12, "E": 14, "F": 18, "G": 12}.items():
         one_c.column_dimensions[column].width = width
 
     second = wb.create_sheet("Строки из письма")
@@ -138,6 +152,20 @@ def build_rfq_xlsx(rfq: dict, quote: dict | None) -> bytes:
     return buffer.getvalue()
 
 
+def _vat_percent(quote: dict | None) -> str:
+    """0.20 → «20%». Пустая строка, если ставка неизвестна."""
+    if not quote:
+        return ""
+    rate = quote.get("vat_rate")
+    if rate in (None, ""):
+        return ""
+    try:
+        percent = Decimal(str(rate)) * 100
+    except InvalidOperation:
+        return ""
+    return f"{format(percent.normalize(), 'f')}%"
+
+
 def check_1c_sheet(content: bytes) -> list[str]:
     """Проверяет лист «Для 1С»: колонки, типы, отсутствие пустых строк.
 
@@ -158,18 +186,25 @@ def check_1c_sheet(content: bytes) -> list[str]:
         if not rows:
             return ["лист «Для 1С» пуст"]
 
-        expected = ("Код", "Наименование", "Количество", "Цена", "Сумма")
-        if tuple(rows[0]) != expected:
-            problems.append(f"шапка не совпадает: {tuple(rows[0])} вместо {expected}")
+        expected = ("Код", "Наименование", "Количество", "Цена", "Сумма", "Склад", "Ставка НДС")
+        header = tuple(rows[0])
+        # старый пятиколоночный файл тоже годится: склад и НДС — необязательные
+        if header not in (expected, expected[:5]):
+            problems.append(f"шапка не совпадает: {header} вместо {expected}")
 
         data_rows = [row for row in rows[1:] if any(cell not in (None, "") for cell in row)]
         if not data_rows:
             problems.append("нет строк с данными")
 
+        seen_codes: set[str] = set()
         for number, row in enumerate(data_rows, start=2):
             code, name, qty, price, amount = (row + (None,) * 5)[:5]
             if not code:
                 problems.append(f"строка {number}: пустой код")
+            elif str(code) in seen_codes:
+                problems.append(f"строка {number}: повтор кода {code} — 1С сопоставит неоднозначно")
+            else:
+                seen_codes.add(str(code))
             if not name:
                 problems.append(f"строка {number}: пустое наименование")
             for label, value in (("количество", qty), ("цена", price), ("сумма", amount)):
@@ -193,7 +228,12 @@ def build_price_xlsx(items: list[PriceItem]) -> bytes:  # pragma: no cover - в�
     wb.save(buffer)
     return buffer.getvalue()
 
-def build_rfq_csv(rfq: dict, quote: dict | None, out_dir: Path) -> list[Path]:
+def build_rfq_csv(
+    rfq: dict,
+    quote: dict | None,
+    out_dir: Path,
+    stock: dict[str, dict] | None = None,
+) -> list[Path]:
     """Два CSV для 1С: справочник и табличная часть документа.
 
     Разделитель «;», десятичная запятая, UTF-8 с BOM — так 1С и Excel
@@ -218,10 +258,12 @@ def build_rfq_csv(rfq: dict, quote: dict | None, out_dir: Path) -> list[Path]:
     written.append(nom_path)
 
     order_path = out_dir / f"1c-order-{short}.csv"
+    vat_percent = _vat_percent(quote)
     with order_path.open("w", encoding="utf-8-sig", newline="") as fh:
         writer = csv.writer(fh, delimiter=";")
-        writer.writerow(("Код", "Наименование", "Количество", "Цена", "Сумма"))
+        writer.writerow(("Код", "Наименование", "Количество", "Цена", "Сумма", "Склад", "Ставка НДС"))
         for line in lines:
+            entry = (stock or {}).get(line["sku"]) or {}
             writer.writerow(
                 (
                     line["sku"],
@@ -229,6 +271,8 @@ def build_rfq_csv(rfq: dict, quote: dict | None, out_dir: Path) -> list[Path]:
                     _ru_number(line["qty"]),
                     _ru_number(line["price"]),
                     _ru_number(line["amount"]),
+                    entry.get("warehouse") or "",
+                    vat_percent,
                 )
             )
     written.append(order_path)

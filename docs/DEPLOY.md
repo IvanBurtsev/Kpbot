@@ -175,13 +175,23 @@ KPBOT_IMAP_FOLDER=kpbot
 cat > /etc/cron.d/kpbot <<'CRON'
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
-*/10 * * * * kpbot cd /opt/kpbot && .venv/bin/python -m kpbot.cli poll --limit 20 >> /opt/kpbot/data/poll.log 2>&1
-0 3 * * * kpbot cd /opt/kpbot && .venv/bin/python -m kpbot.cli backup --keep 14 >> /opt/kpbot/data/backup.log 2>&1
+*/10 * * * * kpbot cd /opt/kpbot && .venv/bin/python -m kpbot.cli poll --all-tenants --limit 20 >> /opt/kpbot/data/poll.log 2>&1
+*/15 * * * * kpbot cd /opt/kpbot && .venv/bin/python -m kpbot.cli 1c-stock --limit 2000 >> /opt/kpbot/data/1c-stock.log 2>&1
+0 3 * * * kpbot cd /opt/kpbot && .venv/bin/python -m kpbot.cli backup --all --keep 14 >> /opt/kpbot/data/backup.log 2>&1
 CRON
 ```
 
 `kpbot-watchdog.timer` каждые 5 минут проверяет `/healthz` и перезапускает сервис,
-если он не отвечает.
+если он не отвечает. **Порт в `ExecStart` и `WATCHDOG_HEALTHZ` должны совпадать** —
+иначе сторож будет перезапускать живой сервис по кругу. Второй проверкой он смотрит
+журнал: серия ошибок (по умолчанию 20 за 10 минут) → одно сообщение в Telegram/MAX
+не чаще раза в час. Пороги меняются в `/etc/default/kpbot-watchdog`:
+
+```bash
+WATCHDOG_ERROR_LIMIT=20
+WATCHDOG_WINDOW_MIN=10
+WATCHDOG_ALERT_WINDOW=3600
+```
 
 ### Основное
 
@@ -200,7 +210,7 @@ journalctl -u kpbot -n 100 --no-pager
 Опрос почты раз в N минут: пока нет планировщика внутри приложения, ставится cron:
 
 ```bash
-*/10 * * * * cd /opt/kpbot && .venv/bin/python -m kpbot.cli poll --limit 20 >> data/poll.log 2>&1
+*/10 * * * * cd /opt/kpbot && .venv/bin/python -m kpbot.cli poll --all-tenants --limit 20 >> data/poll.log 2>&1
 ```
 
 ## 6. Windows Server (если сервер не Linux)

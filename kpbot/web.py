@@ -1295,7 +1295,7 @@ async def ui_export_xlsx(request: Request, rfq_id: str):
     rfq = store.get_rfq(rfq_id)
     if rfq is None:
         raise HTTPException(status_code=404, detail="заявка не найдена")
-    content = build_rfq_xlsx(rfq, store.get_quote(rfq_id))
+    content = build_rfq_xlsx(rfq, store.get_quote(rfq_id), stock=store.stock_map())
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

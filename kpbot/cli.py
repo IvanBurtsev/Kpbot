@@ -161,10 +161,15 @@ def cmd_price(args: argparse.Namespace) -> int:
     return 0
 
 
-def _mailbox() -> ImapMailbox:
-    """OAuth-токен приоритетнее пароля: у Gmail пароль приложения часто недоступен."""
+def _mailbox(overrides: dict[str, str] | None = None) -> ImapMailbox:
+    """Ящик клиента: его настройки из базы приоритетнее общих из .env.
+
+    OAuth-токен общий: он привязан к одному аккаунту, поэтому для клиентов
+    с отдельным ящиком используется пароль приложения.
+    """
+    mail = overrides or {}
     access_token = ""
-    if settings.oauth_client_id and settings.oauth_client_secret:
+    if not mail.get("mail_imap_user") and settings.oauth_client_id and settings.oauth_client_secret:
         try:
             access_token = ensure_access_token(
                 TokenStore(settings.oauth_token_path),
@@ -176,12 +181,12 @@ def _mailbox() -> ImapMailbox:
 
     return ImapMailbox(
         ImapConfig(
-            host=settings.imap_host,
-            port=settings.imap_port,
-            user=settings.imap_user,
-            password=settings.imap_password,
+            host=mail.get("mail_imap_host") or settings.imap_host,
+            port=int(mail.get("mail_imap_port") or settings.imap_port),
+            user=mail.get("mail_imap_user") or settings.imap_user,
+            password=mail.get("mail_imap_password") or settings.imap_password,
             access_token=access_token,
-            folder=settings.imap_folder,
+            folder=mail.get("mail_imap_folder") or settings.imap_folder,
         )
     )
 
@@ -244,6 +249,49 @@ def cmd_mail_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mail_setup(args: argparse.Namespace) -> int:
+    """Сохраняет ящик в базе клиента: ключи mail_imap_* читает poll --all-tenants."""
+    import getpass
+
+    from .tenancy import TenantRegistry
+
+    if args.tenant:
+        registry = TenantRegistry(settings.tenants_db_path, settings.db_path)
+        tenant = registry.get(args.tenant)
+        if tenant is None:
+            print(f"клиент {args.tenant} не найден в реестре")
+            return 2
+        db_path = Path(tenant["db_path"])
+        label = f"{tenant['name']} ({tenant['id']})"
+    else:
+        db_path = settings.db_path
+        label = "основная база"
+
+    password = args.password or getpass.getpass(f"пароль приложения для {args.user}: ")
+    store = Store(db_path)
+    store.set_settings(
+        {
+            "mail_imap_host": args.host,
+            "mail_imap_port": str(args.port),
+            "mail_imap_user": args.user,
+            "mail_imap_password": password,
+            "mail_imap_folder": args.folder,
+        }
+    )
+    store.log_event("mail_setup", "cli", f"{args.user} @ {args.host}:{args.port}")
+
+    print(f"ящик сохранён: {label} · {args.user} @ {args.host}:{args.port} / {args.folder}")
+    print("пароль лежит в базе клиента открытым текстом, как и в .env: закройте права на data/")
+
+    try:
+        info = _mailbox(store.get_settings()).check()
+    except MailError as exc:
+        print(f"проверка не прошла: {exc}")
+        return 1
+    print(f"связь есть ({info['auth']}): писем {info['total']}, непрочитанных {info['unseen']}")
+    return 0
+
+
 def cmd_mail_check(args: argparse.Namespace) -> int:
     try:
         mailbox = _mailbox()
@@ -257,12 +305,51 @@ def cmd_mail_check(args: argparse.Namespace) -> int:
 
 
 def cmd_poll(args: argparse.Namespace) -> int:
+    """Опрашивает почту: одна база или все клиенты (--all-tenants)."""
+    if getattr(args, "all_tenants", False):
+        return _poll_all_tenants(args)
     store = Store(settings.db_path)
     pipeline = Pipeline(store, settings)
     pipeline.ensure_price_list()
-
     try:
         mailbox = _mailbox()
+    except MailError as exc:
+        print(f"почта недоступна: {exc}")
+        return 2
+    return _poll_mailbox(pipeline, mailbox, args)
+
+
+def _poll_all_tenants(args: argparse.Namespace) -> int:
+    """Свой ящик у каждого клиента: настройки лежат в его базе (mail_imap_*)."""
+    status = 0
+    polled = 0
+    for tenant_id, name, store in tenant_stores():
+        overrides = store.get_settings()
+        if not (overrides.get("mail_imap_user") or settings.imap_user):
+            print(f"{name} ({tenant_id}): почта не настроена — пропуск")
+            continue
+        try:
+            mailbox = _mailbox(overrides)
+        except MailError as exc:
+            print(f"{name}: почта недоступна: {exc}")
+            status = 2
+            continue
+        pipeline = Pipeline(store, settings)
+        if store.price_count() == 0:
+            if tenant_id == "default":
+                pipeline.ensure_price_list()
+            else:
+                print(f"{name}: прайса нет — строки уйдут человеку на проверку")
+        print(f"\n== {name} ({tenant_id})")
+        status = max(status, _poll_mailbox(pipeline, mailbox, args))
+        polled += 1
+    if not polled:
+        print("нечего опрашивать: ни у одного клиента не настроена почта")
+    return status
+
+
+def _poll_mailbox(pipeline: Pipeline, mailbox: ImapMailbox, args: argparse.Namespace) -> int:
+    try:
         info = mailbox.check()
         print(f"ящик: {info['folder']} · писем {info['total']} · непрочитанных {info['unseen']}")
         if args.dry_run:
@@ -312,7 +399,6 @@ def cmd_poll(args: argparse.Namespace) -> int:
             mailbox.mark_seen([item["uid"] for item in skipped])
             print("не заявки помечены прочитанными, чтобы не разбирать их повторно")
     return 0
-
 
 def _peek_subject(raw: bytes) -> tuple[str, str]:
     try:
@@ -471,13 +557,15 @@ def cmd_export_1c(args: argparse.Namespace) -> int:
     if args.csv:
         from .export import build_rfq_csv
 
-        files = build_rfq_csv(rfq, store.get_quote(rfq["id"]), settings.out_dir)
+        files = build_rfq_csv(
+            rfq, store.get_quote(rfq["id"]), settings.out_dir, stock=store.stock_map()
+        )
         for path in files:
             print(f"файл: {path} ({path.stat().st_size} байт)")
         print("CSV: разделитель «;», десятичная запятая, кодировка UTF-8 с BOM")
         return 0
 
-    content = build_rfq_xlsx(rfq, store.get_quote(rfq["id"]))
+    content = build_rfq_xlsx(rfq, store.get_quote(rfq["id"]), stock=store.stock_map())
     target = Path(args.out) if args.out else settings.out_dir / f"1c-{rfq['id'][:8]}.xlsx"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(content)
@@ -905,18 +993,29 @@ def cmd_one_c_check(args: argparse.Namespace) -> int:
 
 
 def cmd_one_c_stock(args: argparse.Namespace) -> int:
-    """Забирает остатки из 1С и кладёт в базу: дальше они видны в заявке."""
+    """Забирает остатки из 1С и кладёт в базу: дальше они видны в заявке.
+
+    Источник: регистр остатков, а если он не опубликован — приход минус расход
+    по документам (--source documents).
+    """
     from .one_c import OneCError
 
+    client = _one_c_client()
     try:
-        rows = _one_c_client().stock(limit=args.limit)
+        if args.source == "register":
+            rows = client.stock(limit=args.limit)
+        elif args.source == "documents":
+            rows = client.stock_from_documents(limit=args.limit)
+        else:
+            rows = client.stock_auto(limit=args.limit)
     except (OneCError, SystemExit) as exc:
         print(f"1С: {exc}")
         return 1
     store = Store(settings.db_path)
     count = store.replace_stock(rows)
     zero = sum(1 for _, qty, _, _ in rows if qty in ("0", "0.0", "0.00"))
-    print(f"остатков из 1С: {count} | в нуле: {zero}")
+    print(f"остатков из 1С: {count} | в нуле: {zero} | источник: {args.source}")
+    print("кэш обновлён: страницы заявок читают остатки из базы, 1С повторно не опрашивается")
     return 0
 
 
@@ -1063,7 +1162,21 @@ def main(argv: list[str] | None = None) -> int:
     poll = sub.add_parser("poll", help="забрать новые письма из почты и разобрать их")
     poll.add_argument("--limit", type=int, default=settings.imap_limit)
     poll.add_argument("--dry-run", action="store_true", help="только показать состояние ящика")
+    poll.add_argument(
+        "--all-tenants",
+        action="store_true",
+        help="обойти все активные базы клиентов: у каждого свой ящик из его настроек",
+    )
     poll.set_defaults(func=cmd_poll)
+
+    mail_setup = sub.add_parser("mail-setup", help="сохранить ящик клиента (mail_imap_*) в его базе")
+    mail_setup.add_argument("--tenant", default="", help="код клиента; без него — основная база")
+    mail_setup.add_argument("--host", required=True)
+    mail_setup.add_argument("--port", type=int, default=993)
+    mail_setup.add_argument("--user", required=True)
+    mail_setup.add_argument("--folder", default="INBOX")
+    mail_setup.add_argument("--password", default="", help="без флага спросим скрыто")
+    mail_setup.set_defaults(func=cmd_mail_setup)
 
     preview = sub.add_parser("mail-preview", help="показать разбор писем без записи в базу")
     preview.add_argument("--limit", type=int, default=3)
@@ -1080,6 +1193,13 @@ def main(argv: list[str] | None = None) -> int:
 
     one_c_stock = sub.add_parser("1c-stock", help="забрать остатки из 1С в базу")
     one_c_stock.add_argument("--limit", type=int, default=1000)
+    one_c_stock.add_argument(
+        "--source",
+        choices=("auto", "register", "documents"),
+        default="auto",
+        help="auto — регистр, при отказе документы (по умолчанию); register — только регистр; "
+             "documents — приход минус расход по документам",
+    )
     one_c_stock.set_defaults(func=cmd_one_c_stock)
 
     backup = sub.add_parser("backup", help="сделать копию базы и удалить старые")

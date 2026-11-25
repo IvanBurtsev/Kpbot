@@ -109,5 +109,101 @@ class ClientBehaviourTest(unittest.TestCase):
 
 
 
+NOMENCLATURE = {
+    "value": [
+        {"Ref_Key": "n-1", "Артикул": "KR-001", "Наименование": "Уголок монтажный 50х50 мм",
+         "ЕдиницаИзмерения": "шт"},
+        {"Ref_Key": "n-2", "Артикул": "EL-001", "Наименование": "Кабель ВВГнг-LS 3х2.5",
+         "ЕдиницаИзмерения": "м"},
+    ]
+}
+WAREHOUSES = {"value": [{"Ref_Key": "w-1", "Description": "Основной склад"}]}
+INCOMING = {
+    "value": [
+        {
+            "Склад_Key": "w-1",
+            "Товары": [
+                {"Номенклатура_Key": "n-1", "Количество": 100},
+                {"Номенклатура_Key": "n-2", "Количество": "50"},
+            ],
+        }
+    ]
+}
+OUTGOING = {
+    "value": [
+        {
+            "Склад_Key": "w-1",
+            "Товары": [{"Номенклатура_Key": "n-1", "Количество": 30}],
+        }
+    ]
+}
+
+
+def documents_handler(request: httpx.Request) -> httpx.Response:
+    """Поддельная 1С: справочники и документы, регистр остатков не опубликован."""
+    path = request.url.path
+    if "AccumulationRegister" in path:
+        return httpx.Response(404, text="not found")
+    if "Catalog_Номенклатура" in path:
+        return httpx.Response(200, json=NOMENCLATURE)
+    if "Catalog_Склады" in path:
+        return httpx.Response(200, json=WAREHOUSES)
+    if "Document_ПоступлениеТоваровУслуг" in path:
+        return httpx.Response(200, json=INCOMING)
+    if "Document_РеализацияТоваровУслуг" in path:
+        return httpx.Response(200, json=OUTGOING)
+    return httpx.Response(404, text="not found")
+
+
+class DocumentStockTest(unittest.TestCase):
+    def test_stock_is_incoming_minus_outgoing(self) -> None:
+        rows = client_with(documents_handler).stock_from_documents()
+        by_sku = {sku: (Decimal(qty), unit, warehouse) for sku, qty, unit, warehouse in rows}
+        self.assertEqual(by_sku["KR-001"], (Decimal("70"), "шт", "Основной склад"))
+        self.assertEqual(by_sku["EL-001"], (Decimal("50"), "м", "Основной склад"))
+
+    def test_zero_balance_is_kept(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "Catalog_Номенклатура" in request.url.path:
+                return httpx.Response(200, json=NOMENCLATURE)
+            if "Catalog_Склады" in request.url.path:
+                return httpx.Response(200, json=WAREHOUSES)
+            if "Document_ПоступлениеТоваровУслуг" in request.url.path:
+                return httpx.Response(200, json=INCOMING)
+            if "Document_РеализацияТоваровУслуг" in request.url.path:
+                return httpx.Response(200, json={"value": [{"Товары": [
+                    {"Номенклатура_Key": "n-1", "Количество": 100},
+                    {"Номенклатура_Key": "n-2", "Количество": 50},
+                ]}]})
+            return httpx.Response(404)
+
+        rows = client_with(handler).stock_from_documents()
+        by_sku = {sku: Decimal(qty) for sku, qty, _, _ in rows}
+        self.assertEqual(by_sku["KR-001"], Decimal("0"))
+
+    def test_auto_falls_back_to_documents(self) -> None:
+        rows = client_with(documents_handler).stock_auto()
+        self.assertEqual({sku for sku, _, _, _ in rows}, {"KR-001", "EL-001"})
+
+    def test_no_documents_is_explained(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "Catalog_Номенклатура" in request.url.path:
+                return httpx.Response(200, json=NOMENCLATURE)
+            return httpx.Response(404)
+
+        with self.assertRaises(OneCError) as ctx:
+            client_with(handler).stock_from_documents()
+        self.assertIn("нет документов", str(ctx.exception))
+
+    def test_auto_reports_both_sources(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, text="not found")
+
+        with self.assertRaises(OneCError) as ctx:
+            client_with(handler).stock_auto()
+        self.assertIn("регистр", str(ctx.exception))
+        self.assertIn("документы", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
