@@ -1,3 +1,5 @@
+import support  # общий стенд: изолированные данные, сеть запрещена
+
 import shutil
 import unittest
 from decimal import Decimal
@@ -12,7 +14,7 @@ from kpbot.mailparse import parse_eml
 from kpbot.pipeline import NotAnRfq, Pipeline
 from kpbot.store import Store
 
-TMP_ROOT = BASE_DIR / ".tmp"
+TMP_ROOT = support.ROOT
 
 
 def make_data_dir(name: str) -> Path:

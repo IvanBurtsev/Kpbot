@@ -1,5 +1,7 @@
 """Учёт расхода LLM: токены из ответа, стоимость по тарифу, запись в базу."""
 
+import support  # общий стенд: изолированные данные, сеть запрещена
+
 import json
 import shutil
 import unittest
@@ -74,7 +76,7 @@ class PipelineUsageTest(unittest.TestCase):
         from kpbot.pipeline import Pipeline
         from kpbot.store import Store
 
-        self.data_dir = BASE_DIR / ".tmp" / "costs"
+        self.data_dir = support.ROOT / "costs"
         shutil.rmtree(self.data_dir, ignore_errors=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
 

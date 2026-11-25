@@ -1,5 +1,7 @@
 """Пользователи, роли и разделение заявок."""
 
+import support  # общий стенд: изолированные данные, сеть запрещена
+
 import shutil
 import unittest
 
@@ -8,7 +10,7 @@ from kpbot.pipeline import Pipeline
 from kpbot.store import Store
 from kpbot.users import ROLE_ADMIN, ROLE_MANAGER, hash_password, verify_password
 
-TMP = BASE_DIR / ".tmp" / "users"
+TMP = support.subdir("users")
 
 
 class PasswordTest(unittest.TestCase):

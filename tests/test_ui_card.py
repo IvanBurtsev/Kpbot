@@ -1,12 +1,12 @@
 """Карточка заявки: письмо рядом с разбором, подсветка, история отправок."""
 
+import support  # общий стенд: изолированные данные, сеть запрещена
+
 import os
 import unittest
 from pathlib import Path
 
-_TMP = Path(__file__).resolve().parent.parent / ".tmp" / "ui_card"
-_TMP.mkdir(parents=True, exist_ok=True)
-os.environ.setdefault("KPBOT_DATA_DIR", str(_TMP))
+_TMP = support.subdir("ui_card")
 os.environ.setdefault("KPBOT_API_KEY", "test-key")
 os.environ.setdefault("KPBOT_UI_PASSWORD", "test-pass")
 os.environ.setdefault("KPBOT_SESSION_SECRET", "test-secret")

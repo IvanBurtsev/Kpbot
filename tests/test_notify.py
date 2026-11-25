@@ -1,5 +1,7 @@
 """Уведомления в Telegram: формат, ошибки, отсутствие утечки токена."""
 
+import support  # общий стенд: изолированные данные, сеть запрещена
+
 import unittest
 from unittest.mock import patch
 

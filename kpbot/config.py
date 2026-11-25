@@ -12,6 +12,25 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+
+def _resolve_env_file() -> str | None:
+    """Какой .env читать.
+
+    По умолчанию — проектный. KPBOT_ENV_FILE позволяет указать другой файл или
+    отключить чтение совсем (none/off/пусто): так тесты не зависят от боевых
+    ключей и не могут случайно отправить письмо или запрос в LLM.
+    """
+    raw = os.environ.get("KPBOT_ENV_FILE")
+    if raw is None:
+        return str(BASE_DIR / ".env")
+    raw = raw.strip()
+    if raw.lower() in {"", "none", "off", "0", "no"}:
+        return None
+    return raw
+
+
+_ENV_FILE = _resolve_env_file()
+
 DEFAULT_SECRETS = frozenset(
     {"dev-api-key-change-me", "dev-password", "dev-session-secret-change-me", "change-me", ""}
 )
@@ -26,7 +45,7 @@ if os.path.exists(_SYSTEM_CA):
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=str(BASE_DIR / ".env"),
+        env_file=_ENV_FILE,
         env_prefix="KPBOT_",
         extra="ignore",
         case_sensitive=False,
@@ -35,6 +54,8 @@ class Settings(BaseSettings):
     # --- пути ---
     env: str = "dev"
     data_dir: Path = BASE_DIR / "data"
+    # тестовый режим: реальные сетевые вызовы запрещены (см. kpbot/net.py)
+    offline: bool = False
     templates_dir: Path = BASE_DIR / "kpbot" / "templates"
     static_dir: Path = BASE_DIR / "kpbot" / "static"
 
@@ -50,7 +71,7 @@ class Settings(BaseSettings):
     company_kpp: str = "770001001"
     company_address: str = "г. Москва, ул. Примерная, д. 1, офис 10"
     company_phone: str = "+7 (495) 000-00-00"
-    company_email: str = "krzkrzkrzkrzkrzkrzkrz@gmail.com"
+    company_email: str = "sales@example.ru"
     company_signer: str = "Иванов И. И., коммерческий директор"
     quote_valid_days: int = 7
 
@@ -195,3 +216,8 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+if settings.offline:  # тесты: ни одного настоящего пакета наружу
+    from .net import install_offline_guard
+
+    install_offline_guard()

@@ -1,12 +1,12 @@
 """Тесты HTTP-слоя. Окружение подменяется до импорта приложения."""
 
+import support  # общий стенд: изолированные данные, сеть запрещена
+
 import os
 import unittest
 from pathlib import Path
 
-_TMP = Path(__file__).resolve().parent.parent / ".tmp" / "api"
-_TMP.mkdir(parents=True, exist_ok=True)
-os.environ["KPBOT_DATA_DIR"] = str(_TMP)
+_TMP = support.subdir("api")
 os.environ["KPBOT_API_KEY"] = "test-key"
 os.environ["KPBOT_UI_PASSWORD"] = "test-pass"
 os.environ["KPBOT_SESSION_SECRET"] = "test-secret"

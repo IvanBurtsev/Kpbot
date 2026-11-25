@@ -1,13 +1,13 @@
 """Брендинг КП: логотип и цвет компании доходят до документа."""
 
+import support  # общий стенд: изолированные данные, сеть запрещена
+
 import base64
 import os
 import unittest
 from pathlib import Path
 
-_TMP = Path(__file__).resolve().parent.parent / ".tmp" / "branding"
-_TMP.mkdir(parents=True, exist_ok=True)
-os.environ.setdefault("KPBOT_DATA_DIR", str(_TMP))
+_TMP = support.subdir("branding")
 os.environ.setdefault("KPBOT_API_KEY", "test-key")
 os.environ.setdefault("KPBOT_UI_PASSWORD", "test-pass")
 os.environ.setdefault("KPBOT_SESSION_SECRET", "test-secret")

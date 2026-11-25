@@ -1,4 +1,4 @@
-﻿name: ci
+name: ci
 
 on:
   push:
@@ -16,6 +16,9 @@ jobs:
     env:
       KPBOT_LLM_ENABLED: "false"
       KPBOT_PDF_ENABLED: "false"
+      # боевой .env не читаем, реальная сеть запрещена (см. tests/support.py)
+      KPBOT_ENV_FILE: none
+      KPBOT_OFFLINE: "1"
       KPBOT_UI_PASSWORD: ci-password
       KPBOT_API_KEY: not-a-secret-ci-value
       KPBOT_SESSION_SECRET: not-a-secret-ci-session

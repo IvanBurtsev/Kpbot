@@ -1,5 +1,7 @@
 """Обучение на правках: пара начинает работать и отключается сама."""
 
+import support  # общий стенд: изолированные данные, сеть запрещена
+
 import shutil
 import unittest
 
@@ -8,7 +10,7 @@ from kpbot.domain import LineStatus
 from kpbot.pipeline import Pipeline
 from kpbot.store import Store
 
-TMP = BASE_DIR / ".tmp" / "learning"
+TMP = support.subdir("learning")
 
 
 class LearningTest(unittest.TestCase):

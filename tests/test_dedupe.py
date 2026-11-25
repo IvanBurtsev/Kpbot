@@ -1,5 +1,7 @@
 """Обрубки от модели: строка без совпадения, повторяющая уже найденную позицию."""
 
+import support  # общий стенд: изолированные данные, сеть запрещена
+
 import shutil
 import unittest
 
@@ -7,7 +9,7 @@ from kpbot.config import BASE_DIR, Settings
 from kpbot.pipeline import Pipeline
 from kpbot.store import Store
 
-TMP = BASE_DIR / ".tmp" / "dedupe"
+TMP = support.subdir("dedupe")
 
 
 class DedupeTest(unittest.TestCase):

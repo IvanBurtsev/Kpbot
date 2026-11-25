@@ -1,12 +1,12 @@
 """Прод-конфигурация и служебные эндпоинты."""
 
+import support  # общий стенд: изолированные данные, сеть запрещена
+
 import os
 import unittest
 from pathlib import Path
 
-_TMP = Path(__file__).resolve().parent.parent / ".tmp" / "prod"
-_TMP.mkdir(parents=True, exist_ok=True)
-os.environ["KPBOT_DATA_DIR"] = str(_TMP)
+_TMP = support.subdir("prod")
 os.environ["KPBOT_PDF_ENABLED"] = "false"
 
 from kpbot.config import Settings  # noqa: E402

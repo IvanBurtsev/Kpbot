@@ -1,3 +1,5 @@
+import support  # общий стенд: изолированные данные, сеть запрещена
+
 import unittest
 from decimal import Decimal
 

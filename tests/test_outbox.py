@@ -1,13 +1,13 @@
 """Очередь отправки: письмо не теряется при сбое почты."""
 
+import support  # общий стенд: изолированные данные, сеть запрещена
+
 import os
 import unittest
 from pathlib import Path
 from urllib.parse import unquote
 
-_TMP = Path(__file__).resolve().parent.parent / ".tmp" / "outbox"
-_TMP.mkdir(parents=True, exist_ok=True)
-os.environ.setdefault("KPBOT_DATA_DIR", str(_TMP))
+_TMP = support.subdir("outbox")
 os.environ.setdefault("KPBOT_API_KEY", "test-key")
 os.environ.setdefault("KPBOT_UI_PASSWORD", "test-pass")
 os.environ.setdefault("KPBOT_SESSION_SECRET", "test-secret")

@@ -1,3 +1,5 @@
+import support  # общий стенд: изолированные данные, сеть запрещена
+
 import unittest
 
 from kpbot.oauth import TOKEN_ERRORS, OAuthError, auth_string, build_auth_url

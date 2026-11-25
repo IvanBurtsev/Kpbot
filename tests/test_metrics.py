@@ -1,5 +1,7 @@
 """Метрика времени, импорт прайса из 1С и лист для 1С в экспорте."""
 
+import support  # общий стенд: изолированные данные, сеть запрещена
+
 import shutil
 import unittest
 from decimal import Decimal
@@ -9,7 +11,7 @@ from kpbot.pipeline import Pipeline
 from kpbot.pricelist import load_price_items
 from kpbot.store import Store
 
-TMP = BASE_DIR / ".tmp" / "metrics"
+TMP = support.subdir("metrics")
 
 
 class PriceListHeadersTest(unittest.TestCase):

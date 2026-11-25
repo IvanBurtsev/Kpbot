@@ -1,5 +1,7 @@
 """Отправка КП: сборка письма и реальная отправка на локальный SMTP-приёмник."""
 
+import support  # общий стенд: изолированные данные, сеть запрещена
+
 import email
 import shutil
 import socketserver
@@ -19,7 +21,7 @@ from kpbot.mailer import (
     reply_subject,
 )
 
-TMP = BASE_DIR / ".tmp" / "mailer"
+TMP = support.subdir("mailer")
 
 
 class MessageTest(unittest.TestCase):

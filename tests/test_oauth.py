@@ -1,3 +1,5 @@
+import support  # общий стенд: изолированные данные, сеть запрещена
+
 import shutil
 import time
 import unittest
@@ -13,7 +15,7 @@ from kpbot.oauth import (
     ensure_access_token,
 )
 
-TMP = BASE_DIR / ".tmp" / "oauth"
+TMP = support.subdir("oauth")
 
 
 class AuthUrlTest(unittest.TestCase):
@@ -37,8 +39,8 @@ class AuthUrlTest(unittest.TestCase):
 
 class TokenStoreTest(unittest.TestCase):
     def setUp(self) -> None:
-        TMP.mkdir(parents=True, exist_ok=True)
         self.path = TMP / "token.json"
+        TMP.mkdir(parents=True, exist_ok=True)
         self.path.unlink(missing_ok=True)
         self.store = TokenStore(self.path)
 

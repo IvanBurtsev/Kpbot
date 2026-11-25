@@ -1,5 +1,7 @@
 """Правка строк, экспорт в Excel и бэкап — глазами HTTP."""
 
+import support  # общий стенд: изолированные данные, сеть запрещена
+
 import os
 import shutil
 import unittest
@@ -8,9 +10,7 @@ from pathlib import Path
 
 from kpbot.config import BASE_DIR
 
-_TMP = Path(__file__).resolve().parent.parent / ".tmp" / "edits"
-_TMP.mkdir(parents=True, exist_ok=True)
-os.environ["KPBOT_DATA_DIR"] = str(_TMP)
+_TMP = support.subdir("edits")
 os.environ["KPBOT_API_KEY"] = "test-key"
 os.environ["KPBOT_UI_PASSWORD"] = "test-pass"
 os.environ["KPBOT_SESSION_SECRET"] = "test-secret"
