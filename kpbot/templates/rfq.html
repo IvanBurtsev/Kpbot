@@ -174,7 +174,7 @@
     <button type="submit" class="mini ok">Взять себе</button>
   </form>
   {% endif %}
-  <p class="muted small">Отправка в прототипе не выполняется: черновик ответа сохраняется в <code>data/out/sent/</code>.</p>
+  <p class="muted small">Отправка не настроена: текст ответа сохраняется в черновик, письмо можно отправить вручную.</p>
   <div class="row">
     <form method="post" action="/ui/rfq/{{ rfq.id }}/approve" class="inline">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

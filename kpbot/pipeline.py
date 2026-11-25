@@ -502,7 +502,7 @@ class Pipeline:
         sent_path = self._write_outbox(rfq_id, rfq, reply)
         self.store.add_artifact(rfq_id, "reply_eml", sent_path, sha256_bytes(sent_path.read_bytes()))
         self.store.set_status(rfq_id, RfqStatus.SENT.value)
-        self.store.log(rfq_id, "sent", actor, "черновик сохранён в outbox (SMTP в прототипе выключен)")
+        self.store.log(rfq_id, "sent", actor, "черновик сохранён в outbox (SMTP не настроен)")
 
         return IngestResult(
             rfq_id=rfq_id,

@@ -57,7 +57,7 @@ def _extract_text(msg: Message) -> str:
     for part in msg.walk():
         if part.get_content_maintype() == "multipart":
             continue
-        if part.get_filename():  # вложения в прототипе не разбираем
+        if part.get_filename():  # вложения пока не разбираем
             continue
         content_type = part.get_content_type()
         if content_type not in {"text/plain", "text/html"}:
@@ -91,7 +91,7 @@ def build_reply_eml(
     body: str,
     in_reply_to: str | None = None,
 ) -> bytes:
-    """Черновик ответа клиенту. Реальная отправка в прототипе отключена."""
+    """Текст ответа клиенту. Отправку выполняет отдельный шаг."""
     msg = EmailMessage()
     msg["From"] = sender_from
     msg["To"] = sender_to

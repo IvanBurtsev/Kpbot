@@ -11,3 +11,6 @@ __pycache__/
 *.pyo
 .pytest_cache/
 !data/.gitkeep
+# выгрузки для проверки в 1С (генерируются локально)
+kp-*.csv
+kp-*.xlsx

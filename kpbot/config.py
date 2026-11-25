@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     edge_path: Path = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
     pdf_timeout_seconds: int = 45
 
-    # --- внешние сервисы (в прототипе выключены) ---
+    # --- внешние сервисы (по умолчанию выключены) ---
     llm_enabled: bool = False
     llm_base_url: str = ""
     llm_model: str = ""

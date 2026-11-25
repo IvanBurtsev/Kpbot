@@ -28,7 +28,7 @@
   {% block content %}{% endblock %}
 </main>
 <footer class="foot">
-  <span class="muted small">Прототип · отправка писем отключена, SMTP не подключён</span>
+  {% if smtp_ready %}<span class="muted small">Сервис · письма отправляются с настроенного ящика</span>{% else %}<span class="muted small">Сервис · отправка писем не настроена</span>{% endif %}
 </footer>
 </body>
 </html>
