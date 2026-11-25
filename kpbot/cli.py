@@ -455,6 +455,35 @@ def cmd_max_test(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export_1c(args: argparse.Namespace) -> int:
+    """Выгружает заявку в файл для 1С и сразу проверяет его формат."""
+    from .export import build_rfq_xlsx, check_1c_sheet
+
+    store = Store(settings.db_path)
+    rfq = store.get_rfq(args.rfq_id) if args.rfq_id else None
+    if rfq is None:
+        rows = store.list_rfqs(1)
+        rfq = store.get_rfq(rows[0]["id"]) if rows else None
+    if rfq is None:
+        print("заявок нет — выгружать нечего")
+        return 2
+
+    content = build_rfq_xlsx(rfq, store.get_quote(rfq["id"]))
+    target = Path(args.out) if args.out else settings.out_dir / f"1c-{rfq['id'][:8]}.xlsx"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(content)
+
+    problems = check_1c_sheet(content)
+    print(f"файл: {target} ({len(content)} байт) · заявка {rfq['id'][:8]}")
+    if problems:
+        print("проблемы:")
+        for problem in problems:
+            print("  -", problem)
+        return 1
+    print("формат для 1С в порядке: колонки, типы и суммы на месте")
+    return 0
+
+
 def cmd_user_add(args: argparse.Namespace) -> int:
     """Добавить менеджера или администратора. Пароль спрашиваем скрыто."""
     import getpass
@@ -718,6 +747,11 @@ def main(argv: list[str] | None = None) -> int:
 
     users_cmd = sub.add_parser("users", help="список пользователей")
     users_cmd.set_defaults(func=cmd_users)
+
+    export_1c = sub.add_parser("export-1c", help="выгрузить заявку в файл для 1С и проверить формат")
+    export_1c.add_argument("rfq_id", nargs="?", default="")
+    export_1c.add_argument("--out", default="")
+    export_1c.set_defaults(func=cmd_export_1c)
 
     args = parser.parse_args(argv)
     return int(args.func(args) or 0)

@@ -126,6 +126,46 @@ def build_rfq_xlsx(rfq: dict, quote: dict | None) -> bytes:
     return buffer.getvalue()
 
 
+def check_1c_sheet(content: bytes) -> list[str]:
+    """Проверяет лист «Для 1С»: колонки, типы, отсутствие пустых строк.
+
+    Возвращает список проблем (пусто — всё в порядке). Нужно, чтобы отдавать
+    клиенту файл, который точно загрузится стандартной обработкой 1С.
+    """
+    from openpyxl import load_workbook
+
+    problems: list[str] = []
+    wb = load_workbook(filename=BytesIO(content), read_only=True, data_only=True)
+    try:
+        if "Для 1С" not in wb.sheetnames:
+            return ["нет листа «Для 1С»"]
+        sheet = wb["Для 1С"]
+        rows = list(sheet.iter_rows(values_only=True))
+        if not rows:
+            return ["лист «Для 1С» пуст"]
+
+        expected = ("Код", "Наименование", "Количество", "Цена", "Сумма")
+        if tuple(rows[0]) != expected:
+            problems.append(f"шапка не совпадает: {tuple(rows[0])} вместо {expected}")
+
+        data_rows = [row for row in rows[1:] if any(cell not in (None, "") for cell in row)]
+        if not data_rows:
+            problems.append("нет строк с данными")
+
+        for number, row in enumerate(data_rows, start=2):
+            code, name, qty, price, amount = (row + (None,) * 5)[:5]
+            if not code:
+                problems.append(f"строка {number}: пустой код")
+            if not name:
+                problems.append(f"строка {number}: пустое наименование")
+            for label, value in (("количество", qty), ("цена", price), ("сумма", amount)):
+                if not isinstance(value, (int, float)):
+                    problems.append(f"строка {number}: {label} не число ({value!r})")
+        return problems
+    finally:
+        wb.close()
+
+
 def build_price_xlsx(items: list[PriceItem]) -> bytes:  # pragma: no cover - вспомогательное
     from openpyxl import Workbook
 

@@ -78,5 +78,44 @@ class TimingTest(unittest.TestCase):
         self.assertIsNotNone(stats["median_seconds"])
 
 
+class Export1cTest(unittest.TestCase):
+    def test_exported_sheet_is_valid_for_1c(self) -> None:
+        from kpbot.export import build_rfq_xlsx, check_1c_sheet
+
+        rfq = {
+            "id": "a" * 32,
+            "sender": "a@b.ru",
+            "subject": "Заявка",
+            "created_at": "2026-11-25T00:00:00+00:00",
+            "status": "draft_ready",
+            "lines": [{"idx": 1, "raw_text": "уголок", "qty": "10", "unit": "шт",
+                       "status": "ok", "score": 0.9, "matched_name": "Уголок 50х50"}],
+        }
+        quote = {
+            "lines": [{"sku": "KR-001", "name": "Уголок 50х50", "unit": "шт",
+                       "qty": "10", "price": "34.50", "amount": "345.00"}],
+            "subtotal": "345.00", "vat": "69.00", "delivery": "0", "total": "414.00",
+        }
+        content = build_rfq_xlsx(rfq, quote)
+        self.assertEqual(check_1c_sheet(content), [])
+
+    def test_broken_file_is_reported(self) -> None:
+        from io import BytesIO
+
+        from openpyxl import Workbook
+
+        from kpbot.export import check_1c_sheet
+
+        wb = Workbook()
+        sheet = wb.active
+        sheet.title = "Для 1С"
+        sheet.append(("Код", "Наименование", "Количество", "Цена", "Сумма"))
+        sheet.append(("KR-001", "Уголок", "много", 34.5, 345.0))
+        buffer = BytesIO()
+        wb.save(buffer)
+        problems = check_1c_sheet(buffer.getvalue())
+        self.assertTrue(any("количество не число" in p for p in problems))
+
+
 if __name__ == "__main__":
     unittest.main()
