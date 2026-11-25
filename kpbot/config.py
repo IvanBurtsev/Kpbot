@@ -111,6 +111,13 @@ class Settings(BaseSettings):
     max_chat_id: str = ""
     max_api_base: str = "https://platform-api2.max.ru"
 
+    # --- 1С (OData) ---
+    one_c_enabled: bool = False
+    one_c_base_url: str = ""
+    one_c_user: str = ""
+    one_c_password: str = ""
+    one_c_timeout_seconds: float = 30.0
+
     # --- почта (IMAP) ---
     imap_host: str = "imap.gmail.com"
     imap_port: int = 993

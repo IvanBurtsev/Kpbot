@@ -879,6 +879,47 @@ def tenant_stores():
             yield tenant["id"], tenant["name"], Store(path)
 
 
+def _one_c_client():
+    from .one_c import OneCClient
+
+    if not settings.one_c_base_url:
+        raise SystemExit("не задан KPBOT_ONE_C_BASE_URL — адрес базы 1С")
+    return OneCClient(
+        settings.one_c_base_url,
+        settings.one_c_user,
+        settings.one_c_password,
+        settings.one_c_timeout_seconds,
+    )
+
+
+def cmd_one_c_check(args: argparse.Namespace) -> int:
+    """Проверяет доступ к 1С по OData."""
+    from .one_c import OneCError
+
+    try:
+        print(_one_c_client().check())
+    except (OneCError, SystemExit) as exc:
+        print(f"1С: {exc}")
+        return 1
+    return 0
+
+
+def cmd_one_c_stock(args: argparse.Namespace) -> int:
+    """Забирает остатки из 1С и кладёт в базу: дальше они видны в заявке."""
+    from .one_c import OneCError
+
+    try:
+        rows = _one_c_client().stock(limit=args.limit)
+    except (OneCError, SystemExit) as exc:
+        print(f"1С: {exc}")
+        return 1
+    store = Store(settings.db_path)
+    count = store.replace_stock(rows)
+    zero = sum(1 for _, qty, _, _ in rows if qty in ("0", "0.0", "0.00"))
+    print(f"остатков из 1С: {count} | в нуле: {zero}")
+    return 0
+
+
 def cmd_backup(args: argparse.Namespace) -> int:
     """Консистентная копия базы через sqlite backup API + ротация старых копий."""
     import contextlib
@@ -1027,6 +1068,13 @@ def main(argv: list[str] | None = None) -> int:
     mail_seed = sub.add_parser("mail-seed", help="положить демо-заявки в отдельную папку ящика")
     mail_seed.add_argument("--folder", default="kpbot-test")
     mail_seed.set_defaults(func=cmd_mail_seed)
+
+    one_c_check = sub.add_parser("1c-check", help="проверить доступ к 1С по OData")
+    one_c_check.set_defaults(func=cmd_one_c_check)
+
+    one_c_stock = sub.add_parser("1c-stock", help="забрать остатки из 1С в базу")
+    one_c_stock.add_argument("--limit", type=int, default=1000)
+    one_c_stock.set_defaults(func=cmd_one_c_stock)
 
     backup = sub.add_parser("backup", help="сделать копию базы и удалить старые")
     backup.add_argument("--keep", type=int, default=7, help="сколько копий хранить")
