@@ -116,7 +116,7 @@ class SendTest(unittest.TestCase):
             smtp_port=self.port,
             smtp_user="",
             smtp_from="sales@firma.ru",
-            smtp_starttls=False,
+            smtp_security="none",
         )
         message = build_kp_message(
             sender="client@example.ru",

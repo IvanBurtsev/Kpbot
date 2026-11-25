@@ -580,6 +580,44 @@ def cmd_demo_stand(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_smtp_setup(args: argparse.Namespace) -> int:
+    """Прописывает SMTP в .env, пароль спрашивает скрыто и никуда не печатает."""
+    import getpass
+    import re
+
+    env_path = Path(args.env) if args.env else Path(".env")
+    if not env_path.exists():
+        print(f"нет файла {env_path}")
+        return 2
+
+    password = getpass.getpass("Пароль почты (не отображается): ")
+    if not password:
+        print("пароль не введён")
+        return 2
+
+    values = {
+        "KPBOT_SMTP_ENABLED": "true",
+        "KPBOT_SMTP_HOST": args.host,
+        "KPBOT_SMTP_PORT": str(args.port),
+        "KPBOT_SMTP_SECURITY": args.security,
+        "KPBOT_SMTP_USER": args.user,
+        "KPBOT_SMTP_PASSWORD": password,
+        "KPBOT_SMTP_FROM": args.sender or args.user,
+    }
+    text = env_path.read_text(encoding="utf-8")
+    for key, value in values.items():
+        line = f"{key}={value}"
+        if re.search(rf"^{key}=", text, flags=re.M):
+            text = re.sub(rf"^{key}=.*$", line, text, flags=re.M)
+        else:
+            text = text.rstrip() + "\n" + line + "\n"
+    env_path.write_text(text, encoding="utf-8")
+
+    print(f"записано в {env_path}: {args.user} через {args.host}:{args.port} ({args.security})")
+    print("пароль в вывод не попал; перезапустите сервис и выполните smtp-check")
+    return 0
+
+
 def cmd_user_add(args: argparse.Namespace) -> int:
     """Добавить менеджера или администратора. Пароль спрашиваем скрыто."""
     import getpass
@@ -861,6 +899,15 @@ def main(argv: list[str] | None = None) -> int:
     send_kp.add_argument("--to", default="")
     send_kp.add_argument("--body", default="")
     send_kp.set_defaults(func=cmd_send_kp)
+
+    smtp_setup = sub.add_parser("smtp-setup", help="прописать SMTP в .env (пароль спрашивается скрыто)")
+    smtp_setup.add_argument("--user", required=True, help="полный адрес почты")
+    smtp_setup.add_argument("--host", default="smtp.rambler.ru")
+    smtp_setup.add_argument("--port", type=int, default=465)
+    smtp_setup.add_argument("--security", default="ssl", choices=("ssl", "starttls", "none"))
+    smtp_setup.add_argument("--sender", default="")
+    smtp_setup.add_argument("--env", default="")
+    smtp_setup.set_defaults(func=cmd_smtp_setup)
 
     smtp_check = sub.add_parser("smtp-check", help="проверить настройки отправки почты")
     smtp_check.set_defaults(func=cmd_smtp_check)

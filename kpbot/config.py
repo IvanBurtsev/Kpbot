@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     smtp_user: str = ""
     smtp_password: str = ""
     smtp_from: str = ""
-    smtp_starttls: bool = True
+    smtp_security: str = "starttls"  # starttls (587) | ssl (465) | none (только для тестов)
     smtp_timeout_seconds: int = 30
 
     # --- уведомления (Telegram) ---

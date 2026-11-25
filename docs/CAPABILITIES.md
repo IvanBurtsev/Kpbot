@@ -69,13 +69,19 @@ python -m kpbot.cli user-add --email m@firma.ru --role manager --name "Иван"
 KPBOT_SMTP_ENABLED=true
 KPBOT_SMTP_HOST=smtp.yandex.ru
 KPBOT_SMTP_PORT=465
-KPBOT_SMTP_STARTTLS=false      # для 465; для 587 оставить true
+KPBOT_SMTP_SECURITY=ssl        # 465 → ssl, 587 → starttls
 KPBOT_SMTP_USER=sales@firma.ru
 KPBOT_SMTP_PASSWORD=пароль-приложения
 KPBOT_SMTP_FROM=sales@firma.ru
 ```
 
 Проверка без отправки: `python -m kpbot.cli smtp-check`.
+
+Быстрая настройка (пароль спрашивается скрыто и не попадает ни в логи, ни в историю команд):
+
+```bash
+python -m kpbot.cli smtp-setup --user sales@firma.ru --host smtp.rambler.ru --port 465 --security ssl
+```
 
 ## Чего нет — сознательно
 

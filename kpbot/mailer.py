@@ -87,7 +87,7 @@ class Mailer:
         self.user = cfg.smtp_user
         self.password = cfg.smtp_password
         self.from_addr = cfg.smtp_from or cfg.smtp_user
-        self.starttls = cfg.smtp_starttls
+        self.security = (cfg.smtp_security or "starttls").lower()
         self.timeout = cfg.smtp_timeout_seconds
         self.enabled = cfg.smtp_enabled
 
@@ -99,13 +99,20 @@ class Mailer:
         if not self.from_addr:
             raise MailError("не задан адрес отправителя KPBOT_SMTP_FROM")
 
+    def _connect(self, context) -> smtplib.SMTP:
+        """465 — шифрование с первого байта (SSL), 587 — STARTTLS, none — только тесты."""
+        if self.security == "ssl":
+            return smtplib.SMTP_SSL(self.host, self.port, timeout=self.timeout, context=context)
+        return smtplib.SMTP(self.host, self.port, timeout=self.timeout)
+
     def send(self, message: EmailMessage, *, to: str) -> None:
         self.check()
         context = ssl.create_default_context()
         try:
-            with smtplib.SMTP(self.host, self.port, timeout=self.timeout) as client:
+            client = self._connect(context)
+            with client:
                 client.ehlo()
-                if self.starttls:
+                if self.security == "starttls":
                     client.starttls(context=context)
                     client.ehlo()
                 if self.user:
@@ -132,9 +139,9 @@ def check_connection(cfg: Settings) -> str:
     mailer.check()
     context = ssl.create_default_context()
     try:
-        with smtplib.SMTP(mailer.host, mailer.port, timeout=mailer.timeout) as client:
+        with mailer._connect(context) as client:
             client.ehlo()
-            if mailer.starttls:
+            if mailer.security == "starttls":
                 client.starttls(context=context)
                 client.ehlo()
             if mailer.user:
