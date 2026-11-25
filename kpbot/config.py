@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from decimal import Decimal
 from pathlib import Path
 
@@ -13,6 +15,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_SECRETS = frozenset(
     {"dev-api-key-change-me", "dev-password", "dev-session-secret-change-me", "change-me", ""}
 )
+
+
+# Российские сервисы (MAX, Госуслуги и др.) подписаны корневым сертификатом Минцифры,
+# которого нет в certifi. Если системный бандл на месте — используем его.
+_SYSTEM_CA = "/etc/ssl/certs/ca-certificates.crt"
+if os.path.exists(_SYSTEM_CA):
+    os.environ.setdefault("SSL_CERT_FILE", _SYSTEM_CA)
 
 
 class Settings(BaseSettings):
