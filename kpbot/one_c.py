@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 import httpx
@@ -280,6 +281,67 @@ class OneCClient:
                 raise OneCError(
                     f"регистр: {register_error}; документы: {documents_error}"
                 ) from documents_error
+
+    def ref_by_sku(self) -> dict[str, str]:
+        """Обратная карта справочника: артикул → Ref_Key (для записи документов)."""
+        result: dict[str, str] = {}
+        for ref, (sku, _name, _unit) in self.nomenclature().items():
+            if sku:
+                result.setdefault(sku, ref)
+        return result
+
+    def create_order(
+        self,
+        lines: list[tuple[str, str, str]],
+        *,
+        counterparty_key: str = "",
+        date: str | None = None,
+    ) -> str:
+        """Создаёт «Заказ клиента» по строкам (артикул, количество, цена).
+
+        Пишем только то, что знаем наверняка: дату, товары и — если передан —
+        контрагента. Остальные реквизиты 1С заполнит сама. Если конфигурация
+        не принимает запись, вернём её текст как есть: это не наша ошибка.
+        """
+        if not lines:
+            raise OneCError("пустой заказ: в расчёте нет строк")
+
+        refs = self.ref_by_sku()
+        missing = [sku for sku, _qty, _price in lines if sku not in refs]
+        if missing:
+            raise OneCError(
+                "в справочнике 1С нет артикулов: " + ", ".join(missing[:5])
+                + (" и ещё " + str(len(missing) - 5) if len(missing) > 5 else "")
+            )
+
+        goods = [
+            {
+                "Номенклатура_Key": refs[sku],
+                "Количество": str(qty),
+                "Цена": str(price),
+            }
+            for sku, qty, price in lines
+        ]
+        payload: dict[str, object] = {
+            "Date": date or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+            "Товары": goods,
+        }
+        if counterparty_key:
+            payload["Контрагент_Key"] = counterparty_key
+
+        url = f"{self.base_url}{ODATA}/Document_ЗаказКлиента?$format=json"
+        try:
+            response = self._http.post(url, headers=self._headers(), json=payload)
+        except httpx.HTTPError as exc:
+            raise OneCError(f"сеть: {type(exc).__name__}: {str(exc)[:120]}") from exc
+        if response.status_code >= 400:
+            body = response.text[:300].replace("\n", " ")
+            raise OneCError(f"1С отказала в создании заказа ({response.status_code}): {body}")
+        try:
+            created = response.json()
+        except ValueError:
+            return "создан"
+        return str(created.get("Ref_Key") or created.get("Number") or "создан")
 
     def create_invoice(self, *, counterparty: str, lines: list[tuple[str, str, str]]) -> str:
         """Создаёт счёт на оплату. Возвращает ссылку на документ.

@@ -93,6 +93,12 @@ def check_secrets() -> None:
     else:
         check(OK, "KPBOT_OFFLINE не включён в .env", "выключен")
 
+    if settings.secret_key:
+        check(OK, "KPBOT_SECRET_KEY задан отдельно", "пароли ящиков шифруются им")
+    else:
+        check(WARN, "KPBOT_SECRET_KEY задан отдельно",
+              "используется секрет сессии: его смена сделает пароли ящиков нечитаемыми")
+
 
 def check_channels() -> None:
     if settings.llm_enabled:

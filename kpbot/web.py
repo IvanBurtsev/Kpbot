@@ -1336,13 +1336,19 @@ async def health() -> dict:
 async def api_create_rfq(payload: RfqIn) -> JSONResponse:
     if not limiter.allow("api:rfqs"):
         raise HTTPException(status_code=429, detail="rate limit")
-    result = await run_in_threadpool(pipeline.process_text, 
-        payload.text,
-        sender=payload.sender,
-        subject=payload.subject,
-        message_id=payload.message_id,
-        actor="api",
-    )
+    try:
+        result = await run_in_threadpool(pipeline.process_text, 
+            payload.text,
+            sender=payload.sender,
+            subject=payload.subject,
+            message_id=payload.message_id,
+            actor="api",
+        )
+    except NotAnRfq:
+        raise HTTPException(
+            status_code=422,
+            detail="в письме нет позиций с количеством — это не заявка",
+        ) from None
     return JSONResponse(
         {
             "rfq_id": result.rfq_id,

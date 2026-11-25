@@ -17,7 +17,8 @@ class FakeMailbox:
 
     created: list[dict] = []
 
-    def __init__(self, config) -> None:
+    def __init__(self, config, token_path=None) -> None:
+        self.token_path = token_path
         if isinstance(config, dict):  # cli передаёт настройки клиента словарём
             self.host = config.get("mail_imap_host", "")
             self.user = config.get("mail_imap_user", "")
@@ -59,6 +60,43 @@ class TenantMailboxTest(unittest.TestCase):
 
         with self.assertRaises(MailError):
             cli._mailbox({})  # в стенде IMAP-пользователь пуст
+
+    def test_encrypted_password_is_decrypted_for_imap(self) -> None:
+        from kpbot.secrets_box import encrypt
+
+        mailbox = cli._mailbox(
+            {
+                "mail_imap_host": "imap.yandex.ru",
+                "mail_imap_user": "client@firma.ru",
+                "mail_imap_password": encrypt("app-password", cli.settings.secrets_key),
+            }
+        )
+        self.assertEqual(mailbox.config.password, "app-password")
+        self.assertEqual(mailbox.auth_mode, "LOGIN")
+
+    def test_tenant_oauth_uses_own_client_and_token(self) -> None:
+        from pathlib import Path
+
+        from kpbot.secrets_box import encrypt
+
+        settings_key = cli.settings.secrets_key
+        token_path = Path(support.ROOT) / "tenant.oauth.json"
+        with patch.object(cli, "ensure_access_token", return_value="access-token") as mocked:
+            mailbox = cli._mailbox(
+                {
+                    "mail_imap_user": "client@firma.ru",
+                    "oauth_client_id": "client-id.apps.googleusercontent.com",
+                    "oauth_client_secret": encrypt("client-secret", settings_key),
+                },
+                token_path=token_path,
+            )
+        self.assertEqual(mailbox.auth_mode, "XOAUTH2")
+        self.assertEqual(mailbox.config.user, "client@firma.ru")
+        self.assertEqual(mailbox.config.access_token, "access-token")
+        args = mocked.call_args.args
+        self.assertEqual(args[0].path, token_path)
+        self.assertEqual(args[1], "client-id.apps.googleusercontent.com")
+        self.assertEqual(args[2], "client-secret")
 
     def test_poll_all_tenants_uses_each_mailbox(self) -> None:
         first = Store(support.ROOT / "tenant-a.sqlite3")

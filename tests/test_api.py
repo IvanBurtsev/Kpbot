@@ -41,6 +41,12 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(body["matched"], 1)
         self.assertEqual(body["total"], "414.00")
 
+    def test_not_a_rfq_is_422_not_500(self) -> None:
+        payload = {"sender": "a@b.ru", "subject": "Рассылка", "text": "Добрый день! Скидки недели."}
+        response = self.client.post("/api/v1/rfqs", json=payload, headers={"X-API-Key": "test-key"})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("не заявка", response.json()["detail"])
+
     def test_api_validates_payload(self) -> None:
         bad = {"sender": "не-почта", "subject": "", "text": ""}
         response = self.client.post("/api/v1/rfqs", json=bad, headers={"X-API-Key": "test-key"})

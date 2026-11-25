@@ -66,6 +66,19 @@ def main() -> int:
 
     names = ["KPBOT_API_KEY", "KPBOT_SESSION_SECRET"] + (["KPBOT_UI_PASSWORD"] if args.password else [])
     text = ENV_FILE.read_text(encoding="utf-8")
+
+    # Секрет шифрования паролей ящиков не должен зависеть от секрета сессии:
+    # иначе ротация сессии делает сохранённые пароли нечитаемыми.
+    secret_key_added = ""
+    if not re.search(r"^KPBOT_SECRET_KEY=\S+", text, re.MULTILINE):
+        secret_key_added = secrets.token_urlsafe(36)
+        if re.search(r"^KPBOT_SECRET_KEY=", text, re.MULTILINE):
+            text = re.sub(r"^KPBOT_SECRET_KEY=.*$", f"KPBOT_SECRET_KEY={secret_key_added}",
+                          text, flags=re.MULTILINE)
+        else:
+            text = text.rstrip("\n") + f"\nKPBOT_SECRET_KEY={secret_key_added}\n"
+        print("KPBOT_SECRET_KEY: добавлен (пароли ящиков больше не зависят от секрета сессии)")
+
     updates = {name: new_value(name) for name in names}
     new_text, applied = rewrite(text, updates)
 
@@ -84,6 +97,8 @@ def main() -> int:
 
     ENV_FILE.write_text(new_text, encoding="utf-8")
     print(f"\nзаписано в {ENV_FILE.name}. Перезапустите сервис.")
+    if secret_key_added:
+        print("KPBOT_SECRET_KEY сохранён — не теряйте его: без него пароли ящиков не расшифруются.")
     print(MANUAL_STEPS)
     return 0
 

@@ -20,6 +20,7 @@ from .oauth import OAuthError, TokenStore, ensure_access_token, run_local_flow
 from .pipeline import NotAnRfq, Pipeline
 from .pricelist import default_price_items, write_csv, write_xlsx
 from .store import Store
+from .secrets_box import SecretError
 
 SAMPLES: tuple[dict, str] = (
     (
@@ -161,20 +162,36 @@ def cmd_price(args: argparse.Namespace) -> int:
     return 0
 
 
-def _mailbox(overrides: dict[str, str] | None = None) -> ImapMailbox:
+def _tenant_token_path(db_path: Path) -> Path:
+    """Токен клиента лежит рядом с его базой: data/tenants/<id>.oauth.json."""
+    return db_path.with_suffix(".oauth.json")
+
+
+def _mailbox(overrides: dict[str, str] | None = None, token_path: Path | None = None) -> ImapMailbox:
     """Ящик клиента: его настройки из базы приоритетнее общих из .env.
 
-    OAuth-токен общий: он привязан к одному аккаунту, поэтому для клиентов
-    с отдельным ящиком используется пароль приложения.
+    Пароль расшифровывается ключом из `.env`; если пароля нет — пробуем OAuth
+    (у клиента может быть свой OAuth-клиент и свой файл токена).
     """
+    from .secrets_box import decrypt
+
     mail = overrides or {}
+    password = settings.imap_password
+    if mail.get("mail_imap_password"):
+        password = decrypt(mail["mail_imap_password"], settings.secrets_key)
+
+    client_id = mail.get("oauth_client_id") or settings.oauth_client_id
+    client_secret = mail.get("oauth_client_secret") or settings.oauth_client_secret
+    if client_secret:
+        client_secret = decrypt(client_secret, settings.secrets_key)
+
     access_token = ""
-    if not mail.get("mail_imap_user") and settings.oauth_client_id and settings.oauth_client_secret:
+    if not password and client_id and client_secret:
         try:
             access_token = ensure_access_token(
-                TokenStore(settings.oauth_token_path),
-                settings.oauth_client_id,
-                settings.oauth_client_secret,
+                TokenStore(token_path or settings.oauth_token_path),
+                client_id,
+                client_secret,
             )
         except OAuthError as exc:
             print(f"OAuth: {exc}")
@@ -184,7 +201,7 @@ def _mailbox(overrides: dict[str, str] | None = None) -> ImapMailbox:
             host=mail.get("mail_imap_host") or settings.imap_host,
             port=int(mail.get("mail_imap_port") or settings.imap_port),
             user=mail.get("mail_imap_user") or settings.imap_user,
-            password=mail.get("mail_imap_password") or settings.imap_password,
+            password=password,
             access_token=access_token,
             folder=mail.get("mail_imap_folder") or settings.imap_folder,
         )
@@ -192,15 +209,40 @@ def _mailbox(overrides: dict[str, str] | None = None) -> ImapMailbox:
 
 
 def cmd_oauth_login(args: argparse.Namespace) -> int:
-    if not settings.oauth_client_id or not settings.oauth_client_secret:
+    """Получает refresh-токен: общий или отдельный для клиента (--tenant)."""
+    from .secrets_box import decrypt
+    from .tenancy import TenantRegistry
+
+    tenant_id = getattr(args, "tenant", "") or ""
+    client_id = settings.oauth_client_id
+    client_secret = settings.oauth_client_secret
+    token_path = settings.oauth_token_path
+    label = "основная база"
+
+    if tenant_id:
+        registry = TenantRegistry(settings.tenants_db_path, settings.db_path)
+        tenant = registry.get(tenant_id)
+        if tenant is None:
+            print(f"клиент {tenant_id} не найден в реестре")
+            return 2
+        db_path = Path(tenant["db_path"])
+        prefs = Store(db_path).get_settings()
+        client_id = prefs.get("oauth_client_id") or client_id
+        if prefs.get("oauth_client_secret"):
+            client_secret = decrypt(prefs["oauth_client_secret"], settings.secrets_key)
+        token_path = _tenant_token_path(db_path)
+        label = f"{tenant['name']} ({tenant['id']})"
+
+    if not client_id or not client_secret:
         print("нужен OAuth-клиент: создайте «Desktop app» в Google Cloud, включите Gmail API")
         print("и заполните KPBOT_OAUTH_CLIENT_ID / KPBOT_OAUTH_CLIENT_SECRET в .env")
+        print("или передайте клиенту через mail-setup --oauth-client-id/--oauth-client-secret")
         return 2
     try:
         token = run_local_flow(
-            settings.oauth_client_id,
-            settings.oauth_client_secret,
-            TokenStore(settings.oauth_token_path),
+            client_id,
+            client_secret,
+            TokenStore(token_path),
             port=args.port,
             open_browser=not args.no_browser,
         )
@@ -208,9 +250,8 @@ def cmd_oauth_login(args: argparse.Namespace) -> int:
         print(f"не вышло: {exc}")
         return 2
     scope = "получен" if token.refresh_token else "НЕ получен"
-    print(f"refresh-токен {scope} и сохранён в {settings.oauth_token_path}")
+    print(f"refresh-токен {scope} и сохранён в {token_path} ({label})")
     return 0
-
 
 def cmd_mail_status(args: argparse.Namespace) -> int:
     """Диагностика без сети: что настроено, чего не хватает, что делать дальше."""
@@ -268,20 +309,27 @@ def cmd_mail_setup(args: argparse.Namespace) -> int:
         label = "основная база"
 
     password = args.password or getpass.getpass(f"пароль приложения для {args.user}: ")
+    from .secrets_box import encrypt
+
+    values = {
+        "mail_imap_host": args.host,
+        "mail_imap_port": str(args.port),
+        "mail_imap_user": args.user,
+        "mail_imap_folder": args.folder,
+    }
+    if password:
+        values["mail_imap_password"] = encrypt(password, settings.secrets_key)
+    if args.oauth_client_id:
+        values["oauth_client_id"] = args.oauth_client_id
+    if args.oauth_client_secret:
+        values["oauth_client_secret"] = encrypt(args.oauth_client_secret, settings.secrets_key)
+
     store = Store(db_path)
-    store.set_settings(
-        {
-            "mail_imap_host": args.host,
-            "mail_imap_port": str(args.port),
-            "mail_imap_user": args.user,
-            "mail_imap_password": password,
-            "mail_imap_folder": args.folder,
-        }
-    )
+    store.set_settings(values)
     store.log_event("mail_setup", "cli", f"{args.user} @ {args.host}:{args.port}")
 
     print(f"ящик сохранён: {label} · {args.user} @ {args.host}:{args.port} / {args.folder}")
-    print("пароль лежит в базе клиента открытым текстом, как и в .env: закройте права на data/")
+    print("пароль зашифрован ключом из .env; без KPBOT_SECRET_KEY/SESSION_SECRET он не читается")
 
     try:
         info = _mailbox(store.get_settings()).check()
@@ -328,9 +376,14 @@ def _poll_all_tenants(args: argparse.Namespace) -> int:
         if not (overrides.get("mail_imap_user") or settings.imap_user):
             print(f"{name} ({tenant_id}): почта не настроена — пропуск")
             continue
+        token_path = (
+            settings.oauth_token_path
+            if tenant_id == "default"
+            else _tenant_token_path(Path(tenant["db_path"]))
+        )
         try:
-            mailbox = _mailbox(overrides)
-        except MailError as exc:
+            mailbox = _mailbox(overrides, token_path)
+        except (MailError, SecretError) as exc:
             print(f"{name}: почта недоступна: {exc}")
             status = 2
             continue
@@ -1019,6 +1072,36 @@ def cmd_one_c_stock(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_one_c_order(args: argparse.Namespace) -> int:
+    """Создаёт «Заказ клиента» в 1С по подтверждённому расчёту заявки."""
+    from .one_c import OneCError
+
+    store = Store(settings.db_path)
+    rfq = store.get_rfq(args.rfq_id) if args.rfq_id else None
+    if rfq is None:
+        rows = store.list_rfqs(1)
+        rfq = store.get_rfq(rows[0]["id"]) if rows else None
+    if rfq is None:
+        print("заявок нет — создавать заказ не из чего")
+        return 2
+
+    quote = store.get_quote(rfq["id"])
+    if not quote or not quote.get("lines"):
+        print("в заявке нет расчёта: сначала подтвердите строки в интерфейсе")
+        return 2
+
+    lines = [(line["sku"], line["qty"], line["price"]) for line in quote["lines"]]
+    try:
+        result = _one_c_client().create_order(lines, counterparty_key=args.counterparty)
+    except (OneCError, SystemExit) as exc:
+        print(f"1С: {exc}")
+        return 1
+    store.log(rfq["id"], "order_1c", "cli", str(result)[:200])
+    print(f"заказ создан в 1С: {result} · заявка {rfq['id'][:8]}")
+    print("проверьте документ в 1С: реквизиты, которые сервис не знает, заполняет сама 1С")
+    return 0
+
+
 def cmd_backup(args: argparse.Namespace) -> int:
     """Консистентная копия базы через sqlite backup API + ротация старых копий."""
     import contextlib
@@ -1157,6 +1240,7 @@ def main(argv: list[str] | None = None) -> int:
     oauth_login = sub.add_parser("oauth-login", help="получить OAuth-токен Gmail (XOAUTH2)")
     oauth_login.add_argument("--port", type=int, default=settings.oauth_redirect_port)
     oauth_login.add_argument("--no-browser", action="store_true", help="не открывать браузер")
+    oauth_login.add_argument("--tenant", default="", help="код клиента: свой OAuth-клиент и свой токен")
     oauth_login.set_defaults(func=cmd_oauth_login)
 
     poll = sub.add_parser("poll", help="забрать новые письма из почты и разобрать их")
@@ -1176,6 +1260,8 @@ def main(argv: list[str] | None = None) -> int:
     mail_setup.add_argument("--user", required=True)
     mail_setup.add_argument("--folder", default="INBOX")
     mail_setup.add_argument("--password", default="", help="без флага спросим скрыто")
+    mail_setup.add_argument("--oauth-client-id", default="", help="OAuth-клиент клиента (Desktop app)")
+    mail_setup.add_argument("--oauth-client-secret", default="", help="секрет клиента; хранится зашифрованным")
     mail_setup.set_defaults(func=cmd_mail_setup)
 
     preview = sub.add_parser("mail-preview", help="показать разбор писем без записи в базу")
@@ -1201,6 +1287,11 @@ def main(argv: list[str] | None = None) -> int:
              "documents — приход минус расход по документам",
     )
     one_c_stock.set_defaults(func=cmd_one_c_stock)
+
+    one_c_order = sub.add_parser("1c-order", help="создать «Заказ клиента» в 1С по расчёту заявки")
+    one_c_order.add_argument("--rfq", default="", help="id заявки; по умолчанию последняя")
+    one_c_order.add_argument("--counterparty", default="", help="Ref_Key контрагента (необязательно)")
+    one_c_order.set_defaults(func=cmd_one_c_order)
 
     backup = sub.add_parser("backup", help="сделать копию базы и удалить старые")
     backup.add_argument("--keep", type=int, default=7, help="сколько копий хранить")

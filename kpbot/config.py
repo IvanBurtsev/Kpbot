@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     ui_password: str = "dev-password"
     session_secret: str = "dev-session-secret-change-me"
     session_ttl_seconds: int = 8 * 3600
+    # Ключ шифрования секретов в базе (пароли ящиков клиентов).
+    # Пусто — берём session_secret: отдельный ключ лучше, но дефолт не должен
+    # требовать ручной настройки у существующих установок.
+    secret_key: str = ""
 
     # --- продавец (реквизиты в КП) ---
     company_name: str = 'ООО «Ромашка»'
@@ -157,6 +161,11 @@ class Settings(BaseSettings):
     @property
     def db_path(self) -> Path:
         return self.data_dir / "kpbot.sqlite3"
+
+    @property
+    def secrets_key(self) -> str:
+        """Чем шифруем секреты в базе: KPBOT_SECRET_KEY или секрет сессии."""
+        return self.secret_key or self.session_secret
 
     @property
     def tenants_db_path(self) -> Path:

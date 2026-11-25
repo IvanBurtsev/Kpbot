@@ -205,5 +205,60 @@ class DocumentStockTest(unittest.TestCase):
         self.assertIn("документы", str(ctx.exception))
 
 
+class OrderCreationTest(unittest.TestCase):
+    def test_order_payload_uses_refs_and_string_numbers(self) -> None:
+        import json
+
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "Catalog_Номенклатура" in request.url.path:
+                return httpx.Response(200, json=NOMENCLATURE)
+            if "Document_ЗаказКлиента" in request.url.path:
+                captured["method"] = request.method
+                captured["payload"] = json.loads(request.content)
+                return httpx.Response(201, json={"Ref_Key": "order-1"})
+            return httpx.Response(404)
+
+        result = client_with(handler).create_order(
+            [("KR-001", "10", "34.50"), ("EL-001", "2", "128")]
+        )
+        self.assertEqual(result, "order-1")
+        self.assertEqual(captured["method"], "POST")
+        payload = captured["payload"]
+        self.assertIn("Date", payload)
+        self.assertEqual(payload["Товары"][0]["Номенклатура_Key"], "n-1")
+        self.assertEqual(payload["Товары"][0]["Количество"], "10")
+        self.assertEqual(payload["Товары"][1]["Цена"], "128")
+
+    def test_unknown_sku_is_explained(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "Catalog_Номенклатура" in request.url.path:
+                return httpx.Response(200, json=NOMENCLATURE)
+            return httpx.Response(404)
+
+        with self.assertRaises(OneCError) as ctx:
+            client_with(handler).create_order([("NO-SUCH", "1", "10")])
+        self.assertIn("NO-SUCH", str(ctx.exception))
+        self.assertIn("нет артикулов", str(ctx.exception))
+
+    def test_1c_rejection_text_is_kept(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "Catalog_Номенклатура" in request.url.path:
+                return httpx.Response(200, json=NOMENCLATURE)
+            return httpx.Response(400, text="ПередЗаписью: не заполнен склад")
+
+        with self.assertRaises(OneCError) as ctx:
+            client_with(handler).create_order([("KR-001", "1", "10")])
+        self.assertIn("ПередЗаписью", str(ctx.exception))
+
+    def test_empty_order_is_rejected_before_network(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+            raise AssertionError("сеть не должна вызываться")
+
+        with self.assertRaises(OneCError):
+            client_with(handler).create_order([])
+
+
 if __name__ == "__main__":
     unittest.main()
