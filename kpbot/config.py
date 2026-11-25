@@ -155,11 +155,12 @@ class Settings(BaseSettings):
             problems.append("KPBOT_SESSION_SECRET короче 32 символов")
         if not (self.oauth_client_id and self.oauth_client_secret) and not self.imap_password:
             problems.append("почта не подключена: нет ни OAuth-клиента, ни пароля приложения")
-        if any(host in (self.public_base_url or "").lower()
-               for host in ("127.0.0.1", "localhost", "0.0.0.0")):
+        notifications_on = self.telegram_enabled or self.max_enabled
+        if notifications_on and any(host in (self.public_base_url or "").lower()
+                                    for host in ("127.0.0.1", "localhost", "0.0.0.0")):
             problems.append(
-                "KPBOT_PUBLIC_BASE_URL указывает на локальный адрес: "
-                "ссылки в уведомлениях не откроются у получателя"
+                "уведомления включены, но KPBOT_PUBLIC_BASE_URL локальный: "
+                "ссылки в мессенджерах не откроются у получателя"
             )
         if self.llm_enabled and not self.llm_api_key:
             problems.append("KPBOT_LLM_ENABLED=true, но KPBOT_LLM_API_KEY не задан")

@@ -34,6 +34,7 @@ class ProductionGuardTest(unittest.TestCase):
             oauth_client_id="x.apps.googleusercontent.com",
             oauth_client_secret="GOCSPX-secret",
             imap_user="a@b.ru",
+            public_base_url="https://kp.example.ru:8443",
             data_dir=_TMP,
         )
         self.assertEqual(settings.production_problems(), [])
