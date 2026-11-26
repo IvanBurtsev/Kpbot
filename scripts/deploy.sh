@@ -9,10 +9,39 @@
 set -euo pipefail
 
 APP_DIR="${KPBOT_DIR:-/opt/kpbot}"
-SERVICE="${KPBOT_SERVICE:-kpbot}"
 BRANCH="${KPBOT_BRANCH:-main}"
-HEALTH_URL="${KPBOT_HEALTH_URL:-http://127.0.0.1:8000/healthz}"
 PYTHON="${PYTHON:-python3}"
+
+have_systemd() { command -v systemctl >/dev/null 2>&1; }
+
+detect_service() {
+    if [ -n "${KPBOT_SERVICE:-}" ]; then
+        printf '%s' "$KPBOT_SERVICE"
+        return
+    fi
+    local found=""
+    if have_systemd; then
+        found="$(systemctl list-units --type=service --all --no-legend --plain 2>/dev/null \
+            | awk '{print $1}' | grep -x 'kpbot.service' | head -1)"
+        if [ -z "$found" ]; then
+            found="$(systemctl list-units --type=service --all --no-legend --plain 2>/dev/null \
+                | awk '{print $1}' | grep -E '(^|[-_])kpbot(\.service)?$' | head -1)"
+        fi
+    fi
+    printf '%s' "${found:-kpbot}"
+}
+
+detect_port() {
+    local port=""
+    if have_systemd; then
+        port="$(systemctl cat "$SERVICE" 2>/dev/null \
+            | grep -oE '\-\-port[= ][0-9]+' | head -1 | grep -oE '[0-9]+')"
+    fi
+    printf '%s' "${port:-8000}"
+}
+
+SERVICE="$(detect_service)"
+HEALTH_URL="${KPBOT_HEALTH_URL:-http://127.0.0.1:$(detect_port)/healthz}"
 
 log() { printf '\n== %s\n' "$*"; }
 die() { printf '\nОШИБКА: %s\n' "$*" >&2; exit 1; }
@@ -28,6 +57,7 @@ set_env() {  # set_env KEY VALUE — меняет или добавляет ст
 }
 
 log "каталог: $APP_DIR"
+log "сервис: $SERVICE, проверка: $HEALTH_URL"
 [ -d "$APP_DIR/.git" ] || die "$APP_DIR — не git-репозиторий; сначала разверните код (docs/DEPLOY.md)"
 cd "$APP_DIR"
 

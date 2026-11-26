@@ -13,8 +13,9 @@ sudo bash scripts/deploy.sh
 Скрипт делает бэкап базы, `git pull` ветки `main`, обновляет `.venv` и зависимости,
 выставляет `KPBOT_VAT_RATE=0.22` и `KPBOT_ALLOW_SHARED_LOGIN=false`, перезапускает
 systemd-сервис и проверяет `healthz`. Если сервис не поднялся — возвращает предыдущий
-коммит и перезапускает его обратно. Параметры: `KPBOT_DIR`, `KPBOT_SERVICE`,
-`KPBOT_BRANCH`, `KPBOT_HEALTH_URL`.
+коммит и перезапускает его обратно. Имя юнита и порт скрипт определяет сам
+(`systemctl list-units`, `--port` в `ExecStart`); переопределить можно через
+`KPBOT_SERVICE`, `KPBOT_HEALTH_URL`, `KPBOT_DIR`, `KPBOT_BRANCH`.
 
 Ниже — ручной путь для первой установки.
 
