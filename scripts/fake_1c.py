@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote
 
@@ -129,6 +131,11 @@ ENTITIES = [
     "Document_СчетНаОплатуПокупателю",
 ]
 
+# Документы, созданные через OData: Ref_Key → объект. Живут до перезапуска стенда.
+DOCUMENTS: dict[str, dict] = {}
+NEXT_NUMBER = 1
+_REF_IN_PATH = re.compile(r"\(guid'([^']+)'\)")
+
 _SCHEMA = "".join(
     f'<EntitySet Name="{name}" EntityType="StandardODATA.{name}"/>' for name in ENTITIES
 )
@@ -210,12 +217,22 @@ class Handler(BaseHTTPRequestHandler):
         if path.endswith("/Document_ЗаказКлиента") or path.endswith(
             "/Document_СчетНаОплатуПокупателю"
         ):
-            self._json(200, [])
+            self._json(200, list(DOCUMENTS.values()))
             return
+        if "Document_" in path:
+            match = _REF_IN_PATH.search(path)
+            if match:
+                document = DOCUMENTS.get(match.group(1))
+                if document is None:
+                    self._send(404, json.dumps({"error": "not found"}), "application/json")
+                else:
+                    self._send(200, json.dumps(document, ensure_ascii=False), "application/json")
+                return
         self._send(404, json.dumps({"error": "not found", "path": path}, ensure_ascii=False),
                    "application/json")
 
     def do_POST(self) -> None:
+        global NEXT_NUMBER
         if not self._authorized():
             self.send_response(401)
             self.end_headers()
@@ -226,12 +243,76 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(body or b"{}")
         except ValueError:
             payload = {}
-        created = {
-            "Ref_Key": "00000000-0000-0000-0000-000000000001",
-            "Number": "0000-000001",
-            "Строк": len(payload.get("Товары") or []),
-        }
+        path = unquote(self.path.split("?")[0]).rstrip("/")
+
+        if path.endswith("/Post()") or path.endswith("/Unpost()"):
+            match = _REF_IN_PATH.search(path)
+            document = DOCUMENTS.get(match.group(1)) if match else None
+            if document is None:
+                self._send(404, json.dumps({"error": "not found"}), "application/json")
+                return
+            document["Posted"] = path.endswith("/Post()")
+            self._send(200, "", "application/json")
+            return
+
+        ref = str(uuid.uuid4())
+        if "Document_" in path:
+            document = {
+                **payload,
+                "Ref_Key": ref,
+                "Number": f"0000-{NEXT_NUMBER:06d}",
+                "Posted": False,
+            }
+            # как 1С: сумма документа считается по строкам, если её не передали
+            lines = document.get("Товары") or []
+            if lines and "СуммаДокумента" not in document:
+                document["СуммаДокумента"] = sum(float(line.get("Сумма") or 0) for line in lines)
+            DOCUMENTS[ref] = document
+            NEXT_NUMBER += 1
+            self._send(201, json.dumps(document, ensure_ascii=False), "application/json")
+            return
+        if "Catalog_Номенклатура" in path:
+            item = {**payload, "Ref_Key": ref, "DeletionMark": False, "IsFolder": False}
+            NOMENCLATURE.append(item)
+            self._send(201, json.dumps(item, ensure_ascii=False), "application/json")
+            return
+        created = {"Ref_Key": ref, "Number": f"0000-{NEXT_NUMBER:06d}"}
         self._send(201, json.dumps(created, ensure_ascii=False), "application/json")
+
+    def do_PATCH(self) -> None:
+        if not self._authorized():
+            self.send_response(401)
+            self.end_headers()
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else b""
+        try:
+            payload = json.loads(body or b"{}")
+        except ValueError:
+            payload = {}
+        path = unquote(self.path.split("?")[0]).rstrip("/")
+        match = _REF_IN_PATH.search(path)
+        document = DOCUMENTS.get(match.group(1)) if match else None
+        if document is None:
+            self._send(404, json.dumps({"error": "not found"}), "application/json")
+            return
+        document.update(payload)
+        if "СуммаДокумента" not in payload:
+            lines = document.get("Товары") or []
+            if lines:
+                document["СуммаДокумента"] = sum(float(line.get("Сумма") or 0) for line in lines)
+        self._send(200, json.dumps(document, ensure_ascii=False), "application/json")
+
+    def do_DELETE(self) -> None:
+        if not self._authorized():
+            self.send_response(401)
+            self.end_headers()
+            return
+        path = unquote(self.path.split("?")[0]).rstrip("/")
+        match = _REF_IN_PATH.search(path)
+        if match:
+            DOCUMENTS.pop(match.group(1), None)
+        self._send(204, "", "application/json")
 
 
 def main() -> None:

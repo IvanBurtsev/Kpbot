@@ -1184,7 +1184,9 @@ def cmd_one_c_order(args: argparse.Namespace) -> int:
 
     lines = [(line["sku"], line["qty"], line["price"]) for line in quote["lines"]]
     try:
-        result = _one_c_client().create_order(lines, counterparty_key=args.counterparty)
+        result = _one_c_client().create_order(
+            lines, counterparty_key=args.counterparty, post=args.post
+        )
     except (OneCError, SystemExit) as exc:
         print(f"1С: {exc}")
         return 1
@@ -1259,15 +1261,76 @@ def cmd_one_c_invoice(args: argparse.Namespace) -> int:
             )
         else:
             result = client.create_invoice(
-                counterparty=args.counterparty, lines=lines
+                counterparty=args.counterparty,
+                lines=lines,
+                vat_rate=settings.vat_rate,
+                post=args.post,
             )
     except (OneCError, SystemExit) as exc:
         print(f"1С: {exc}")
         return 1
     store.log(rfq["id"], "invoice_1c", "cli", str(result)[:200])
     way = "HTTP-сервис" if use_service else "OData"
-    print(f"счёт создан в 1С ({way}): {result} · заявка {rfq['id'][:8]}")
+    posted = " · проведён" if args.post else ""
+    print(f"счёт создан в 1С ({way}): {result}{posted} · заявка {rfq['id'][:8]}")
     print("проверьте документ в 1С: часть реквизитов заполняет сама 1С")
+    return 0
+
+
+def cmd_one_c_post(args: argparse.Namespace) -> int:
+    """Проведение документа по Ref_Key: OData-метод Post()."""
+    from .one_c import OneCError
+
+    try:
+        _one_c_client().post_document(args.entity, args.ref)
+    except OneCError as exc:
+        print(f"1С: {exc}")
+        return 1
+    print(f"проведено: {args.entity} {args.ref}")
+    return 0
+
+
+def cmd_one_c_unpost(args: argparse.Namespace) -> int:
+    """Отмена проведения документа по Ref_Key: OData-метод Unpost()."""
+    from .one_c import OneCError
+
+    try:
+        _one_c_client().unpost_document(args.entity, args.ref)
+    except OneCError as exc:
+        print(f"1С: {exc}")
+        return 1
+    print(f"проведение отменено: {args.entity} {args.ref}")
+    return 0
+
+
+def cmd_one_c_delete(args: argparse.Namespace) -> int:
+    """Удаление объекта 1С по Ref_Key. Требует --yes: удаление необратимо."""
+    from .one_c import OneCError
+
+    if not args.yes:
+        print("удаление необратимо: повторите с --yes")
+        return 2
+    try:
+        _one_c_client().delete_entity(args.entity, args.ref)
+    except OneCError as exc:
+        print(f"1С: {exc}")
+        return 1
+    print(f"удалено: {args.entity} {args.ref}")
+    return 0
+
+
+def cmd_one_c_show(args: argparse.Namespace) -> int:
+    """Показать объект 1С по Ref_Key (для проверки после записи)."""
+    import json as json_module
+
+    from .one_c import OneCError
+
+    try:
+        data = _one_c_client().get_entity(args.entity, args.ref, select=args.select)
+    except OneCError as exc:
+        print(f"1С: {exc}")
+        return 1
+    print(json_module.dumps(data, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -1605,12 +1668,14 @@ def main(argv: list[str] | None = None) -> int:
     one_c_order = sub.add_parser("1c-order", help="создать «Заказ клиента» в 1С по расчёту заявки")
     one_c_order.add_argument("--rfq", dest="rfq_id", default="", help="id заявки; по умолчанию последняя")
     one_c_order.add_argument("--counterparty", default="", help="Ref_Key контрагента (необязательно)")
+    one_c_order.add_argument("--post", action="store_true", help="провести документ после записи")
     one_c_order.set_defaults(func=cmd_one_c_order)
 
     one_c_invoice = sub.add_parser("1c-invoice", help="создать «Счёт на оплату» в 1С по расчёту")
     one_c_invoice.add_argument("--rfq", dest="rfq_id", default="", help="id заявки; по умолчанию последняя")
     one_c_invoice.add_argument("--counterparty", default="", help="Ref_Key контрагента из 1С")
     one_c_invoice.add_argument("--force", action="store_true", help="выгрузить повторно, если счёт уже создан")
+    one_c_invoice.add_argument("--post", action="store_true", help="провести документ после записи")
     one_c_invoice.add_argument(
         "--via",
         choices=("auto", "service", "odata"),
@@ -1618,6 +1683,31 @@ def main(argv: list[str] | None = None) -> int:
         help="auto — HTTP-сервис, если задан KPBOT_ONE_C_SERVICE_URL, иначе OData",
     )
     one_c_invoice.set_defaults(func=cmd_one_c_invoice)
+
+    for name, func, help_text in (
+        ("1c-post", cmd_one_c_post, "провести документ 1С по Ref_Key"),
+        ("1c-unpost", cmd_one_c_unpost, "отменить проведение документа 1С"),
+    ):
+        command = sub.add_parser(name, help=help_text)
+        command.add_argument("--ref", required=True, help="Ref_Key документа")
+        command.add_argument(
+            "--entity",
+            default="Document_СчетНаОплатуПокупателю",
+            help="имя сущности OData",
+        )
+        command.set_defaults(func=func)
+
+    one_c_show = sub.add_parser("1c-show", help="показать объект 1С по Ref_Key")
+    one_c_show.add_argument("--ref", required=True)
+    one_c_show.add_argument("--entity", default="Document_СчетНаОплатуПокупателю")
+    one_c_show.add_argument("--select", default="", help="список полей через запятую")
+    one_c_show.set_defaults(func=cmd_one_c_show)
+
+    one_c_delete = sub.add_parser("1c-delete", help="удалить объект 1С по Ref_Key")
+    one_c_delete.add_argument("--ref", required=True)
+    one_c_delete.add_argument("--entity", default="Document_СчетНаОплатуПокупателю")
+    one_c_delete.add_argument("--yes", action="store_true", help="подтвердить удаление")
+    one_c_delete.set_defaults(func=cmd_one_c_delete)
 
     one_c_price = sub.add_parser("1c-price", help="забрать цены из 1С в прайс")
     one_c_price.add_argument("--limit", type=int, default=5000)

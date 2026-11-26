@@ -178,11 +178,14 @@ def base_handler(request: httpx.Request) -> httpx.Response:
 
 
 def order_handler(request: httpx.Request) -> httpx.Response:
-    """Заказ клиента существует; POST перехватываем и запоминаем тело."""
+    """Заказ клиента существует; запоминаем шапку и табличную часть отдельно."""
     if "Document_ЗаказКлиента" in request.url.path:
         if request.method == "POST":
-            order_handler.captured["payload"] = json.loads(request.content)
+            order_handler.captured["header"] = json.loads(request.content)
             return httpx.Response(201, json={"Ref_Key": "order-1"})
+        if request.method == "PATCH":
+            order_handler.captured["patch"] = json.loads(request.content)
+            return httpx.Response(200, json={})
         return httpx.Response(200, json={"value": []})
     return base_handler(request)
 
@@ -265,11 +268,15 @@ class OrderCreationTest(unittest.TestCase):
             [("KR-001", "10", "34.50"), ("EL-001", "2", "128")]
         )
         self.assertEqual(result, "order-1")
-        payload = order_handler.captured["payload"]
-        self.assertIn("Date", payload)
-        self.assertEqual(payload["Товары"][0]["Номенклатура_Key"], "n-1")
-        self.assertEqual(payload["Товары"][0]["Количество"], "10")
-        self.assertEqual(payload["Товары"][1]["Цена"], "128")
+        header = order_handler.captured["header"]
+        patch = order_handler.captured["patch"]
+        self.assertIn("Date", header)
+        self.assertNotIn("Товары", header)
+        self.assertEqual(patch["Товары"][0]["Номенклатура_Key"], "n-1")
+        self.assertEqual(patch["Товары"][0]["Количество"], 10)
+        self.assertEqual(patch["Товары"][1]["Цена"], 128)
+        self.assertEqual(patch["Товары"][0]["LineNumber"], "1")
+        self.assertEqual(patch["Товары"][1]["LineNumber"], "2")
 
     def test_unknown_sku_is_explained(self) -> None:
         with self.assertRaises(OneCError) as ctx:
@@ -311,41 +318,120 @@ class InvoiceCreationTest(unittest.TestCase):
         def handler(request: httpx.Request) -> httpx.Response:
             if "Document_СчетНаОплатуПокупателю" in request.url.path:
                 if request.method == "POST":
-                    capture["payload"] = json.loads(request.content)
+                    capture["header"] = json.loads(request.content)
                     if status >= 400:
                         return httpx.Response(status, text="внутренняя ошибка OData")
                     return httpx.Response(201, json={"Ref_Key": "inv-1"})
+                if request.method == "PATCH":
+                    capture["patch"] = json.loads(request.content)
+                    return httpx.Response(200, json={})
                 return httpx.Response(200, json={"value": []})
             return base_handler(request)
 
         return handler
 
-    def test_header_fields_follow_real_schema(self) -> None:
+    def test_header_and_lines_follow_real_schema(self) -> None:
         capture: dict = {}
         result = client_with(self._handler(capture)).create_invoice(
             counterparty="cp-1", lines=[("KR-001", "2", "100")]
         )
         self.assertEqual(result, "inv-1")
-        payload = capture["payload"]
-        self.assertEqual(payload["Организация_Key"], "org-1")
-        self.assertEqual(payload["ВалютаДокумента_Key"], "cur-1")
-        self.assertEqual(payload["Склад_Key"], "w-1")
-        self.assertEqual(payload["СуммаДокумента"], "200")
-        self.assertIs(payload["СуммаВключаетНДС"], True)
-        self.assertEqual(payload["Товары"][0]["Номенклатура_Key"], "n-1")
-        self.assertEqual(payload["Товары"][0]["Количество"], "2")
+        header = capture["header"]
+        self.assertEqual(header["Организация_Key"], "org-1")
+        self.assertEqual(header["ВалютаДокумента_Key"], "cur-1")
+        self.assertEqual(header["Склад_Key"], "w-1")
+        self.assertIs(header["СуммаВключаетНДС"], False)
+        self.assertIs(header["ДокументБезНДС"], False)
+        self.assertNotIn("Товары", header)
 
-    def test_500_hints_at_file_export(self) -> None:
+        patch = capture["patch"]
+        self.assertEqual(patch["СуммаДокумента"], 240.0)
+        line = patch["Товары"][0]
+        self.assertEqual(line["Номенклатура_Key"], "n-1")
+        self.assertEqual(line["Количество"], 2)
+        self.assertEqual(line["Сумма"], 200.0)
+        self.assertEqual(line["СуммаНДС"], 40.0)
+        self.assertEqual(line["СтавкаНДС"], "НДС20")
+        self.assertEqual(line["LineNumber"], "1")
+
+    def test_without_vat_marks_document(self) -> None:
+        capture: dict = {}
+        client_with(self._handler(capture)).create_invoice(
+            counterparty="cp-1",
+            lines=[("KR-001", "2", "100")],
+            vat_rate=Decimal("0"),
+        )
+        self.assertIs(capture["header"]["ДокументБезНДС"], True)
+        line = capture["patch"]["Товары"][0]
+        self.assertEqual(line["СтавкаНДС"], "БезНДС")
+        self.assertEqual(line["СуммаНДС"], 0.0)
+        self.assertEqual(capture["patch"]["СуммаДокумента"], 200.0)
+
+    def test_500_is_shown_with_text(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "Document_СчетНаОплатуПокупателю" in request.url.path:
+                return httpx.Response(
+                    500, json={"odata.error": {"message": {"value": "ПередЗаписью: склад"}}}
+                )
+            return base_handler(request)
+
         with self.assertRaises(OneCError) as ctx:
-            client_with(self._handler({}, status=500)).create_invoice(
+            client_with(handler).create_invoice(
                 counterparty="cp-1", lines=[("KR-001", "1", "100")]
             )
-        self.assertIn("табличную часть", str(ctx.exception).lower())
+        self.assertIn("ПередЗаписью", str(ctx.exception))
+        self.assertIn("500", str(ctx.exception))
 
     def test_counterparty_is_required(self) -> None:
         with self.assertRaises(OneCError) as ctx:
             client_with(base_handler).create_invoice(counterparty="", lines=[("KR-001", "1", "1")])
         self.assertIn("контрагент", str(ctx.exception))
+
+
+class InvoiceLifecycleTest(unittest.TestCase):
+    def test_create_patch_post_unpost_delete(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            calls.append((request.method, path))
+            if "Document_СчетНаОплатуПокупателю" in path:
+                if request.method == "POST" and path.endswith("/Post()"):
+                    return httpx.Response(200, text="")
+                if request.method == "POST" and path.endswith("/Unpost()"):
+                    return httpx.Response(200, text="")
+                if request.method == "POST":
+                    return httpx.Response(201, json={"Ref_Key": "inv-9"})
+                if request.method == "PATCH":
+                    return httpx.Response(200, json={})
+                if request.method == "DELETE":
+                    return httpx.Response(204, text="")
+                return httpx.Response(200, json={"Posted": True})
+            return base_handler(request)
+
+        client = client_with(handler)
+        ref = client.create_invoice(
+            counterparty="cp-1", lines=[("KR-001", "2", "100")], post=True
+        )
+        self.assertEqual(ref, "inv-9")
+        client.unpost_document("Document_СчетНаОплатуПокупателю", ref)
+        client.delete_entity("Document_СчетНаОплатуПокупателю", ref)
+
+        methods = [method for method, _ in calls if "Document_Счет" in _]
+        self.assertEqual(
+            methods, ["POST", "PATCH", "POST", "POST", "DELETE"]
+        )
+
+    def test_odata_error_text_is_extracted(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                json={"odata.error": {"message": {"value": "Не заполнен контрагент"}}},
+            )
+
+        with self.assertRaises(OneCError) as ctx:
+            client_with(handler).delete_entity("Catalog_Номенклатура", "x")
+        self.assertIn("Не заполнен контрагент", str(ctx.exception))
 
 
 class InvoiceServiceTest(unittest.TestCase):

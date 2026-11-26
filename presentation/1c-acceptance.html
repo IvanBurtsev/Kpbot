@@ -61,7 +61,7 @@ td.na { color: #64748b; font-weight: 700; white-space: nowrap; }
     <div class="metrics">
       <div class="metric"><b>1211</b><span>сущностей OData</span></div>
       <div class="metric"><b>201</b><span>Created — запись справочников</span></div>
-      <div class="metric"><b>500</b><span>счёт через OData — ограничение 1С</span></div>
+      <div class="metric"><b>414</b><span>сумма счёта, ₽ (345 + НДС 69)</span></div>
       <div class="metric"><b>0</b><span>потерь данных</span></div>
     </div>
     <div class="footer">kpbot · заявка из письма → КП</div>
@@ -85,9 +85,9 @@ td.na { color: #64748b; font-weight: 700; white-space: nowrap; }
     <h2>Что kpbot видит в 1С</h2>
     <table>
       <tr><th>Проверка</th><th>Результат</th><th>Детали</th></tr>
-      <tr><td>Метаданные OData</td><td class="ok">OK</td><td>1211 сущностей, 6,4 МБ</td></tr>
+      <tr><td>Метаданные OData</td><td class="ok">OK</td><td>1211 сущностей, 5,3 МБ</td></tr>
       <tr><td>Справочники</td><td class="ok">OK</td><td>склады — 1, единицы — 4, валюта — 1</td></tr>
-      <tr><td>Номенклатура</td><td class="warn">0</td><td>учебная база пустая, не ошибка интеграции</td></tr>
+      <tr><td>Номенклатура</td><td class="ok">1</td><td>KR-001, читается вместе с артикулом</td></tr>
       <tr><td>Цены номенклатуры</td><td class="warn">0</td><td>регистр пуст</td></tr>
       <tr><td>Остатки</td><td class="bad">нет</td><td>в Бухгалтерии нет регистра остатков</td></tr>
     </table>
@@ -103,7 +103,7 @@ td.na { color: #64748b; font-weight: 700; white-space: nowrap; }
       <tr><td>Номенклатура KR-001</td><td class="ok">201</td><td>создана, Ref_Key 2da2198a…</td></tr>
       <tr><td>Организация</td><td class="ok">201</td><td>ООО «Ромашка»</td></tr>
       <tr><td>Контрагент</td><td class="ok">201</td><td>ООО «Клиент»</td></tr>
-      <tr><td>Счёт со строками</td><td class="bad">500</td><td>1С не принимает табличную часть через OData</td></tr>
+      <tr><td>Счёт со строками</td><td class="ok">201→200→200</td><td>шапка → PATCH строк → Post()</td></tr>
       <tr><td>Заказ клиента</td><td class="na">—</td><td>в Бухгалтерии такого документа нет</td></tr>
     </table>
     <div class="note">Запись шла под пользователем с полными правами; служебный kpbot_odata по роли только читает.</div>
@@ -112,15 +112,15 @@ td.na { color: #64748b; font-weight: 700; white-space: nowrap; }
 
   <section class="slide">
     <div class="kicker">Ограничение</div>
-    <div class="big">500</div>
-    <div class="big-label">Счёт со строками через OData не создаётся</div>
+    <div class="big">PATCH</div>
+    <div class="big-label">Счёт со строками через OData создаётся</div>
     <div class="sub" style="max-width:900px;margin-top:18px">
-      Ошибка воспроизведена на локальной базе — это не облачная особенность и не дефект kpbot.
-      На симуляторе та же операция проходит с 201: клиентская часть корректна.
+      Ошибка 500 была из-за тела запроса: строки нужно писать отдельным PATCH с LineNumber,
+      Суммой, СтавкойНДС и СуммойНДС. Проверено на живой базе 26.11.2026.
     </div>
     <div class="solution">
-      <b>Решение:</b> HTTP-сервис <code>kpbot-invoice.bsl</code> — документ создаёт сама 1С своим кодом.
-      Альтернатива, которая работает всегда: файл «Для 1С» (Excel/CSV).
+      <b>Решение:</b> шапка POST → PATCH табличной части → <code>Post()</code>.
+      HTTP-сервис <code>kpbot-invoice.bsl</code> остаётся резервом.
     </div>
     <div class="footer">Проверено 26.11.2026</div>
   </section>
@@ -131,7 +131,7 @@ td.na { color: #64748b; font-weight: 700; white-space: nowrap; }
     <div class="cards">
       <div class="card"><b>Видит ваш прайс</b>Номенклатура, цены, остатки — из 1С, без ручной выгрузки.</div>
       <div class="card"><b>Пишет справочники</b>Новые позиции и контрагенты появляются в 1С автоматически.</div>
-      <div class="card"><b>Счёт — через сервис</b>Одна настройка на стороне 1С, дальше документы создаются сами.</div>
+      <div class="card"><b>Счёт — напрямую</b>Шапка, строки, проведение и удаление через OData — без доработки 1С.</div>
     </div>
     <div class="note">Пока сервис не настроен, kpbot отдаёт файл для загрузки в 1С — процесс не останавливается.</div>
     <div class="footer">kpbot · интеграция с 1С</div>
@@ -139,14 +139,14 @@ td.na { color: #64748b; font-weight: 700; white-space: nowrap; }
 
   <section class="slide dark">
     <div class="kicker">Следующий шаг</div>
-    <h2>HTTP-сервис: 15 минут на стороне 1С</h2>
+    <h2>Следующий шаг: пилот на вашей базе</h2>
     <div class="sub" style="max-width:980px">
-      Конфигуратор → Общие → HTTP-сервисы → добавить <b>kpbot</b> → шаблон <b>/invoice</b>,
-      метод <b>POST</b>, обработчик <b>СоздатьСчет</b> → вставить код
-      <b>deploy/1c/kpbot-invoice.bsl</b> → обновить конфигурацию БД → опубликовать.
+      Проверяем OData на вашей базе: чтение прайса, создание номенклатуры, счёт со строками,
+      проведение и удаление. Если права базы запрещают прямую запись — включаем резервный
+      HTTP-сервис <b>kpbot-invoice.bsl</b> (Конфигуратор, 15 минут).
     </div>
     <div class="metrics">
-      <div class="metric"><b>201</b><span>ожидаемый ответ сервиса</span></div>
+      <div class="metric"><b>201</b><span>создание документа</span></div>
       <div class="metric"><b>1</b><span>настройка на клиента</span></div>
       <div class="metric"><b>0</b><span>ручных операций дальше</span></div>
     </div>

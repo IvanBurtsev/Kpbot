@@ -36,6 +36,19 @@ class OneCResponseError(OneCError):
         self.status = status
 
 
+def _error_text(response: httpx.Response) -> str:
+    """Достаёт человеческий текст из OData-ошибки 1С, иначе — начало тела."""
+    try:
+        data = response.json()
+        message = (
+            (data.get("odata.error") or {}).get("message") or {}
+        ).get("value") or data.get("error") or data.get("message")
+    except ValueError:
+        message = None
+    text = str(message or response.text or "без описания").replace("\n", " ")
+    return text[:400]
+
+
 @dataclass(slots=True)
 class StockRow:
     sku: str
@@ -156,19 +169,74 @@ class OneCClient:
         return {"Authorization": f"Basic {token}", "Accept": "application/json"}
 
     def _get(self, path: str, params: dict | None = None) -> httpx.Response:
+        return self._request("GET", path, params=params)
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict | None = None,
+        body: dict | None = None,
+    ) -> httpx.Response:
+        """Один сетевой вызов с понятными ошибками и текстом от 1С."""
         url = f"{self.base_url}{ODATA}{path}"
         try:
-            response = self._http.get(url, headers=self._headers(), params=params)
+            response = self._http.request(
+                method, url, headers=self._headers(), params=params, json=body
+            )
         except httpx.HTTPError as exc:
             raise OneCError(f"сеть: {type(exc).__name__}: {str(exc)[:120]}") from exc
         if response.status_code == 401:
             raise OneCResponseError("1С не приняла логин или пароль (401)", 401)
         if response.status_code == 403:
-            raise OneCResponseError("у пользователя нет прав на чтение (403)", 403)
+            raise OneCResponseError("у пользователя нет прав на это действие (403)", 403)
         if response.status_code >= 400:
-            body = response.text[:200].replace("\n", " ")
-            raise OneCResponseError(f"1С ответила {response.status_code}: {body}", response.status_code)
+            raise OneCResponseError(
+                f"1С ответила {response.status_code}: {_error_text(response)}",
+                response.status_code,
+            )
         return response
+
+    def create_entity(self, entity: str, payload: dict) -> dict:
+        response = self._request("POST", f"/{entity}", params={"$format": "json"}, body=payload)
+        try:
+            return response.json()
+        except ValueError:
+            return {}
+
+    def update_entity(self, entity: str, ref: str, payload: dict) -> dict:
+        response = self._request(
+            "PATCH",
+            f"/{entity}(guid'{ref}')",
+            params={"$format": "json"},
+            body=payload,
+        )
+        try:
+            return response.json()
+        except ValueError:
+            return {}
+
+    def delete_entity(self, entity: str, ref: str) -> None:
+        self._request("DELETE", f"/{entity}(guid'{ref}')", params={"$format": "json"})
+
+    def post_document(self, entity: str, ref: str) -> None:
+        """Проведение документа: OData-метод Post()."""
+        self._request(
+            "POST", f"/{entity}(guid'{ref}')/Post()", params={"$format": "json"}, body={}
+        )
+
+    def unpost_document(self, entity: str, ref: str) -> None:
+        """Отмена проведения: OData-метод Unpost()."""
+        self._request(
+            "POST", f"/{entity}(guid'{ref}')/Unpost()", params={"$format": "json"}, body={}
+        )
+
+    def get_entity(self, entity: str, ref: str, *, select: str = "") -> dict:
+        params = {"$format": "json"}
+        if select:
+            params["$select"] = select
+        return self._request("GET", f"/{entity}(guid'{ref}')", params=params).json()
 
     def check(self) -> str:
         """Проверка доступа: читаем метаданные OData."""
@@ -432,6 +500,7 @@ class OneCClient:
         *,
         counterparty_key: str = "",
         date: str | None = None,
+        post: bool = False,
     ) -> str:
         """Создаёт «Заказ клиента» по строкам (артикул, количество, цена).
 
@@ -448,7 +517,9 @@ class OneCClient:
                 "в этой конфигурации нет «Заказа клиента» (похоже на Бухгалтерию). "
                 "Для неё используйте счёт на оплату или файл для 1С"
             )
-        return self._create_document(entity, "Товары", lines, counterparty_key, date)
+        return self._create_document(
+            entity, "Товары", lines, counterparty_key, date, post=post
+        )
 
     def create_invoice(
         self,
@@ -459,11 +530,15 @@ class OneCClient:
         warehouse: str = "",
         currency: str = "",
         date: str | None = None,
+        vat_rate: Decimal = Decimal("0.20"),
+        post: bool = False,
     ) -> str:
-        """Создаёт «Счёт на оплату покупателю». Возвращает ссылку или номер.
+        """Создаёт «Счёт на оплату покупателю» и возвращает Ref_Key.
 
-        Реквизиты, которые можно взять из базы (организация, склад, валюта),
-        подставляем из первых записей справочников: их обычно одна.
+        Схема проверена на живой Бухгалтерии 3.0:
+        1) POST шапки (без табличной части) → 201 и Ref_Key;
+        2) PATCH табличной части полным массивом, с LineNumber, Суммой и НДС;
+        3) при необходимости Post() — проведение.
         """
         if not lines:
             raise OneCError("пустой счёт: в расчёте нет строк")
@@ -485,10 +560,12 @@ class OneCClient:
             extra={
                 "Организация_Key": organization,
                 "ВалютаДокумента_Key": currency,
-                "СуммаДокумента": _total(lines),
-                "СуммаВключаетНДС": True,
+                "СуммаВключаетНДС": False,
+                "ДокументБезНДС": vat_rate <= 0,
                 **({"Склад_Key": warehouse} if warehouse else {}),
             },
+            vat_rate=Decimal(str(vat_rate)),
+            post=post,
         )
 
     def create_invoice_via_service(
@@ -553,7 +630,15 @@ class OneCClient:
         counterparty: str,
         date: str | None,
         extra: dict | None = None,
+        *,
+        vat_rate: Decimal | None = None,
+        post: bool = False,
     ) -> str:
+        """Шапка → табличная часть → (по желанию) проведение.
+
+        Так работает OData в Бухгалтерии 3.0: вложенную табличную часть в POST
+        платформа не принимает, а PATCH с полным массивом строк — принимает.
+        """
         refs = self.ref_by_sku()
         missing = [sku for sku, _qty, _price in lines if sku not in refs]
         if missing:
@@ -562,40 +647,47 @@ class OneCClient:
                 + (" и ещё " + str(len(missing) - 5) if len(missing) > 5 else "")
             )
 
-        payload: dict[str, object] = {
+        header: dict[str, object] = {
             "Date": date or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
-            tabular: [
-                {
-                    "Номенклатура_Key": refs[sku],
-                    "Количество": str(qty),
-                    "Цена": str(price),
-                }
-                for sku, qty, price in lines
-            ],
         }
         if counterparty:
-            payload["Контрагент_Key"] = counterparty
-        payload.update(extra or {})
+            header["Контрагент_Key"] = counterparty
+        header.update(extra or {})
 
-        url = f"{self.base_url}{ODATA}/{entity}?$format=json"
-        try:
-            response = self._http.post(url, headers=self._headers(), json=payload)
-        except httpx.HTTPError as exc:
-            raise OneCError(f"сеть: {type(exc).__name__}: {str(exc)[:120]}") from exc
-        if response.status_code >= 400:
-            body = response.text[:300].replace("\n", " ")
-            hint = (
-                " Табличную часть 1С Fresh часто не принимает через OData — "
-                "тогда выгрузите файл для 1С и загрузите вручную."
-                if response.status_code == 500
-                else ""
-            )
-            raise OneCError(f"1С отказала в создании документа ({response.status_code}): {body}.{hint}")
-        try:
-            created = response.json()
-        except ValueError:
-            return "создан"
-        return str(created.get("Ref_Key") or created.get("Number") or "создан")
+        created = self.create_entity(entity, header)
+        ref = str(created.get("Ref_Key") or "")
+        if not ref:
+            raise OneCError("1С создала документ, но не вернула Ref_Key — проверьте права и поля")
+
+        rows: list[dict[str, object]] = []
+        total = Decimal(0)
+        for number, (sku, qty, price) in enumerate(lines, start=1):
+            quantity = Decimal(str(qty))
+            unit_price = Decimal(str(price))
+            amount = (quantity * unit_price).quantize(Decimal("0.01"))
+            total += amount
+            row: dict[str, object] = {
+                "LineNumber": str(number),
+                "Номенклатура_Key": refs[sku],
+                "Количество": float(quantity),
+                "Цена": float(unit_price),
+                "Сумма": float(amount),
+            }
+            if vat_rate is not None:
+                vat = (amount * vat_rate).quantize(Decimal("0.01"))
+                total += vat
+                row["СуммаНДС"] = float(vat)
+                row["СтавкаНДС"] = _vat_enum(vat_rate)
+            rows.append(row)
+
+        self.update_entity(
+            entity,
+            ref,
+            {tabular: rows, "СуммаДокумента": float(total)},
+        )
+        if post:
+            self.post_document(entity, ref)
+        return ref
 
 
 def client_from_settings(cfg) -> OneCClient:
@@ -609,6 +701,22 @@ def client_from_settings(cfg) -> OneCClient:
         cfg.one_c_timeout_seconds,
         service_url=cfg.one_c_service_url,
     )
+
+
+def _vat_enum(rate: Decimal) -> str:
+    """Ставка НДС для поля «СтавкаНДС»: имена перечислений в 1С."""
+    rate = Decimal(str(rate))
+    if rate <= 0:
+        return "БезНДС"
+    percent = int((rate * 100).to_integral_value())
+    return {
+        20: "НДС20",
+        18: "НДС18",
+        10: "НДС10",
+        7: "НДС7",
+        5: "НДС5",
+        22: "НДС22",
+    }.get(percent, f"НДС{percent}")
 
 
 def _total(lines: list[tuple[str, str, str]]) -> str:
