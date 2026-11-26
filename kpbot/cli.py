@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from datetime import datetime, timedelta, timezone
@@ -1030,6 +1031,80 @@ def _one_c_client():
         raise SystemExit(str(exc)) from exc
 
 
+def _save_one_c_env(values: dict[str, str], path: Path | None = None) -> Path:
+    """Записывает настройки 1С в .env, не трогая остальные строки."""
+    target = path or (Path(__file__).resolve().parent.parent / ".env")
+    lines = target.read_text(encoding="utf-8").splitlines() if target.exists() else []
+    for key, value in values.items():
+        for index, line in enumerate(lines):
+            if line.startswith(f"{key}="):
+                lines[index] = f"{key}={value}"
+                break
+        else:
+            lines.append(f"{key}={value}")
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return target
+
+
+def cmd_one_c_setup(args: argparse.Namespace) -> int:
+    """Мастер подключения к 1С: определить конфигурацию и сохранить настройки."""
+    import getpass
+    import json
+
+    from .one_c import OneCClient, OneCError
+    from .one_c_profiles import FEATURE_LABELS
+
+    url = (args.url or "").strip() or input("Адрес базы 1С (https://...): ").strip()
+    user = (args.user or "").strip() or input("Пользователь OData: ").strip()
+    password = args.password or os.environ.get("KPBOT_ONE_C_PASSWORD", "") or getpass.getpass("Пароль: ")
+    if not (url and user and password):
+        print("нужны адрес, пользователь и пароль")
+        return 2
+
+    client = OneCClient(
+        url, user, password, timeout=60,
+        service_url=(args.service_url or settings.one_c_service_url),
+    )
+    try:
+        report = client.diagnose()
+    except OneCError as exc:
+        print(f"1С: {exc}")
+        return 1
+
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print(f"база: {url}")
+        print(f"сущностей: {report['entities_total']}")
+        print(f"конфигурация: {report['configuration']}")
+        print(f"  {report['note']}")
+        print("\nвозможности:")
+        for name, available in report["features"].items():
+            print(f"  {'✓' if available else '—'} {FEATURE_LABELS.get(name, name)}")
+        print("\nчтение:")
+        for name, result in report["reads"].items():
+            mark = "✓" if result["ok"] else "—"
+            print(f"  {mark} {FEATURE_LABELS.get(name, name)}: {result['detail']}")
+        print(f"\nHTTP-сервис для записи: {'настроен' if report['write_via_service'] else 'не настроен'}")
+        if not report["features"]["stock_register"]:
+            print("подсказка: остатков нет — опубликуйте регистр или загрузите файл")
+        if not report["features"]["orders"] and report["features"]["invoice"]:
+            print("подсказка: для Бухгалтерии запись — счёт через HTTP-сервис (deploy/1c)")
+
+    if args.save:
+        values = {
+            "KPBOT_ONE_C_BASE_URL": url,
+            "KPBOT_ONE_C_USER": user,
+            "KPBOT_ONE_C_PASSWORD": password,
+        }
+        if args.service_url:
+            values["KPBOT_ONE_C_SERVICE_URL"] = args.service_url
+        target = _save_one_c_env(values)
+        print(f"\nсохранено в {target}")
+        print("в файле лежит пароль — не передавайте .env и держите права 600")
+    return 0
+
+
 def cmd_one_c_check(args: argparse.Namespace) -> int:
     """Проверяет доступ к 1С по OData."""
     from .one_c import OneCError
@@ -1383,6 +1458,15 @@ def main(argv: list[str] | None = None) -> int:
 
     one_c_check = sub.add_parser("1c-check", help="проверить доступ к 1С по OData")
     one_c_check.set_defaults(func=cmd_one_c_check)
+
+    one_c_setup = sub.add_parser("1c-setup", help="мастер подключения к 1С: диагностика и запись настроек")
+    one_c_setup.add_argument("--url", default="", help="адрес базы, например https://host/base")
+    one_c_setup.add_argument("--user", default="", help="пользователь OData")
+    one_c_setup.add_argument("--password", default="", help="пароль; без флага спросим скрыто")
+    one_c_setup.add_argument("--service-url", default="", help="адрес HTTP-сервиса для записи")
+    one_c_setup.add_argument("--save", action="store_true", help="записать настройки в .env")
+    one_c_setup.add_argument("--json", action="store_true", help="отчёт в JSON")
+    one_c_setup.set_defaults(func=cmd_one_c_setup)
 
     one_c_stock = sub.add_parser("1c-stock", help="забрать остатки из 1С в базу")
     one_c_stock.add_argument("--limit", type=int, default=1000)

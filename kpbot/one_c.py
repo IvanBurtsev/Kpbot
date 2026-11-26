@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
+from .one_c_profiles import detect_configuration, parse_entities
+
 import httpx
 
 ODATA = "/odata/standard.odata"
@@ -145,6 +147,7 @@ class OneCClient:
         self.password = password
         self.timeout = timeout
         self.service_url = (service_url or "").strip()
+        self._entities: set[str] | None = None
         # клиент можно подменить в тестах: сеть не нужна, ответы задаём транспортом
         self._http = http or httpx.Client(timeout=timeout)
 
@@ -385,6 +388,33 @@ class OneCClient:
             sku, name, unit = names.get(ref, (ref, "", ""))
             result.append({"sku": sku, "name": name, "unit": unit, "price": price})
         return sorted(result, key=lambda item: item["sku"])
+
+
+    def entity_sets(self, refresh: bool = False) -> set[str]:
+        """Все сущности OData: по ним определяется конфигурация и её возможности."""
+        if self._entities is None or refresh:
+            self._entities = parse_entities(self._get("/$metadata").text)
+        return self._entities
+
+    def diagnose(self) -> dict:
+        """Что умеет база: конфигурация, доступные чтения, признаки записи."""
+        report = detect_configuration(self.entity_sets())
+        report["entities_total"] = len(self._entities or ())
+        reads: dict[str, dict] = {}
+        probes = {
+            "nomenclature": lambda: f"{len(self.nomenclature())} позиций",
+            "prices": lambda: f"{len(self.prices())} цен",
+            "stock": lambda: f"{len(self.stock())} строк остатков",
+            "warehouses": lambda: f"{len(self.warehouses())} складов",
+        }
+        for name, probe in probes.items():
+            try:
+                reads[name] = {"ok": True, "detail": probe()}
+            except OneCError as exc:
+                reads[name] = {"ok": False, "detail": str(exc)[:200]}
+        report["reads"] = reads
+        report["write_via_service"] = bool(self.service_url)
+        return report
 
     def _entity_exists(self, entity: str) -> bool:
         """Есть ли такая сущность в конфигурации (404 = нет)."""
