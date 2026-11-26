@@ -148,12 +148,24 @@ def _numbers_bonus(query: str, candidate_norm: str) -> float:
     numeric = [t for t in query.split() if _DIGIT.search(t)]
     if not numeric:
         return 0.5  # размеров нет — нейтрально
-    hits = sum(1 for token in numeric if token in candidate_norm.split() or token in candidate_norm)
+    # Сравниваем токены целиком: «4.2» не должно совпасть с «14.2».
+    candidate_tokens = set(candidate_norm.split())
+    hits = sum(1 for token in numeric if token in candidate_tokens)
     if hits == len(numeric):
         return 1.0
     if hits == 0:
         return 0.0
     return 0.5
+
+
+def has_numbers(text: str) -> bool:
+    """Есть ли в тексте размер/модель: «50х50», «3.5», «12.5 мм»."""
+    return any(_DIGIT.search(token) for token in tokens(text))
+
+
+def _tie_epsilon() -> float:
+    """Разница в скоринге, при которой две позиции считаются неразличимыми."""
+    return 0.01
 
 
 def similarity(query: str, candidate: str) -> float:
@@ -211,11 +223,12 @@ class PriceIndex:
     затем отсекаются по верхней оценке скоринга (без дорогого SequenceMatcher).
     """
 
-    __slots__ = ("items", "_norm", "_tokens", "_numbers", "_postings", "max_candidates")
+    __slots__ = ("items", "_norm", "_tokens", "_numbers", "_postings", "max_candidates", "_last_second")
 
     def __init__(self, items: list[PriceItem], *, max_candidates: int = 200) -> None:
         self.items = list(items)
         self.max_candidates = max_candidates
+        self._last_second = 0.0
         self._norm: list[str] = []
         self._tokens: list[list[str]] = []
         self._numbers: list[list[str]] = []
@@ -242,16 +255,16 @@ class PriceIndex:
         ranked = sorted(overlap.items(), key=lambda pair: (-pair[1], pair[0]))
         return [idx for idx, _ in ranked[:limit]]
 
-    def best(self, raw_text: str) -> tuple[PriceItem | None, float]:
+    def best(self, raw_text: str, *, detect_tie: bool = False) -> tuple:
         q = normalize(raw_text)
         if not q or not self.items:
-            return None, 0.0
+            return (None, 0.0, False) if detect_tie else (None, 0.0)
 
         q_tokens = tokens(q)
         # Запрос из одних цифр («1», «2 x 3») не может указывать на позицию прайса:
         # без слова любое совпадение — случайное.
         if not any(_WORD.search(token) for token in q_tokens):
-            return None, 0.0
+            return (None, 0.0, False) if detect_tie else (None, 0.0)
         q_numbers = [t for t in q_tokens if _DIGIT.search(t)]
 
         pool = self.candidates(q_tokens)
@@ -262,22 +275,36 @@ class PriceIndex:
                 if any(number in numbers for number in q_numbers)
             ][: self.max_candidates]
         if not pool:
-            return None, 0.0
+            return (None, 0.0, False) if detect_tie else (None, 0.0)
 
         best_idx = -1
         best_score = 0.0
+        second_score = 0.0
         for idx in pool:
             candidate_tokens = self._tokens[idx]
             coverage = _coverage(q_tokens, candidate_tokens)
-            # верхняя граница: ratio <= 1, числовой бонус <= 1
-            if 0.55 * coverage + 0.45 <= best_score:
+            # верхняя граница: ratio <= 1, числовой бонус <= 1.
+            # При поиске неоднозначности не отсекаем равные оценки — иначе
+            # второй такой же кандидат никогда не будет замечен.
+            if not detect_tie and 0.55 * coverage + 0.45 <= best_score:
                 continue
             score = _score(q, q_tokens, q_numbers, self._norm[idx], candidate_tokens)
             if score > best_score:
-                best_idx, best_score = idx, score
+                best_idx, second_score, best_score = idx, best_score, score
+            elif score > second_score:
+                second_score = score
         if best_idx < 0:
-            return None, 0.0
+            return (None, 0.0, False) if detect_tie else (None, 0.0)
+        tied = second_score > 0 and (best_score - second_score) <= _tie_epsilon()
+        self._last_second = second_score
+        if detect_tie:
+            return self.items[best_idx], best_score, tied
         return self.items[best_idx], best_score
+
+    @property
+    def last_second_score(self) -> float:
+        """Оценка второго кандидата в последнем best(): 0 — конкурентов нет."""
+        return self._last_second
 
     def __len__(self) -> int:
         return len(self.items)
@@ -299,7 +326,7 @@ def match_lines(
             line.note = "не распознано количество"
             continue
 
-        item, score = index.best(line.raw_text)
+        item, score, tied = index.best(line.raw_text, detect_tie=True)
         line.match_score = score
 
         if not line.unit:
@@ -327,6 +354,19 @@ def match_lines(
         if item.unit != line.unit:
             line.status = LineStatus.AMBIGUOUS
             line.note = f"единица не совпадает: в письме «{line.unit}», в прайсе «{item.unit}»"
+            continue
+
+        if not has_numbers(line.raw_text) and has_numbers(item.name):
+            # «кабель» без сечения — вопрос «какой именно». Но если в прайсе
+            # единственная подходящая позиция, выбора нет — можно и автоматически.
+            if index.last_second_score >= ambiguous_threshold:
+                line.status = LineStatus.AMBIGUOUS
+                line.note = "не указан размер/модель — уточните у клиента или выберите позицию"
+                continue
+
+        if tied:
+            line.status = LineStatus.AMBIGUOUS
+            line.note = "несколько похожих позиций с одинаковой оценкой — выберите нужную"
             continue
 
         if score >= auto_threshold:

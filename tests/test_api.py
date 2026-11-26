@@ -1,4 +1,4 @@
-"""Тесты HTTP-слоя. Окружение подменяется до импорта приложения."""
+﻿"""Тесты HTTP-слоя. Окружение подменяется до импорта приложения."""
 
 import support  # общий стенд: изолированные данные, сеть запрещена
 
@@ -39,7 +39,7 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 201)
         body = response.json()
         self.assertEqual(body["matched"], 1)
-        self.assertEqual(body["total"], "414.00")
+        self.assertEqual(body["total"], "420.90")
 
     def test_not_a_rfq_is_422_not_500(self) -> None:
         payload = {"sender": "a@b.ru", "subject": "Рассылка", "text": "Добрый день! Скидки недели."}

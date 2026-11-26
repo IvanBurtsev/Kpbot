@@ -1,4 +1,4 @@
-import support  # общий стенд: изолированные данные, сеть запрещена
+﻿import support  # общий стенд: изолированные данные, сеть запрещена
 
 import shutil
 import unittest
@@ -59,15 +59,15 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(result.status, "draft_ready")
         self.assertEqual(result.lines, 1)
         self.assertEqual(result.matched, 1)
-        # 34.50 * 10 = 345.00 + НДС 20% = 414.00
-        self.assertEqual(Decimal(result.total), Decimal("414.00"))
+        # 34.50 * 10 = 345.00 + НДС 22% = 420.90
+        self.assertEqual(Decimal(result.total), Decimal("420.90"))
 
         self.assertTrue(Path(result.html_path).exists())
         self.assertTrue(Path(result.docx_path).exists())
 
         quote = self.store.get_quote(result.rfq_id)
         self.assertIsNotNone(quote)
-        self.assertEqual(quote["total"], "414.00")
+        self.assertEqual(quote["total"], "420.90")
         self.assertEqual(len(quote["lines"]), 1)
 
     def test_unknown_position_goes_to_human_review(self) -> None:
@@ -94,7 +94,7 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(approved.status, "sent")
         outbox = self.settings.out_dir / "sent" / f"{result.rfq_id}.eml"
         self.assertTrue(outbox.exists())
-        self.assertIn("414,00", parse_eml(outbox.read_bytes()).text)
+        self.assertIn("420,90", parse_eml(outbox.read_bytes()).text)
 
         rfq = self.store.get_rfq(result.rfq_id)
         self.assertEqual(rfq["status"], "sent")

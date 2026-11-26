@@ -50,7 +50,7 @@
   </div>
   <div class="title">
     <h1>Коммерческое предложение</h1>
-    <div class="small muted">№ {{ rfq.id[:8]|upper }}<br>{{ (rfq.received_at or "")[:10] }}</div>
+    <div class="small muted">№ {% if quote.number %}{{ quote.number }}{% else %}{{ rfq.id[:8]|upper }}{% endif %}{% if rfq.received_at %}<br>от {{ rfq.received_at|date_ru }}{% endif %}</div>
   </div>
 </div>
 
@@ -104,7 +104,8 @@
 
 <div class="conditions">
   <div>Предложение действительно {{ valid_days }} календарных дней с даты выставления.</div>
-  <div>Цены указаны с учётом НДС, если не указано иное. Срок поставки и условия оплаты согласуются отдельно.</div>
+  <div>Цены в таблице указаны без НДС. НДС {{ (quote.vat_rate * 100)|round(0, 'floor')|int }}% начисляется сверху и включён в строку «Итого к оплате».</div>
+  <div>Срок поставки и условия оплаты согласуются отдельно.</div>
 </div>
 
 <div class="sign">

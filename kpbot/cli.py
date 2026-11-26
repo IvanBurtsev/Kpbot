@@ -1257,7 +1257,7 @@ def cmd_one_c_invoice(args: argparse.Namespace) -> int:
     try:
         if use_service:
             result = client.create_invoice_via_service(
-                counterparty=args.counterparty, lines=lines
+                counterparty=args.counterparty, lines=lines, vat_rate=settings.vat_rate
             )
         else:
             result = client.create_invoice(

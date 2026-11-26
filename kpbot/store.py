@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS rfq_lines(
 CREATE TABLE IF NOT EXISTS quotes(
     id              TEXT PRIMARY KEY,
     rfq_id          TEXT NOT NULL REFERENCES rfqs(id) ON DELETE CASCADE,
+    number          INTEGER,
     subtotal        TEXT NOT NULL,
     vat             TEXT NOT NULL,
     delivery        TEXT NOT NULL,
@@ -209,6 +210,10 @@ class Store:
                     pass
                 try:
                     conn.execute("ALTER TABLE quotes ADD COLUMN duration_ms INTEGER")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE quotes ADD COLUMN number INTEGER")
                 except sqlite3.OperationalError:
                     pass
                 try:
@@ -389,15 +394,20 @@ class Store:
 
     # ---------- КП ----------
 
-    def save_quote(self, quote_id: str, rfq_id: str, quote: Quote, *, duration_ms: int | None = None) -> str:
+    def save_quote(self, quote_id: str, rfq_id: str, quote: Quote, *, duration_ms: int | None = None) -> int:
+        """Сохраняет снимок КП и возвращает его сквозной номер в базе клиента."""
         with closing(self._connect()) as conn, conn:
+            row = conn.execute("SELECT COALESCE(MAX(number), 0) + 1 AS n FROM quotes").fetchone()
+            number = int(row["n"])
+            quote.number = number
             conn.execute(
-                "INSERT INTO quotes(id, rfq_id, subtotal, vat, delivery, total, vat_rate,"
+                "INSERT INTO quotes(id, rfq_id, number, subtotal, vat, delivery, total, vat_rate,"
                 " requires_review, unmatched, duration_ms, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     quote_id,
                     rfq_id,
+                    number,
                     str(quote.subtotal),
                     str(quote.vat),
                     str(quote.delivery),
@@ -426,7 +436,7 @@ class Store:
                     for idx, line in enumerate(quote.lines, start=1)
                 ],
             )
-        return quote_id
+        return number
 
     def get_quote(self, rfq_id: str) -> dict | None:
         with closing(self._connect()) as conn:

@@ -34,15 +34,22 @@ class DedupeTest(unittest.TestCase):
         shutil.rmtree(TMP, ignore_errors=True)
 
     def test_fragment_of_matched_line_is_dropped(self) -> None:
-        lines, _, _ = self.pipeline.analyze(
-            "Прошу рассчитать:\n"
-            "1. Шпаклевка финишная 25 кг — 10 меш\n"
-            "2. Шпаклевка финишная — 10 меш\n"
-            "3. Уголок монтажный 50х50 мм стальной — 100 шт\n"
-        )
-        texts = [line.raw_text for line in lines]
-        self.assertEqual(len(lines), 2, texts)
-        self.assertTrue(all(line.matched_sku for line in lines))
+        """Обрывок без артикула удаляется только при том же количестве."""
+        from decimal import Decimal
+
+        from kpbot.domain import LineStatus, RfqLine
+
+        full = RfqLine(idx=1, raw_text="Шпаклевка финишная 25 кг", qty=Decimal("10"), unit="меш",
+                        matched_sku="MT-007", status=LineStatus.OK)
+        same_qty = RfqLine(idx=2, raw_text="Шпаклевка финишная", qty=Decimal("10"), unit="меш",
+                           status=LineStatus.NO_MATCH)
+        other_qty = RfqLine(idx=3, raw_text="Шпаклевка финишная", qty=Decimal("5"), unit="меш",
+                            status=LineStatus.NO_MATCH)
+        result = self.pipeline._drop_subsets_of_matched([full, same_qty, other_qty])
+        texts = [line.raw_text for line in result]
+        self.assertIn("Шпаклевка финишная 25 кг", texts)
+        # остался только обрывок с другим количеством: он несёт новую информацию
+        self.assertEqual(len([line for line in result if line.raw_text == "Шпаклевка финишная"]), 1)
 
     def test_two_different_items_are_kept(self) -> None:
         lines, _, _ = self.pipeline.analyze(

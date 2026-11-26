@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     ui_password: str = "dev-password"
     session_secret: str = "dev-session-secret-change-me"
     session_ttl_seconds: int = 8 * 3600
+    # Вход общим паролем (без пользователя) — только для разработки/демо.
+    # В проде он закрыт, пока явно не разрешён: иначе нельзя ни отозвать доступ,
+    # ни сказать, кто именно одобрил КП.
+    allow_shared_login: bool = False
     # Ключ шифрования секретов в базе (пароли ящиков клиентов).
     # Пусто — берём session_secret: отдельный ключ лучше, но дефолт не должен
     # требовать ручной настройки у существующих установок.
@@ -80,7 +84,9 @@ class Settings(BaseSettings):
     quote_valid_days: int = 7
 
     # --- расчёт ---
-    vat_rate: Decimal = Decimal("0.20")
+    # С 01.01.2026 основная ставка НДС в РФ — 22% (была 20%). Ставка задаётся
+    # конфигом: у клиента может быть 10%, 7%, 5% или 0%.
+    vat_rate: Decimal = Decimal("0.22")
     delivery_price: Decimal = Decimal("0.00")
     max_qty: Decimal = Decimal("1000000")
 
@@ -109,7 +115,9 @@ class Settings(BaseSettings):
     llm_model: str = ""
     llm_api_key: str = ""
     llm_timeout_seconds: float = 40.0
-    llm_max_tokens: int = 1500
+    llm_max_tokens: int = 4000
+    # сколько символов письма отправлять в модель; остальное разберут правила
+    llm_max_input_chars: int = 24000
     # тариф провайдера за 1 млн токенов, ₽. 0 = тариф не задан, считаем только токены
     llm_price_input_rub_per_1m: float = 0.0
     llm_price_output_rub_per_1m: float = 0.0
@@ -147,6 +155,8 @@ class Settings(BaseSettings):
     one_c_timeout_seconds: float = 30.0
     # HTTP-сервис в 1С: им пишутся документы с табличными частями (OData их не принимает)
     one_c_service_url: str = ""
+    # Общий секрет HTTP-сервиса: без него любой, кто видит адрес, создаёт счета
+    one_c_service_token: str = ""
 
     # --- почта (IMAP) ---
     imap_host: str = "imap.gmail.com"
@@ -205,6 +215,11 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.env.strip().lower() in {"prod", "production"}
+
+    @property
+    def shared_login_allowed(self) -> bool:
+        """Общий пароль интерфейса — только dev или явное разрешение в проде."""
+        return self.allow_shared_login or not self.is_production
 
     def production_problems(self) -> list[str]:
         """Что нельзя оставлять дефолтным на боевом сервере."""

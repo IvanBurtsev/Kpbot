@@ -1,4 +1,4 @@
-"""Правка строк, экспорт в Excel и бэкап — глазами HTTP."""
+﻿"""Правка строк, экспорт в Excel и бэкап — глазами HTTP."""
 
 import support  # общий стенд: изолированные данные, сеть запрещена
 
@@ -56,8 +56,8 @@ class EditFlowTest(unittest.TestCase):
         rfq = store.get_rfq(rfq_id)
         self.assertEqual(rfq["status"], "draft_ready")
         quote = store.get_quote(rfq_id)
-        # EL-009 = 315.00 × 3 = 945.00 + НДС 20%
-        self.assertEqual(Decimal(quote["total"]), Decimal("1134.00"))
+        # EL-009 = 315.00 × 3 = 945.00 + НДС 22%
+        self.assertEqual(Decimal(quote["total"]), Decimal("1152.90"))
 
     def test_ambiguous_line_can_be_confirmed(self) -> None:
         # «подрозетник» — не розетка, но похоже: система должна спросить человека
@@ -79,8 +79,8 @@ class EditFlowTest(unittest.TestCase):
             data={"csrf_token": self.csrf, "sku": "KR-001", "qty": "100"},
         )
         quote = store.get_quote(rfq_id)
-        # 34.50 × 100 = 3450 + 20%
-        self.assertEqual(Decimal(quote["total"]), Decimal("4140.00"))
+        # 34.50 × 100 = 3450 + 22%
+        self.assertEqual(Decimal(quote["total"]), Decimal("4209.00"))
 
     def test_invalid_quantity_is_rejected(self) -> None:
         rfq_id = self._create_rfq("уголок 50х50 — 10 шт")
@@ -91,7 +91,7 @@ class EditFlowTest(unittest.TestCase):
         self.assertEqual(response.status_code, 303)
         self.assertIn("flash=", response.headers["location"])
         quote = store.get_quote(rfq_id)
-        self.assertEqual(Decimal(quote["total"]), Decimal("414.00"))
+        self.assertEqual(Decimal(quote["total"]), Decimal("420.90"))
 
     def test_line_can_be_deleted_and_added(self) -> None:
         rfq_id = self._create_rfq("уголок 50х50 — 10 шт\nкабель 3х2.5 — 5 м")

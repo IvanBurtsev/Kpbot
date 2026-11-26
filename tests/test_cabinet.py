@@ -98,11 +98,11 @@ class CatalogCartOrderTest(CabinetBase):
         order = self.cabinet.order(order_id)
         self.assertEqual(order["status"], "pending")
         self.assertEqual(order["comment"], "доставка до 12")
-        self.assertEqual(Decimal(order["total"]), Decimal("24.00"))  # 20 × 1 ₽ + НДС
+        self.assertEqual(Decimal(order["total"]), Decimal("24.40"))  # 20 × 1 ₽ + НДС 22%
         self.assertTrue(order["rfq_id"])
         rfq = supplier.get_rfq(order["rfq_id"])
         self.assertEqual(rfq["status"], "draft_ready")
-        self.assertEqual(supplier.get_quote(order["rfq_id"])["total"], "24.00")
+        self.assertEqual(supplier.get_quote(order["rfq_id"])["total"], "24.40")
         self.assertEqual(self.cabinet.cart_items(self.user["id"]), [])
 
     def test_stock_limit_is_enforced(self) -> None:
@@ -160,10 +160,10 @@ class AdminAndDocsTest(CabinetBase):
             "email": f"new-{suffix}@test.ru",
             "role": "client_admin",
         })
-        self.assertEqual(response.status_code, 303)
-        location = unquote(response.headers["location"])
-        self.assertIn("пароль:", location)
-        password = re.search(r"пароль: (\S+)", location).group(1)
+        # пароль показывается в теле ответа, а не в адресе (чтобы не утёк в логи)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("пароль:", response.text)
+        password = re.search(r"пароль: (\S+)", response.text).group(1)
         fresh = TestClient(app, follow_redirects=False)
         login = fresh.post("/cabinet/login",
                            data={"email": f"new-{suffix}@test.ru", "password": password})

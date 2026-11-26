@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 from decimal import Decimal
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -42,6 +43,28 @@ def rub(value: object) -> str:
     return f"{amount:,.2f}".replace(",", " ").replace(".", ",")
 
 
+def date_ru(value: object) -> str:
+    """Дата для документа: «Fri, 20 Nov 2026 10:00:00 +0300» → «20.11.2026».
+
+    Заголовок Date письма — это RFC 2822, а не ISO; резать его по символам нельзя.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = parsedate_to_datetime(text)
+        if parsed is not None:
+            return parsed.strftime("%d.%m.%Y")
+    except (TypeError, ValueError, IndexError):
+        pass
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).strftime("%d.%m.%Y")
+    except ValueError:
+        return text[:20]
+
+
 def _qty(value: object) -> str:
     """1000.000 -> '1000', 2.500 -> '2,5'."""
     try:
@@ -54,8 +77,34 @@ def _qty(value: object) -> str:
     return text.replace(".", ",")
 
 
+def dt_ru(value: object) -> str:
+    """ISO-время для интерфейса: «2026-11-26T15:02:06» → «26.11.2026 15:02»."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).strftime("%d.%m.%Y %H:%M")
+    except ValueError:
+        return text[:16]
+
+
+def num_ru(value: object) -> str:
+    """Число для интерфейса: 95.0 → «95», 8.4 → «8,4» (в русском — запятая)."""
+    try:
+        amount = Decimal(str(value))
+    except Exception:
+        return str(value)
+    text = format(amount.normalize(), "f")
+    return text.replace(".", ",")
+
+
 _env.filters["rub"] = rub
 _env.filters["qty"] = _qty
+_env.filters["date_ru"] = date_ru
+_env.filters["dt_ru"] = dt_ru
+_env.filters["num_ru"] = num_ru
 
 
 def render_template(name: str, /, **context: object) -> str:
@@ -171,6 +220,17 @@ def _pdf_via_browser(html_path: Path, pdf_path: Path) -> tuple[bool, str]:
     return False, last_error
 
 
+def _doc_para(doc, text: str, size: int | None = None):
+    """Абзац с текстом, который может быть пустым (пустые реквизиты — не ошибка)."""
+    from docx.shared import Pt
+
+    paragraph = doc.add_paragraph(text)
+    if size is not None:
+        for run in paragraph.runs:
+            run.font.size = Pt(size)
+    return paragraph
+
+
 def render_quote_docx(
     path: Path,
     *,
@@ -206,11 +266,14 @@ def render_quote_docx(
         company["address"],
         f"{company['phone']} · {company['email']}",
     ):
-        doc.add_paragraph(text).runs[0].font.size = Pt(8)
+        if text.strip():
+            _doc_para(doc, text, 8)
 
     head = doc.add_paragraph()
     head.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    head_run = head.add_run(f"Коммерческое предложение № {rfq['id'][:8].upper()}")
+    number = quote.number if getattr(quote, "number", None) else rfq["id"][:8].upper()
+    issued = date_ru(rfq.get("received_at", ""))
+    head_run = head.add_run(f"Коммерческое предложение № {number}" + (f" от {issued}" if issued else ""))
     head_run.bold = True
     head_run.font.size = Pt(13)
 
@@ -272,8 +335,8 @@ def render_quote_docx(
 
     doc.add_paragraph(
         f"Предложение действительно {valid_days} календарных дней с даты выставления."
-    ).runs[0].font.size = Pt(9)
-    doc.add_paragraph("Срок поставки и условия оплаты согласуются отдельно.").runs[0].font.size = Pt(9)
+    )
+    doc.add_paragraph("Срок поставки и условия оплаты согласуются отдельно.")
 
     doc.add_paragraph()
     sign = doc.add_paragraph()

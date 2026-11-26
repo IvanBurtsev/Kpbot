@@ -57,11 +57,14 @@ class PriceQuoteTest(unittest.TestCase):
         self.assertEqual(quote.total, Decimal("0.00"))
         self.assertTrue(quote.requires_review)
 
-    def test_rejects_non_positive_qty(self) -> None:
+    def test_zero_qty_line_is_excluded_not_fatal(self) -> None:
+        """«0 шт» — битая строка, а не повод выбросить всё письмо."""
         lines = [RfqLine(idx=1, raw_text="x", qty=Decimal("0"), unit="шт",
                          matched_sku="A", status=LineStatus.OK)]
-        with self.assertRaises(ValidationError):
-            price_quote(lines, {"A": item("A", "10")})
+        quote = price_quote(lines, {"A": item("A", "10")})
+        self.assertEqual(quote.lines, [])
+        self.assertEqual(quote.total, Decimal("0.00"))
+        self.assertIn("x", quote.excluded)
 
     def test_rejects_bad_vat(self) -> None:
         with self.assertRaises(ValidationError):

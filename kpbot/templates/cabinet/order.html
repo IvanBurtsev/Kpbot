@@ -20,7 +20,7 @@
       {% for line in order.lines %}
       <tr>
         <td data-label="Товар"><b>{{ line.name }}</b><div class="muted small"><code>{{ line.sku }}</code></div></td>
-        <td data-label="Кол-во" class="num">{{ line.qty }}</td>
+        <td data-label="Кол-во" class="num">{{ line.qty|qty }}</td>
         <td data-label="Цена" class="num">{{ "%.2f"|format(line.price|float) }} ₽</td>
         <td data-label="Сумма" class="num">{{ "%.2f"|format(line.amount|float) }} ₽</td>
       </tr>

@@ -154,12 +154,14 @@ class OneCClient:
         timeout: float = 30.0,
         http: httpx.Client | None = None,
         service_url: str = "",
+        service_token: str = "",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.user = user
         self.password = password
         self.timeout = timeout
         self.service_url = (service_url or "").strip()
+        self.service_token = (service_token or "").strip()
         self._entities: set[str] | None = None
         # клиент можно подменить в тестах: сеть не нужна, ответы задаём транспортом
         self._http = http or httpx.Client(timeout=timeout)
@@ -577,6 +579,7 @@ class OneCClient:
         warehouse: str = "",
         date: str | None = None,
         comment: str = "",
+        vat_rate: Decimal | None = None,
     ) -> str:
         """Создаёт счёт через HTTP-сервис 1С (`deploy/1c/kpbot-invoice.bsl`).
 
@@ -601,13 +604,22 @@ class OneCClient:
             "date": date or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
             "comment": comment,
             "lines": [
-                {"sku": sku, "qty": str(qty), "price": str(price)}
+                {
+                    "sku": sku,
+                    "qty": str(qty),
+                    "price": str(price),
+                    # ставка едет вместе со строкой: сервис не должен угадывать НДС
+                    "vat": int((Decimal(str(vat_rate)) * 100).to_integral_value()) if vat_rate is not None else 0,
+                }
                 for sku, qty, price in lines
             ],
         }
+        headers = dict(self._headers())
+        if self.service_token:
+            headers["X-Kpbot-Token"] = self.service_token
         try:
             response = self._http.post(
-                self.service_url, headers=self._headers(), json=payload
+                self.service_url, headers=headers, json=payload
             )
         except httpx.HTTPError as exc:
             raise OneCError(f"сеть: {type(exc).__name__}: {str(exc)[:120]}") from exc
@@ -700,6 +712,7 @@ def client_from_settings(cfg) -> OneCClient:
         cfg.one_c_password,
         cfg.one_c_timeout_seconds,
         service_url=cfg.one_c_service_url,
+        service_token=cfg.one_c_service_token,
     )
 
 

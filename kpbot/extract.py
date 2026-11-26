@@ -40,6 +40,44 @@ _LEAD_WORDS = re.compile(
 )
 _TRAIL = re.compile(r"[\s.,:;\-–—]+$")
 
+# «10 000», «1 500», «1 234 567» — в деловой переписке тысячи разделяют пробелом
+# (обычным, неразрывным или тонким). Склеиваем их ДО разбора, иначе «1 500 м»
+# читается как «1» + «500 м», и заявка тихо уменьшается в тридцать раз.
+def _glue_thousands(text: str) -> str:
+    """Склеивает «10 000» → «10000», но не трогает размеры и количества подряд.
+
+    «Уголок 50х50 200 шт» — это размер 50х50 и количество 200, а не 50200.
+    Группа цифр склеивается, только если она начинается на границе слова
+    (не сразу после буквы, цифры, точки или запятой).
+    """
+    out: list[str] = []
+    index = 0
+    text = text or ""
+    while index < len(text):
+        char = text[index]
+        if not char.isdigit():
+            out.append(char)
+            index += 1
+            continue
+        end = index
+        while end < len(text) and text[end].isdigit():
+            end += 1
+        run = text[index:end]
+        boundary_ok = index == 0 or not text[index - 1].isalnum()
+        while (
+            boundary_ok
+            and len(run) <= 3
+            and end + 4 <= len(text)
+            and text[end] in "\u00a0\u202f\u2009 "
+            and text[end + 1 : end + 4].isdigit()
+            and (end + 4 >= len(text) or not text[end + 4].isdigit())
+        ):
+            run += text[end + 1 : end + 4]
+            end += 4
+        out.append(run)
+        index = end
+    return "".join(out)
+
 # Единицы: длинные варианты раньше коротких.
 _UNIT_WORDS = (
     r"штук[а-я]*|шт|упак[а-я]*|уп|комплект[а-я]*|компл|рулон[а-я]*|рул|пачк[а-я]*|пач|"
@@ -122,14 +160,23 @@ class RuleExtractor:
         lines: list[RfqLine] = []
         seen: set[tuple[str, str, str]] = set()
 
-        for segment in self._segments(text):
+        for segment in self._segments(_glue_thousands(text)):
             if len(lines) >= limit:
                 break
-            match = _QTY_UNIT.search(segment)
-            if match is None:
+            matches = list(_QTY_UNIT.finditer(segment))
+            if not matches:
                 if len(segment) >= 8:
                     self.skipped.append(segment[:200])
                 continue
+
+            # «Шпаклевка 25 кг — 10 меш»: количество — то, что после тире.
+            # Иначе «25 кг» из названия уедет в количество и заявка подорожает.
+            match = matches[0]
+            dash = max(segment.rfind("—"), segment.rfind("–"), segment.rfind(" - "))
+            if dash >= 0:
+                after_dash = [m for m in matches if m.start() > dash]
+                if after_dash:
+                    match = after_dash[-1]
 
             name = _clean_name(segment, match)
             if len(name) < 3:
@@ -140,6 +187,11 @@ class RuleExtractor:
 
             raw_qty = match.group("qty").replace(",", ".")
             unit = canonical_unit(match.group("unit"))
+            qty = quantity(Decimal(raw_qty))
+            if qty <= 0:
+                # «0 шт» — не позиция: строку оставляем человеку, но не роняем письмо
+                self.skipped.append(segment[:200])
+                continue
             key = (name.lower(), raw_qty, unit)
             if key in seen:
                 continue
@@ -149,7 +201,7 @@ class RuleExtractor:
                 RfqLine(
                     idx=len(lines) + 1,
                     raw_text=name[:500],
-                    qty=quantity(Decimal(raw_qty)),
+                    qty=qty,
                     unit=unit,
                 )
             )

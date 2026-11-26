@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
@@ -34,17 +34,17 @@
 
   <div class="grid">
     <div class="stat"><b>{{ data.rfqs }}</b><span>заявок обработано</span></div>
-    <div class="stat"><b>{{ data.auto_share }}%</b><span>строк разобрано без человека</span></div>
-    <div class="stat"><b>{% if data.median_seconds is not none %}{{ data.median_seconds }} с{% else %}—{% endif %}</b><span>медиана «письмо → КП»</span></div>
+    <div class="stat"><b>{{ data.auto_share|num_ru }}%</b><span>строк разобрано без человека</span></div>
+    <div class="stat"><b>{% if data.median_seconds is not none %}{{ data.median_seconds|num_ru }} с{% else %}—{% endif %}</b><span>медиана «письмо → КП»</span></div>
     <div class="stat"><b>{{ total_sum }} ₽</b><span>сумма подготовленных КП</span></div>
   </div>
 
   {% if saved_hours is not none %}
   <div class="callout">
-    <strong>Экономия времени (оценка): {{ saved_hours }} ч.</strong>
+    <strong>Экономия времени (оценка): {{ saved_hours|num_ru }} ч.</strong>
     <div class="small muted">
       Расчёт: {{ data.quotes }} КП × {{ baseline_minutes }} мин вручную против
-      {{ data.median_seconds }} с машинной подготовки. Оценка, а не гарантия:
+      {{ data.median_seconds|num_ru }} с машинной подготовки. Оценка, а не гарантия:
       фактическое время зависит от того, сколько строк менеджер правит.
     </div>
   </div>
@@ -56,9 +56,9 @@
     <tr><td>Заявок обработано</td><td class="num">{{ data.rfqs }}</td></tr>
     <tr><td>КП рассчитано</td><td class="num">{{ data.quotes }}</td></tr>
     <tr><td>Строк всего / автоматически</td><td class="num">{{ data.lines }} / {{ data.auto_lines }}</td></tr>
-    <tr><td>Доля автоматических строк</td><td class="num">{{ data.auto_share }}%</td></tr>
-    <tr><td>Медиана подготовки КП</td><td class="num">{% if data.median_seconds is not none %}{{ data.median_seconds }} с{% else %}—{% endif %}</td></tr>
-    <tr><td>Медиана ожидания в очереди</td><td class="num">{% if data.median_wait_seconds is not none %}{{ data.median_wait_seconds }} с{% else %}—{% endif %}</td></tr>
+    <tr><td>Доля автоматических строк</td><td class="num">{{ data.auto_share|num_ru }}%</td></tr>
+    <tr><td>Медиана подготовки КП</td><td class="num">{% if data.median_seconds is not none %}{{ data.median_seconds|num_ru }} с{% else %}—{% endif %}</td></tr>
+    <tr><td>Медиана ожидания в очереди</td><td class="num">{% if data.median_wait_seconds is not none %}{{ data.median_wait_seconds|num_ru }} с{% else %}—{% endif %}</td></tr>
     <tr><td>Стоимость разбора (LLM)</td><td class="num">{{ llm_cost }} ₽</td></tr>
   </table>
 

@@ -26,9 +26,16 @@ def client_ip(request: Any, trusted_proxies: set[str]) -> str:
     """
     peer = request.client.host if getattr(request, "client", None) else "unknown"
     if peer in trusted_proxies:
-        forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-        if forwarded:
-            return forwarded[:64]
+        # Заголовок дописывается слева направо: правый адрес поставил ближайший
+        # доверенный прокси, левые может подставить кто угодно.
+        forwarded = [
+            part.strip()
+            for part in (request.headers.get("x-forwarded-for") or "").split(",")
+            if part.strip()
+        ]
+        for address in reversed(forwarded):
+            if address not in trusted_proxies:
+                return address[:64]
     return peer
 
 

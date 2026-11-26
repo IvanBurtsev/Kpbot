@@ -76,7 +76,8 @@ class IsolationTest(unittest.TestCase):
             "/ui/ops/create",
             data={"csrf_token": token, "name": "ООО «Второй»", "email": "boss@second.ru"},
         )
-        self.assertEqual(response.status_code, 303)
+        # пароль отдаётся страницей, а не редиректом с паролем в адресе
+        self.assertEqual(response.status_code, 200)
 
         from kpbot.web import registry
 
@@ -86,12 +87,11 @@ class IsolationTest(unittest.TestCase):
         self.assertIsNotNone(store.authenticate("boss@second.ru", self._password_from_flash(response)))
 
     def _password_from_flash(self, response) -> str:
-        from urllib.parse import unquote
+        import re as _re
 
-        location = unquote(response.headers["location"])
-        marker = "пароль "
-        start = location.index(marker) + len(marker)
-        return location[start : location.index(" ", start)]
+        found = _re.search(r"пароль\s+(\S+)", response.text)
+        self.assertIsNotNone(found, "пароль не показан в ответе")
+        return found.group(1)
 
     def test_switch_changes_visible_data(self) -> None:
         from kpbot.web import pipeline, registry

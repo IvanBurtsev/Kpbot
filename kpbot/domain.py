@@ -135,13 +135,16 @@ class Quote:
     requires_review: bool
     unmatched: int
     excluded: list[str] = field(default_factory=list)
+    # Сквозной номер КП в базе клиента: бухгалтерии нужен «№ 12 от 20.11.2026»,
+    # а не первые 8 символов uuid.
+    number: int | None = None
 
 
 def price_quote(
     lines: list[RfqLine],
     price_by_sku: dict[str, PriceItem],
     *,
-    vat_rate: Decimal = Decimal("0.20"),
+    vat_rate: Decimal = Decimal("0.22"),
     delivery: Decimal = Decimal("0.00"),
     max_qty: Decimal = Decimal("1000000"),
 ) -> Quote:
@@ -172,18 +175,22 @@ def price_quote(
 
         qty = quantity(line.qty)
         if qty <= 0:
-            raise ValidationError(f"количество должно быть больше нуля: {line.raw_text!r}")
+            # Одна битая строка не должна выбрасывать всё письмо: отдаём человеку.
+            excluded.append(line.raw_text)
+            continue
         if qty > max_qty:
             raise ValidationError(f"количество больше допустимого: {line.raw_text!r}")
 
+        price = money(item.price)
         quoted.append(
             QuoteLine(
                 sku=item.sku,
                 name=item.name,
                 unit=item.unit,
                 qty=qty,
-                price=money(item.price),
-                amount=money(item.price * qty),
+                price=price,
+                # сумма считается от уже округлённой цены, иначе «0,34 × 3 = 1,01»
+                amount=money(price * qty),
             )
         )
 

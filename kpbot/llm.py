@@ -24,11 +24,17 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from .domain import LineStatus, RfqLine, quantity
 from .extract import RuleExtractor, canonical_unit
 from .logs import redact
+from .matching import normalize as match_normalize
+from .matching import tokens as match_tokens
 
 log = logging.getLogger("kpbot.llm")
 
-MAX_TEXT_CHARS = 8000
-MIN_INTERVAL_SECONDS = 0.0  # запас под rate limit, при необходимости поднимается настройкой
+# Сколько символов письма реально уходит в модель. Письмо может быть на 200 000
+# символов, но платить за него и ждать ответа — не бесплатно; остальное разберут правила.
+MAX_TEXT_CHARS = 24000
+# Предохранитель: после серии сбоев не долбим провайдера каждым письмом.
+FAILURE_LIMIT = 3
+FAILURE_COOLDOWN_SECONDS = 300.0
 
 SYSTEM_PROMPT = """Ты извлекаешь позиции заявки из письма снабженца.
 Правила:
@@ -121,7 +127,8 @@ class LlmConfig:
     model: str
     api_key: str
     timeout: float = 40.0
-    max_tokens: int = 1500
+    max_tokens: int = 4000
+    max_chars: int = MAX_TEXT_CHARS
     temperature: float = 0.0
     retries: int = 1
 
@@ -178,7 +185,7 @@ class LlmClient:
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"<<<ПИСЬМО>>>\n{text[:MAX_TEXT_CHARS]}\n<<<КОНЕЦ ПИСЬМА>>>"},
+                {"role": "user", "content": f"<<<ПИСЬМО>>>\n{text[: self.config.max_chars]}\n<<<КОНЕЦ ПИСЬМА>>>"},
             ],
         }
         url = f"{self.config.base_url.rstrip('/')}/chat/completions"
@@ -229,6 +236,8 @@ class LlmExtractor:
         self.rules = rules or RuleExtractor()
         self.last_source = "llm"
         self.last_usage = LlmUsage()
+        self._failures = 0
+        self._blocked_until = 0.0
 
     @property
     def skipped(self) -> list[str]:
@@ -239,13 +248,28 @@ class LlmExtractor:
         rule_lines = self.rules.extract(text, max_lines=max_lines)
         self.last_usage = LlmUsage()
 
+        if time.monotonic() < self._blocked_until:
+            # Провайдер недавно падал: не тратим 40 секунд на каждое письмо.
+            log.info("LLM временно отключена после серии сбоев, работаем на правилах")
+            self.last_source = "rules_cooldown"
+            return rule_lines
+
         try:
             answer = self.client.complete(text)
         except LlmError as exc:
-            log.warning("LLM недоступна, работаем на правилах: %s", redact(str(exc)))
+            self._failures += 1
+            if self._failures >= FAILURE_LIMIT:
+                self._blocked_until = time.monotonic() + FAILURE_COOLDOWN_SECONDS
+                log.warning(
+                    "LLM отключена на %.0f с после %s сбоев подряд: %s",
+                    FAILURE_COOLDOWN_SECONDS, self._failures, redact(str(exc)),
+                )
+            else:
+                log.warning("LLM недоступна, работаем на правилах: %s", redact(str(exc)))
             self.last_source = "rules_fallback"
             return rule_lines
 
+        self._failures = 0
         payload = answer.payload
         self.last_usage = answer.usage
         self.last_source = "llm"
@@ -269,14 +293,52 @@ class LlmExtractor:
                 )
             )
 
+        grounded, dropped = self._ground(llm_lines, text)
+        if dropped:
+            log.warning("LLM вернула %s строк(и) без опоры на текст письма — отброшены", dropped)
+        llm_lines = grounded
+
         if not llm_lines:
-            # модель не нашла позиций — доверяем правилам, но не молчим об этом
-            log.info("LLM вернула пустой список, используем правила")
+            # модель не нашла позиций (или всё выдумала) — доверяем правилам
+            log.info("от LLM не осталось пригодных строк, используем правила")
             self.last_source = "rules"
             return rule_lines
 
         merged = self._merge(llm_lines, rule_lines, max_lines)
         return merged
+
+    @staticmethod
+    def _ground(lines: list[RfqLine], text: str) -> tuple[list[RfqLine], int]:
+        """Оставляет только строки, которые действительно есть в письме.
+
+        Модель может «дописать» позицию по инъекции в тексте письма. Такая строка
+        выглядит валидной, но её нет в источнике — значит, это не заявка клиента.
+        """
+        source_tokens = set(match_tokens(text))
+        grounded: list[RfqLine] = []
+        dropped = 0
+        for line in lines:
+            name_tokens = match_tokens(line.raw_text)
+            if not name_tokens:
+                dropped += 1
+                continue
+            hits = 0
+            for token in name_tokens:
+                prefix = token[:5]
+                if token in source_tokens or any(t.startswith(prefix) for t in source_tokens):
+                    hits += 1
+            numbers = [t for t in name_tokens if any(ch.isdigit() for ch in t)]
+            numbers_ok = all(
+                token in source_tokens or any(t.startswith(token[:5]) for t in source_tokens)
+                for token in numbers
+            )
+            if numbers_ok and hits / len(name_tokens) >= 0.6:
+                grounded.append(line)
+            else:
+                dropped += 1
+        for position, line in enumerate(grounded, start=1):
+            line.idx = position
+        return grounded, dropped
 
     @staticmethod
     def _merge(llm_lines: list[RfqLine], rule_lines: list[RfqLine], max_lines: int) -> list[RfqLine]:
@@ -317,6 +379,7 @@ def build_extractor(settings) -> RuleExtractor | LlmExtractor:
                 api_key=settings.llm_api_key,
                 timeout=settings.llm_timeout_seconds,
                 max_tokens=settings.llm_max_tokens,
+                max_chars=settings.llm_max_input_chars,
             )
         )
     except LlmError as exc:

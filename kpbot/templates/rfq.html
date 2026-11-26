@@ -13,7 +13,7 @@
   <h1>{{ rfq.subject }}</h1>
   <p>
     <span class="badge s-{{ rfq.status }}">{{ rfq_labels.get(rfq.status, rfq.status) }}</span>
-    <span class="muted small">от {{ rfq.sender }} · {{ rfq.created_at[:19] }} · заявка <code>{{ rfq.id[:12] }}</code></span>
+    <span class="muted small">от {{ rfq.sender }} · {{ rfq.created_at|dt_ru }} · заявка <code>{{ rfq.id[:12] }}</code></span>
   </p>
   {% if timing and timing.duration_seconds is not none %}
   <p class="small"><b>Разбор и КП: {{ "%.1f"|format(timing.duration_seconds) }} с</b>
@@ -59,7 +59,7 @@
         <td class="muted">{{ loop.index }}</td>
         <td>{{ l.name }} <span class="muted small">{{ l.sku }}</span></td>
         <td>{{ l.unit }}</td>
-        <td class="num">{{ l.qty }}</td>
+        <td class="num">{{ l.qty|qty }}</td>
         <td class="num">{{ l.price }}</td>
         <td class="num">{{ l.amount }}</td>
       </tr>
@@ -95,7 +95,7 @@
       <tr{% if l.status != "ok" %} class="needs-attention"{% endif %}>
         <td data-label="#" class="muted">{{ l.idx }}</td>
         <td data-label="Позиция">{{ l.raw_text }}{% if l.note %}<br><span class="muted small">{{ l.note }}</span>{% endif %}</td>
-        <td data-label="Кол-во" class="num">{{ l.qty or "—" }}</td>
+        <td data-label="Кол-во" class="num">{{ (l.qty|qty) if l.qty else "—" }}</td>
         <td data-label="Ед.">{{ l.unit or "—" }}</td>
         <td data-label="Совпадение" class="small">{{ l.matched_name or "—" }}</td>
         <td data-label="Score" class="num">{{ "%.2f"|format(l.score) }}</td>
@@ -154,7 +154,7 @@
     <tbody>
       {% for item in sends %}
       <tr>
-        <td class="small muted">{{ item.created_at[:19] }}</td>
+        <td class="small muted">{{ item.created_at|dt_ru }}</td>
         <td class="small">{{ item.detail.split(", ")[0].replace("кому ", "") }}</td>
         <td class="small">{% if item.action == "sent" %}<span class="ok">отправлено</span>{% else %}<span class="error">не ушло</span>{% endif %}
           <span class="muted">· {{ item.detail }}</span></td>

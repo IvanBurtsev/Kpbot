@@ -32,10 +32,13 @@ class LearningTest(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(TMP, ignore_errors=True)
 
-    def test_key_ignores_numbers_and_units(self) -> None:
+    def test_key_keeps_size_and_drops_units(self) -> None:
         key = self.pipeline.learn_key("Уголок монтажный 50х50 мм — 10 шт")
-        self.assertNotIn("10", key.split())
+        # единицы и количество в ключ не входят, а размер — входит:
+        # «50х50» и «100х50» нельзя выучить друг на друга
         self.assertNotIn("шт", key.split())
+        self.assertNotIn("10", key.split())
+        self.assertIn("50х50", key)
         self.assertIn("уголок", key)
 
     def test_two_confirmations_make_pair_work(self) -> None:
@@ -88,7 +91,12 @@ class LearningTest(unittest.TestCase):
         ]
         self.pipeline.apply_edits(result.rfq_id, edited, actor="unittest")
         key = self.pipeline.learn_key(lines[0]["raw_text"])
-        self.assertIsNotNone(self.store.learned_sku(key) or True)
+        # Правка человека реально записывается. Выученной пара становится
+        # только после двух подтверждений (learned_sku), здесь фиксируем запись.
+        pairs = {row["key"]: row for row in self.store.learned_pairs()}
+        self.assertIn(key, pairs, "правка не записана в обучение")
+        self.assertEqual(pairs[key]["sku"], "KR-001")
+        self.assertEqual(pairs[key]["hits"], 1)
 
 
 if __name__ == "__main__":

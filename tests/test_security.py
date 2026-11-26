@@ -111,15 +111,22 @@ class LoginOriginTest(unittest.TestCase):
 
         from kpbot.security import client_ip
 
-        def make(peer: str):
+        def make(peer: str, forwarded: bytes = b"203.0.113.7, 10.0.0.1"):
             return Request({
                 "type": "http",
                 "client": (peer, 1234),
-                "headers": [(b"x-forwarded-for", b"203.0.113.7, 10.0.0.1")],
+                "headers": [(b"x-forwarded-for", forwarded)],
             })
 
-        self.assertEqual(client_ip(make("127.0.0.1"), {"127.0.0.1"}), "203.0.113.7")
+        # ближайший к нам адрес добавлен прокси; прокси в списке доверенных — идём левее
+        self.assertEqual(client_ip(make("10.0.0.1"), {"10.0.0.1"}), "203.0.113.7")
+        # без доверенного прокси заголовку не верим вовсе
         self.assertEqual(client_ip(make("198.51.100.5"), {"127.0.0.1"}), "198.51.100.5")
+        # подделанный левый адрес не должен попадать в лимиты
+        self.assertEqual(
+            client_ip(make("10.0.0.1", b"1.2.3.4, 203.0.113.7, 10.0.0.1"), {"10.0.0.1"}),
+            "203.0.113.7",
+        )
 
 
 class SqlInjectionTest(unittest.TestCase):

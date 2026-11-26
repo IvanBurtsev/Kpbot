@@ -17,6 +17,7 @@ import secrets
 import string
 import time
 import uuid
+from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import quote
@@ -106,9 +107,11 @@ async def hardening(request: Request, call_next):
         return PlainTextResponse("payload too large", status_code=413)
     tenant_token = supplier_db.set(tenant_db_from_request(request))
     client_token = client_db.set(client_tenant_db_from_request(request))
+    request_token = _CURRENT_REQUEST.set(request)
     try:
         response = await call_next(request)
     finally:
+        _CURRENT_REQUEST.reset(request_token)
         client_db.reset(client_token)
         supplier_db.reset(tenant_token)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -161,13 +164,30 @@ RFQ_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
 def ensure_rfq_id(rfq_id: str) -> str:
-    """Идентификатор заявки — только 32 hex-символа.
+    """Идентификатор заявки — только 32 hex-символа, и только своя заявка.
 
-    Без проверки значение из адреса попадает в путь к файлу: это и обход
-    каталогов, и 500-е на длинных строках.
+    Без проверки значения из адреса попадает в путь к файлу (обход каталогов),
+    а чужой id — в чужие документы: файлы КП лежат в общем каталоге, поэтому
+    доступ проверяется по базе клиента, а не по имени файла.
     """
     if not RFQ_ID_RE.fullmatch(rfq_id or ""):
         raise HTTPException(status_code=404, detail="заявка не найдена")
+    request = _CURRENT_REQUEST.get()
+    if request is not None and request.url.path.startswith("/ui/"):
+        page_path = f"/ui/rfq/{rfq_id}"
+        # саму карточку отдаёт обработчик: он умеет показать «не найдено» страницей,
+        # а не JSON-ошибкой
+        if request.url.path.rstrip("/") != page_path:
+            rfq = store.get_rfq(rfq_id)
+            if rfq is None:
+                raise HTTPException(status_code=404, detail="заявка не найдена")
+            user = current_user(request)
+            if (
+                user is not None
+                and not user.is_admin
+                and rfq.get("assignee") not in (None, "", user.id)
+            ):
+                raise HTTPException(status_code=403, detail="заявка закреплена за другим менеджером")
     return rfq_id
 
 
@@ -188,6 +208,9 @@ def rate_key(request: Request) -> str:
 
 TENANT_COOKIE = "kpbot_tenant"
 _tenant_db = supplier_db
+# Текущий запрос: нужен там, где проверка доступа должна знать, кто пришёл
+# (например, скачивание КП по id, а не по карточке).
+_CURRENT_REQUEST = ContextVar("kpbot_current_request", default=None)
 
 
 def _tenant_path_from_token(token: str | None, ttl: int) -> Path | None:
@@ -232,6 +255,10 @@ def current_user(request: Request) -> User | None:
 def is_authenticated(request: Request) -> bool:
     if current_user(request) is not None:
         return True
+    if not settings.shared_login_allowed:
+        # В проде вход общим паролем закрыт: нет ни личности, ни возможности
+        # отозвать доступ у одного человека.
+        return False
     # совместимость: одиночный пароль из конфигурации работает как вход администратора
     return verify_session(settings.session_secret, session_of(request), settings.session_ttl_seconds)
 
@@ -241,6 +268,8 @@ def is_admin_request(request: Request) -> bool:
     user = current_user(request)
     if user is not None:
         return user.is_admin
+    if not settings.shared_login_allowed:
+        return False
     return verify_session(settings.session_secret, session_of(request), settings.session_ttl_seconds)
 
 
@@ -330,6 +359,11 @@ async def ui_login(request: Request):
     if user is not None:
         token = make_user_session(settings.session_secret, user.id, settings.session_ttl_seconds)
     elif not email and constant_time_equal(password, settings.ui_password):
+        if not settings.shared_login_allowed:
+            return page(
+                "login.html", request, code=403,
+                error="вход общим паролем отключён — войдите по логину и паролю пользователя",
+            )
         # вход администратора общим паролем (обратная совместимость)
         token = make_session(settings.session_secret, settings.session_ttl_seconds)
     else:
@@ -787,7 +821,9 @@ async def ui_ops_create(request: Request):
 
     store.log_event("tenant_created", f"ui:{client_ip(request)}", f"{name} · {tenant['id']} · {email}")
     flash = f"клиент «{name}»: вход {email} · пароль {password} (покажется один раз)"
-    return RedirectResponse(f"/ui/ops?flash={quote(flash)}", status_code=status.HTTP_303_SEE_OTHER)
+    # Отвечаем страницей, а не редиректом: пароль не должен попадать в адресную
+    # строку, историю браузера и логи reverse-proxy.
+    return page("ops.html", request, active_page="ops", tenants=registry.list(), flash=flash)
 
 
 @app.post("/ui/ops/switch")
@@ -954,10 +990,8 @@ async def ui_admin_client_create(request: Request):
         )
     store.log_event("client_created", f"ui:{client_ip(request)}", f"{name} / {email}")
     message = f"клиент {name} создан. Вход: {email}, пароль: {password} — покажите один раз"
-    return RedirectResponse(
-        f"/ui/admin?tab=clients&flash={quote(message[:300])}",
-        status_code=status.HTTP_303_SEE_OTHER,
-    )
+    # Пароль — в теле ответа, а не в адресе: иначе он остаётся в логах прокси.
+    return await render_admin(request, tab="clients", flash=message[:300])
 
 
 @app.post("/ui/admin/clients/{company_id}/status")
@@ -1006,10 +1040,7 @@ async def ui_admin_client_user(request: Request, company_id: str):
         )
     store.log_event("client_user_created", f"ui:{client_ip(request)}", email)
     message = f"пользователь {email} создан, пароль: {password} — покажите один раз"
-    return RedirectResponse(
-        f"/ui/admin?tab=clients&flash={quote(message[:300])}",
-        status_code=status.HTTP_303_SEE_OTHER,
-    )
+    return await render_admin(request, tab="clients", flash=message[:300])
 
 
 @app.post("/ui/admin/orders/{order_id}/status")

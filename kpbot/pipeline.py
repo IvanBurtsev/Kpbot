@@ -297,8 +297,12 @@ class Pipeline:
 
     @classmethod
     def learn_key(cls, raw_text: str) -> str:
-        """Ключ обучения: название без чисел и единиц, слова по алфавиту."""
-        words = re.split(r"[^0-9a-zа-яё]+", (raw_text or "").lower())
+        """Ключ обучения: название и размер без единиц, слова по алфавиту.
+
+        Числа в ключе остаются: «кабель 3х2.5» и «кабель 3х2.25» — разные позиции,
+        и обучать одну на другой нельзя.
+        """
+        words = re.findall(r"[0-9a-zа-яё][0-9a-zа-яё.]*", (raw_text or "").lower().replace("ё", "е"))
         cleaned = sorted({
             word for word in words
             if len(word) > 1 and not word.isdigit() and word not in cls.UNITS
@@ -318,6 +322,14 @@ class Pipeline:
             if not sku or sku not in items:
                 continue
             item = items[sku]
+            # Единица — такая же часть позиции, как артикул: «100 шт» по цене
+            # за метр даёт ошибку в сто раз. Не совпало — отдаём человеку.
+            if line.unit and item.unit and line.unit != item.unit:
+                line.note = (
+                    f"выученное совпадение не применимо: единица «{line.unit}» "
+                    f"не совпадает с прайсом «{item.unit}»"
+                )
+                continue
             line.matched_sku = item.sku
             line.matched_name = item.name
             line.match_score = 1.0
@@ -362,6 +374,9 @@ class Pipeline:
             if words:
                 for other in lines:
                     if other is line or not other.matched_sku:
+                        continue
+                    if line.qty is not None and other.qty != line.qty:
+                        # Разное количество — это разные строки, а не обрубок.
                         continue
                     if words <= self._name_words(other.raw_text):
                         duplicate = True
