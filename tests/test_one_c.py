@@ -348,5 +348,59 @@ class InvoiceCreationTest(unittest.TestCase):
         self.assertIn("контрагент", str(ctx.exception))
 
 
+class InvoiceServiceTest(unittest.TestCase):
+    def _client(self, handler, service_url="https://1c.example/hs/kpbot/invoice"):
+        http = httpx.Client(transport=httpx.MockTransport(handler), timeout=5)
+        return OneCClient("https://1c.example/base", "user", "pass", http=http,
+                          service_url=service_url)
+
+    def test_success_uses_service_and_returns_number(self) -> None:
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["url"] = str(request.url)
+            captured["payload"] = json.loads(request.content)
+            return httpx.Response(200, json={"ok": True, "number": "0000-000777"})
+
+        number = self._client(handler).create_invoice_via_service(
+            counterparty="cp-1", lines=[("EL-001", "2", "100")]
+        )
+        self.assertEqual(number, "0000-000777")
+        self.assertIn("/hs/kpbot/invoice", captured["url"])
+        self.assertEqual(captured["payload"]["counterparty"], "cp-1")
+        self.assertEqual(captured["payload"]["lines"][0]["sku"], "EL-001")
+        self.assertEqual(captured["payload"]["lines"][0]["qty"], "2")
+
+    def test_service_error_is_shown(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"ok": False, "error": "не заполнен склад"})
+
+        with self.assertRaises(OneCError) as ctx:
+            self._client(handler).create_invoice_via_service(
+                counterparty="cp-1", lines=[("EL-001", "1", "1")]
+            )
+        self.assertIn("не заполнен склад", str(ctx.exception))
+
+    def test_without_service_url_is_explained(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+            raise AssertionError("сеть не должна вызываться")
+
+        with self.assertRaises(OneCError) as ctx:
+            self._client(handler, service_url="").create_invoice_via_service(
+                counterparty="cp-1", lines=[("EL-001", "1", "1")]
+            )
+        self.assertIn("KPBOT_ONE_C_SERVICE_URL", str(ctx.exception))
+
+    def test_http_error_is_shown(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(502, text="плохой шлюз")
+
+        with self.assertRaises(OneCError) as ctx:
+            self._client(handler).create_invoice_via_service(
+                counterparty="cp-1", lines=[("EL-001", "1", "1")]
+            )
+        self.assertIn("502", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

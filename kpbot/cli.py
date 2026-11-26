@@ -1030,6 +1030,7 @@ def _one_c_client():
         settings.one_c_user,
         settings.one_c_password,
         settings.one_c_timeout_seconds,
+        service_url=settings.one_c_service_url,
     )
 
 
@@ -1124,15 +1125,25 @@ def cmd_one_c_invoice(args: argparse.Namespace) -> int:
         return 2
 
     lines = [(line["sku"], line["qty"], line["price"]) for line in quote["lines"]]
+    client = _one_c_client()
+    use_service = args.via == "service" or (
+        args.via == "auto" and bool(settings.one_c_service_url)
+    )
     try:
-        result = _one_c_client().create_invoice(
-            counterparty=args.counterparty, lines=lines
-        )
+        if use_service:
+            result = client.create_invoice_via_service(
+                counterparty=args.counterparty, lines=lines
+            )
+        else:
+            result = client.create_invoice(
+                counterparty=args.counterparty, lines=lines
+            )
     except (OneCError, SystemExit) as exc:
         print(f"1С: {exc}")
         return 1
     store.log(rfq["id"], "invoice_1c", "cli", str(result)[:200])
-    print(f"счёт создан в 1С: {result} · заявка {rfq['id'][:8]}")
+    way = "HTTP-сервис" if use_service else "OData"
+    print(f"счёт создан в 1С ({way}): {result} · заявка {rfq['id'][:8]}")
     print("проверьте документ в 1С: часть реквизитов заполняет сама 1С")
     return 0
 
@@ -1331,6 +1342,12 @@ def main(argv: list[str] | None = None) -> int:
     one_c_invoice = sub.add_parser("1c-invoice", help="создать «Счёт на оплату» в 1С по расчёту")
     one_c_invoice.add_argument("--rfq", dest="rfq_id", default="", help="id заявки; по умолчанию последняя")
     one_c_invoice.add_argument("--counterparty", default="", help="Ref_Key контрагента из 1С")
+    one_c_invoice.add_argument(
+        "--via",
+        choices=("auto", "service", "odata"),
+        default="auto",
+        help="auto — HTTP-сервис, если задан KPBOT_ONE_C_SERVICE_URL, иначе OData",
+    )
     one_c_invoice.set_defaults(func=cmd_one_c_invoice)
 
     backup = sub.add_parser("backup", help="сделать копию базы и удалить старые")

@@ -142,6 +142,8 @@ class Settings(BaseSettings):
     one_c_user: str = ""
     one_c_password: str = ""
     one_c_timeout_seconds: float = 30.0
+    # HTTP-сервис в 1С: им пишутся документы с табличными частями (OData их не принимает)
+    one_c_service_url: str = ""
 
     # --- почта (IMAP) ---
     imap_host: str = "imap.gmail.com"

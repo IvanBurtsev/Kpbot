@@ -138,11 +138,13 @@ class OneCClient:
         password: str,
         timeout: float = 30.0,
         http: httpx.Client | None = None,
+        service_url: str = "",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.user = user
         self.password = password
         self.timeout = timeout
+        self.service_url = (service_url or "").strip()
         # клиент можно подменить в тестах: сеть не нужна, ответы задаём транспортом
         self._http = http or httpx.Client(timeout=timeout)
 
@@ -424,6 +426,60 @@ class OneCClient:
                 **({"Склад_Key": warehouse} if warehouse else {}),
             },
         )
+
+    def create_invoice_via_service(
+        self,
+        *,
+        counterparty: str,
+        lines: list[tuple[str, str, str]],
+        organization: str = "",
+        warehouse: str = "",
+        date: str | None = None,
+        comment: str = "",
+    ) -> str:
+        """Создаёт счёт через HTTP-сервис 1С (`deploy/1c/kpbot-invoice.bsl`).
+
+        Это обход ограничения OData: табличную часть документа пишет сама 1С,
+        поэтому работает и в Бухгалтерии на Fresh. Адрес сервиса —
+        KPBOT_ONE_C_SERVICE_URL, например https://host/base/hs/kpbot/invoice.
+        """
+        if not self.service_url:
+            raise OneCError(
+                "не задан KPBOT_ONE_C_SERVICE_URL — адрес HTTP-сервиса 1С "
+                "(см. docs/ONE_C_HTTP_SERVICE.md)"
+            )
+        if not lines:
+            raise OneCError("пустой счёт: в расчёте нет строк")
+        if not counterparty:
+            raise OneCError("не передан контрагент: без него 1С счёт не запишет")
+
+        payload = {
+            "counterparty": counterparty,
+            "organization": organization,
+            "warehouse": warehouse,
+            "date": date or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+            "comment": comment,
+            "lines": [
+                {"sku": sku, "qty": str(qty), "price": str(price)}
+                for sku, qty, price in lines
+            ],
+        }
+        try:
+            response = self._http.post(
+                self.service_url, headers=self._headers(), json=payload
+            )
+        except httpx.HTTPError as exc:
+            raise OneCError(f"сеть: {type(exc).__name__}: {str(exc)[:120]}") from exc
+        if response.status_code >= 400:
+            body = response.text[:300].replace("\n", " ")
+            raise OneCError(f"HTTP-сервис 1С ответил {response.status_code}: {body}")
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise OneCError("HTTP-сервис вернул не JSON — проверьте публикацию сервиса") from exc
+        if not data.get("ok"):
+            raise OneCError(f"1С не создала счёт: {data.get('error') or 'без описания'}")
+        return str(data.get("number") or data.get("ref") or "создан")
 
     def _create_document(
         self,
