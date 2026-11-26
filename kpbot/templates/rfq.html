@@ -3,9 +3,9 @@
 {% block content %}
 {% set labels = {"ok": "в прайсе", "ambiguous": "похоже", "no_match": "не найдено", "invalid": "нет кол-ва"} %}
 {% set line_css = {"ok": "s-sent", "ambiguous": "s-human_review", "no_match": "s-rejected", "invalid": "s-rejected"} %}
-{% set rfq_labels = {"received": "принято", "parsed": "разобрано", "priced": "посчитано",
-                     "draft_ready": "черновик готов", "human_review": "нужен человек",
-                     "approved": "одобрено", "sent": "отправлено", "rejected": "отклонено"} %}
+{% set rfq_labels = {"received": "принята", "parsed": "разобрана", "priced": "рассчитана",
+                     "draft_ready": "КП готово", "human_review": "нужна проверка",
+                     "approved": "одобрена", "sent": "КП отправлено", "rejected": "отказ"} %}
 
 <p class="crumbs"><a href="/ui">← Все заявки</a></p>
 
@@ -24,7 +24,14 @@
   {% endif %}
   <p class="small muted">Разобрано автоматически: {{ rfq.lines|selectattr("status", "equalto", "ok")|list|length }} из {{ rfq.lines|length }}
     {%- set issues = rfq.lines|rejectattr("status", "equalto", "ok")|list|length -%}
-    {% if issues %} · <span class="attention">требуют внимания: {{ issues }}</span>{% endif %}</p>
+    {%- set ambiguous = rfq.lines|selectattr("status", "equalto", "ambiguous")|list|length -%}
+    {%- set not_found = rfq.lines|selectattr("status", "equalto", "no_match")|list|length -%}
+    {%- set invalid = rfq.lines|selectattr("status", "equalto", "invalid")|list|length -%}
+    {% if issues %} · <span class="attention">проверить: {{ issues }}</span>
+      <span class="muted">— похоже: {{ ambiguous }}, не найдено: {{ not_found }}, без количества: {{ invalid }}.
+      Это строки письма, которые не вошли в расчёт, а не остатки.</span>{% endif %}</p>
+  <p class="muted small">Путь заявки: нужна проверка → КП готово → одобрена → КП отправлено.
+    «Отказ» — если клиент отказался; причина сохраняется в журнале.</p>
   {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
 </section>

@@ -40,7 +40,8 @@ class RfqCardTest(unittest.TestCase):
         )
         page = self.client.get(f"/ui/rfq/{result.rfq_id}")
         self.assertIn("needs-attention", page.text)
-        self.assertIn("требуют внимания", page.text)
+        self.assertIn("проверить:", page.text)
+        self.assertIn("не найдено:", page.text)  # расшифровка, а не просто число
 
     def test_send_history_is_shown(self) -> None:
         result = pipeline.process_text("уголок 50х50 — 10 шт", sender="a@b.ru", subject="Заявка")

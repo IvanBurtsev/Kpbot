@@ -568,6 +568,19 @@ class OneCClient:
         return str(created.get("Ref_Key") or created.get("Number") or "создан")
 
 
+def client_from_settings(cfg) -> OneCClient:
+    """Клиент по настройкам приложения: один адрес для CLI и веб-интерфейса."""
+    if not cfg.one_c_base_url:
+        raise OneCError("не задан KPBOT_ONE_C_BASE_URL — адрес базы 1С")
+    return OneCClient(
+        cfg.one_c_base_url,
+        cfg.one_c_user,
+        cfg.one_c_password,
+        cfg.one_c_timeout_seconds,
+        service_url=cfg.one_c_service_url,
+    )
+
+
 def _total(lines: list[tuple[str, str, str]]) -> str:
     """Сумма документа по строкам (количество × цена)."""
     total = Decimal(0)

@@ -24,6 +24,16 @@ class ParsedEmail:
     text: str
 
 
+def sender_display_name(value: str) -> str:
+    """«ИП Сергеев <mail@example.ru>» → «ИП Сергеев»; без имени остаётся адрес."""
+    text = (value or "").strip()
+    if not text:
+        return ""
+    match = re.match(r'^\s*"?([^"<]*?)"?\s*<[^>]+>\s*$', text)
+    name = (match.group(1).strip() if match else text).strip().strip('"')
+    return name or text
+
+
 def parse_eml(raw: bytes) -> ParsedEmail:
     if not raw:
         raise ValueError("пустое письмо")

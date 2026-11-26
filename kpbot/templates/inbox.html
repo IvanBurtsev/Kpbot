@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Заявки · kpbot{% endblock %}
 {% block content %}
-{% set labels = {"received": "принято", "parsed": "разобрано", "priced": "посчитано",
-                 "draft_ready": "черновик готов", "human_review": "нужен человек",
-                 "approved": "одобрено", "sent": "отправлено", "rejected": "отклонено"} %}
+{% set labels = {"received": "принята", "parsed": "разобрана", "priced": "рассчитана",
+                 "draft_ready": "КП готово", "human_review": "нужна проверка",
+                 "approved": "одобрена", "sent": "КП отправлено", "rejected": "отказ"} %}
 
 <section class="card">
   <h1>Заявки</h1>
@@ -35,11 +35,15 @@
   {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
 
-  <form method="post" action="/ui/upload" enctype="multipart/form-data" class="row">
+  <form method="post" action="/ui/upload" enctype="multipart/form-data" class="upload-row">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="file" name="file" accept=".eml,.txt" required>
+    <label class="dropzone" data-dropzone>
+      <input type="file" name="file" accept=".eml,.txt" required>
+      <span class="dz-icon" aria-hidden="true">⇪</span>
+      <span class="dz-text"><b>Перетащите письмо сюда</b> или выберите файл
+        <span class="muted small">.eml или .txt, до 2 МБ</span></span>
+    </label>
     <button class="primary" type="submit">Разобрать письмо</button>
-    <span class="muted small">файл .eml или .txt, до 2 МБ</span>
   </form>
 </section>
 
@@ -53,7 +57,7 @@
         <th>Тема</th>
         <th>Исполнитель</th>
         <th class="num">Строк</th>
-        <th class="num">Проблем</th>
+        <th class="num" title="Строки письма, которые не попали в расчёт: похожие, ненайденные или без количества. Это не остатки — остатки видны в карточке заявки.">Проверить</th>
         <th class="num">Итого, ₽</th>
         <th>Статус</th>
       </tr>
@@ -62,20 +66,30 @@
       {% for r in rfqs %}
       <tr>
         <td data-label="Получено" class="small muted">{{ r.created_at[:16].replace("T", " ") }}</td>
-        <td data-label="От кого" class="small">{{ r.sender }}</td>
+        <td data-label="От кого" class="small">{{ r.sender_name or r.sender }}</td>
         <td data-label="Тема"><a href="/ui/rfq/{{ r.id }}">{{ r.subject }}</a></td>
         <td data-label="Исполнитель" class="small">
           {% set owner = users|selectattr("id", "equalto", r.assignee)|list %}
           {% if owner %}{{ owner[0].title }}{% elif r.assignee %}<span class="muted">закреплена</span>{% else %}<span class="muted">свободна</span>{% endif %}
         </td>
         <td data-label="Строк" class="num">{{ r.line_count }}</td>
-        <td data-label="Проблем" class="num">{% if r.line_issues %}<span class="warn">{{ r.line_issues }}</span>{% else %}0{% endif %}</td>
+        <td data-label="Проверить" class="num">
+          {% if r.line_issues %}
+          <span class="warn" title="похоже, но не точно: {{ r.line_ambiguous or 0 }} · не найдено: {{ r.line_no_match or 0 }} · без количества: {{ r.line_invalid or 0 }}. Это строки письма, которые не вошли в расчёт, а не остатки.">{{ r.line_issues }}</span>
+          {% else %}<span class="muted">0</span>{% endif %}
+        </td>
         <td data-label="Итого, ₽" class="num">{{ r.total or "—" }}</td>
-        <td data-label="Статус"><span class="badge s-{{ r.status }}">{{ labels.get(r.status, r.status) }}</span></td>
+        <td data-label="Статус">
+          <span class="badge s-{{ r.status }}" title="нужна проверка → КП готово → одобрена → КП отправлено; отказ — если клиент отказался">{{ labels.get(r.status, r.status) }}</span>
+        </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
+  <p class="muted small" style="margin-top:.6rem">
+    «Проверить» — это строки письма, которые не вошли в расчёт. Кликните по теме, чтобы увидеть,
+    что именно не распознано. Остатки и нехватка показываются в карточке заявки.
+  </p>
   {% else %}
   <p class="empty">Пока пусто. Загрузите письмо кнопкой выше — или запустите демо-стенд:
     <code>python -m kpbot.cli demo-stand</code>.</p>

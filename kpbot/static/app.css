@@ -1205,3 +1205,20 @@ tr.needs-attention td {
      но данный продукт проектируется под светлую схему.
      Если нужна полная поддержка, раскомментировать и расширить. */
 }
+
+/* Загрузка файлов: зона перетаскивания */
+.upload-row { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap; }
+.dropzone { position: relative; display: flex; gap: .8rem; align-items: center; flex: 1 1 20rem;
+  min-height: 4.4rem; padding: .8rem 1rem; border: 1.5px dashed #cbd5e1; border-radius: 12px;
+  background: #fff; cursor: pointer; transition: border-color .15s ease, background .15s ease; }
+.dropzone input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.dropzone .dz-icon { font-size: 1.5rem; line-height: 1; color: #2563eb; }
+.dropzone .dz-text { display: flex; flex-direction: column; gap: .15rem; }
+.dropzone:hover, .dropzone.drag { border-color: #2563eb; background: #f8fbff; }
+.dropzone.drag { border-style: solid; }
+.dropzone.has-file { border-style: solid; border-color: #93c5fd; }
+.dz-file { margin-left: auto; color: #2563eb; white-space: nowrap; }
+@media (max-width: 768px) {
+  .dropzone { flex-basis: 100%; }
+  .dz-file { margin-left: 0; }
+}

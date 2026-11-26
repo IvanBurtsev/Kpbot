@@ -68,9 +68,9 @@
               <button type="submit" class="mini">Пароль</button>
             </form>
             <form method="post" action="/ui/admin/users/{{ user.id }}/delete" class="inline"
-                  onsubmit="return confirm('Удалить пользователя {{ user.email }}?');">
+                  onsubmit="return confirm('Заблокировать пользователя {{ user.email }}? История заявок и журнал сохранятся.');">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button type="submit" class="mini danger">Удалить</button>
+              <button type="submit" class="mini danger">Заблокировать</button>
             </form>
           </div>
         </td>
@@ -78,6 +78,10 @@
       {% endfor %}
     </tbody>
   </table>
+  <p class="muted small">
+    «Заблокировать» — мягкое удаление: пользователь не сможет войти, но его заявки и записи
+    в журнале остаются. Себя и последнего администратора заблокировать нельзя.
+  </p>
 
   <h3>Добавить</h3>
   <form method="post" action="/ui/admin/users" class="row">

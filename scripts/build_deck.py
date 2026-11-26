@@ -181,9 +181,9 @@ def inbox_scheme(slide, x, y, w, h):
     text(slide, x + 2.5, top + 0.25, 5.4, 0.4, "Входящие заявки", size=18, bold=True, color=INK)
     text(slide, x + 2.5, top + 0.68, 5.4, 0.3, "6 заявок · 4 готовы к отправке", size=11, color=MUTED)
     rows = (
-        ("Заявка на материалы", "СтройМонтаж", "70 392,00 ₽", "готово"),
-        ("Уголок и кабель", "ООО «Вектор»", "16 836,00 ₽", "готово"),
-        ("Заявка № 214", "ИП Сергеев", "36 892,80 ₽", "проверить"),
+        ("Заявка на материалы", "СтройМонтаж", "70 392,00 ₽", "КП готово"),
+        ("Уголок и кабель", "ООО «Вектор»", "16 836,00 ₽", "КП готово"),
+        ("Заявка № 214", "ИП Сергеев", "36 892,80 ₽", "проверка"),
         ("Список на неделю", "МеталлБаза", "—", "не заявка"),
     )
     for index, (title, sender, total, status) in enumerate(rows):
@@ -192,9 +192,9 @@ def inbox_scheme(slide, x, y, w, h):
         text(slide, x + 2.65, row_y + 0.09, 3.2, 0.32, title, size=11, bold=True, color=INK)
         text(slide, x + 5.6, row_y + 0.11, 1.7, 0.3, sender, size=10, color=MUTED)
         text(slide, x + 7.2, row_y + 0.11, 1.4, 0.3, total, size=10, bold=True, color=INK, align=PP_ALIGN.RIGHT)
-        colors = {"готово": (GREEN_SOFT, GREEN), "проверить": (AMBER_SOFT, AMBER), "не заявка": (RED_SOFT, RED)}
+        colors = {"КП готово": (GREEN_SOFT, GREEN), "проверка": (AMBER_SOFT, AMBER), "не заявка": (RED_SOFT, RED)}
         fill, color = colors[status]
-        chip(slide, x + w - 1.55, row_y + 0.09, 1.15, status, fill=fill, color=color, size=9)
+        chip(slide, x + w - 1.8, row_y + 0.09, 1.4, status, fill=fill, color=color, size=9)
 
 
 def rfq_scheme(slide, x, y, w, h):
@@ -236,7 +236,7 @@ def build(prs: Presentation) -> None:
          size=24, color=RGBColor(0xCB, 0xD5, 0xE1))
     text(slide, 0.9, 4.35, 9.5, 0.6, "Для оптовиков и производств: разбор почты, прайс, НДС, КП, 1С.",
          size=14, color=RGBColor(0x94, 0xA3, 0xB8))
-    for index, (value, label) in enumerate((("257", "автотестов"), ("2,2 с", "на письмо"), ("1С", "OData на живой базе"), ("10 000", "позиций прайса"))):
+    for index, (value, label) in enumerate((("265", "автотестов"), ("2,2 с", "на письмо"), ("1С", "OData на живой базе"), ("10 000", "позиций прайса"))):
         x = 0.9 + index * 3.0
         text(slide, x, 5.5, 2.8, 0.55, value, size=30, bold=True, color=WHITE)
         text(slide, x, 6.05, 2.8, 0.35, label, size=11, color=RGBColor(0x94, 0xA3, 0xB8))
@@ -358,9 +358,9 @@ def build(prs: Presentation) -> None:
     # 8. надёжность
     slide = new_slide(prs)
     header(slide, "Надёжность", "Приёмка: что уже проверено",
-           "257 автотестов, изолированный прогон, ноль внешних вызовов.")
+           "265 автотестов, изолированный прогон, ноль внешних вызовов.")
     columns = (
-        ("Тесты", ("257 тестов, 49 секунд", "боевой .env не читается", "сеть в тестах запрещена", "сквозной HTTP-сценарий")),
+        ("Тесты", ("265 тестов, 49 секунд", "боевой .env не читается", "сеть в тестах запрещена", "сквозной HTTP-сценарий")),
         ("Безопасность", ("параметризованный SQL", "CSRF, CSP, X-Frame-Options", "шифрование паролей ящиков", "ключи не попадают в логи")),
         ("Эксплуатация", ("бэкап + проверка восстановления", "сторож: healthz и журнал", "doctor.py перед демо", "smoke.py после деплоя")),
     )

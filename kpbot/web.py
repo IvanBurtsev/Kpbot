@@ -32,8 +32,10 @@ from .config import settings
 from .domain import LineStatus, RfqLine, RfqStatus, ValidationError, quantity
 from .export import build_rfq_xlsx
 from .mailer import MailError, Mailer, build_kp_message, load_attachments, reply_subject
+from .mailparse import sender_display_name
+from .one_c import OneCError, client_from_settings
 from .pipeline import NotAnRfq, Pipeline, build_reply_text_from_store
-from .pricelist import load_price_items, load_stock_items
+from .pricelist import load_price_items, load_stock_items, merge_prices
 from .render import render_template
 from .security import (
     CSRF_FIELD,
@@ -255,12 +257,21 @@ async def root() -> RedirectResponse:
     return RedirectResponse("/ui")
 
 
+def _with_sender_names(rfqs: list[dict]) -> list[dict]:
+    """В списке показываем компанию, а не «компания <почта>» — без дубля."""
+    for rfq in rfqs:
+        rfq["sender_name"] = sender_display_name(str(rfq.get("sender") or ""))
+    return rfqs
+
+
 @app.get("/ui", response_class=HTMLResponse)
 async def ui_inbox(request: Request, flash: str = ""):
     if not is_authenticated(request):
         return login_redirect(request)
     user = current_user(request)
-    rfqs = store.list_rfqs(100, assignee=None if (user is None or user.is_admin) else user.id)
+    rfqs = _with_sender_names(
+        store.list_rfqs(100, assignee=None if (user is None or user.is_admin) else user.id)
+    )
     return page(
         "inbox.html",
         request,
@@ -402,7 +413,9 @@ async def ui_stats(request: Request, days: str = "30"):
     if not is_authenticated(request):
         return login_redirect(request)
     user = current_user(request)
-    rfqs = store.list_rfqs(100, assignee=None if (user is None or user.is_admin) else user.id)
+    rfqs = _with_sender_names(
+        store.list_rfqs(100, assignee=None if (user is None or user.is_admin) else user.id)
+    )
     return page(
         "inbox.html",
         request,
@@ -436,6 +449,7 @@ async def ui_prices(request: Request, q: str = "", flash: str = ""):
         query=q.strip(),
         updated_at=store.price_updated_at(),
         can_edit=is_admin_request(request),
+        one_c_configured=bool(settings.one_c_base_url),
         flash=flash[:200],
     )
 
@@ -844,13 +858,20 @@ async def ui_admin_user_delete(request: Request, user_id: str):
     current = store.user_by_id(user_id)
     if current is None:
         return RedirectResponse(f"/ui/admin/users?flash={quote('пользователь не найден')}", status_code=303)
+    me = current_user(request)
+    if me is not None and me.id == user_id:
+        return RedirectResponse(
+            f"/ui/admin/users?flash={quote('нельзя заблокировать себя')}", status_code=303
+        )
     if current.role == ROLE_ADMIN and store.admin_count() <= 1:
         return RedirectResponse(
             f"/ui/admin/users?flash={quote('нельзя удалить последнего администратора')}", status_code=303
         )
     store.delete_user(user_id)
-    store.log_event("user_deleted", f"ui:{client_ip(request)}", current.email)
-    return RedirectResponse(f"/ui/admin/users?flash={quote('пользователь удалён')}", status_code=303)
+    store.log_event("user_blocked", f"ui:{client_ip(request)}", current.email)
+    return RedirectResponse(
+        f"/ui/admin/users?flash={quote('пользователь заблокирован, история сохранена')}", status_code=303
+    )
 
 
 @app.get("/ui/admin/learned", response_class=HTMLResponse)
@@ -917,6 +938,49 @@ async def ui_prices_stock(request: Request):
     return RedirectResponse(
         f"/ui/prices?flash={quote(f'остатки обновлены: {count} позиций')}", status_code=status.HTTP_303_SEE_OTHER
     )
+
+
+def _prices_flash(message: str) -> RedirectResponse:
+    return RedirectResponse(
+        f"/ui/prices?flash={quote(message[:200])}", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
+@app.post("/ui/prices/from-1c")
+async def ui_prices_from_1c(request: Request):
+    """Цены из 1С по OData — без ручной выгрузки файла."""
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    await verified_form(request)
+    if not settings.one_c_base_url:
+        return _prices_flash("1С не настроена: заполните KPBOT_ONE_C_* в .env")
+    try:
+        incoming = await run_in_threadpool(lambda: client_from_settings(settings).prices())
+    except OneCError as exc:
+        return _prices_flash(f"1С: {exc}")
+    items, changed = merge_prices(store.price_items(), incoming)
+    count = store.replace_price_items(items)
+    store.log_event("price_from_1c", f"ui:{client_ip(request)}", f"изменено {changed}, всего {count}")
+    return _prices_flash(f"цены из 1С: {len(incoming)} позиций, изменено {changed}, всего {count}")
+
+
+@app.post("/ui/prices/stock-1c")
+async def ui_prices_stock_1c(request: Request):
+    """Остатки из 1С по OData: регистр или документы."""
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    await verified_form(request)
+    if not settings.one_c_base_url:
+        return _prices_flash("1С не настроена: заполните KPBOT_ONE_C_* в .env")
+    try:
+        rows = await run_in_threadpool(lambda: client_from_settings(settings).stock_auto())
+    except OneCError as exc:
+        return _prices_flash(f"1С: {exc}")
+    count = store.replace_stock(rows)
+    store.log_event("stock_from_1c", f"ui:{client_ip(request)}", f"позиций {count}")
+    return _prices_flash(f"остатки из 1С: {count} позиций")
 
 
 def stock_for_lines(lines: list[dict], stock: dict, items) -> dict[int, dict]:

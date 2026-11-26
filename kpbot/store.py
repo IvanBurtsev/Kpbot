@@ -201,6 +201,11 @@ class Store:
                 conn.execute("ALTER TABLE rfqs ADD COLUMN assignee TEXT")
             except sqlite3.OperationalError:
                 pass
+            # мягкое удаление пользователей: история заявок и журнал остаются
+            try:
+                conn.execute("ALTER TABLE users ADD COLUMN deleted_at TEXT")
+            except sqlite3.OperationalError:
+                pass
 
     # ---------- прайс ----------
 
@@ -343,6 +348,9 @@ class Store:
                        r.assignee,
                        (SELECT COUNT(*) FROM rfq_lines l WHERE l.rfq_id = r.id) AS line_count,
                        (SELECT COUNT(*) FROM rfq_lines l WHERE l.rfq_id = r.id AND l.status <> 'ok') AS line_issues,
+                       (SELECT COUNT(*) FROM rfq_lines l WHERE l.rfq_id = r.id AND l.status = 'ambiguous') AS line_ambiguous,
+                       (SELECT COUNT(*) FROM rfq_lines l WHERE l.rfq_id = r.id AND l.status = 'no_match') AS line_no_match,
+                       (SELECT COUNT(*) FROM rfq_lines l WHERE l.rfq_id = r.id AND l.status = 'invalid') AS line_invalid,
                        (SELECT q.total FROM quotes q WHERE q.rfq_id = r.id ORDER BY q.rowid DESC LIMIT 1) AS total
                 FROM rfqs r
                 {where}
@@ -787,14 +795,17 @@ class Store:
             )
 
     def delete_user(self, user_id: str) -> None:
+        """Мягкое удаление: пользователь блокируется, история и журнал остаются."""
         with closing(self._connect()) as conn, conn:
             conn.execute("UPDATE rfqs SET assignee = NULL WHERE assignee = ?", (user_id,))
-            conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            conn.execute("UPDATE users SET deleted_at = ? WHERE id = ?", (utcnow(), user_id))
 
     def admin_count(self) -> int:
         with closing(self._connect()) as conn:
             return int(
-                conn.execute("SELECT COUNT(*) AS c FROM users WHERE role = 'admin'").fetchone()["c"]
+                conn.execute(
+                    "SELECT COUNT(*) AS c FROM users WHERE role = 'admin' AND deleted_at IS NULL"
+                ).fetchone()["c"]
             )
 
     def list_events(self, limit: int = 100) -> list[dict]:
@@ -808,17 +819,22 @@ class Store:
 
     def users(self) -> list[User]:
         with closing(self._connect()) as conn:
-            rows = conn.execute("SELECT id, email, role, name FROM users ORDER BY role, email").fetchall()
+            rows = conn.execute(
+                "SELECT id, email, role, name FROM users WHERE deleted_at IS NULL ORDER BY role, email"
+            ).fetchall()
         return [User(id=r["id"], email=r["email"], role=r["role"], name=r["name"]) for r in rows]
 
     def user_count(self) -> int:
         with closing(self._connect()) as conn:
-            return int(conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"])
+            return int(
+                conn.execute("SELECT COUNT(*) AS c FROM users WHERE deleted_at IS NULL").fetchone()["c"]
+            )
 
     def authenticate(self, email: str, password: str) -> User | None:
         with closing(self._connect()) as conn:
             row = conn.execute(
-                "SELECT id, email, role, name, salt, password_hash FROM users WHERE email = ?",
+                "SELECT id, email, role, name, salt, password_hash FROM users"
+                " WHERE email = ? AND deleted_at IS NULL",
                 (normalize_email(email),),
             ).fetchone()
         if row is None:
@@ -830,7 +846,8 @@ class Store:
     def user_by_id(self, user_id: str) -> User | None:
         with closing(self._connect()) as conn:
             row = conn.execute(
-                "SELECT id, email, role, name FROM users WHERE id = ?", (user_id,)
+                "SELECT id, email, role, name FROM users WHERE id = ? AND deleted_at IS NULL",
+                (user_id,),
             ).fetchone()
         if row is None:
             return None

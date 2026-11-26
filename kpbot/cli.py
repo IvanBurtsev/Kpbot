@@ -1021,17 +1021,12 @@ def tenant_stores():
 
 
 def _one_c_client():
-    from .one_c import OneCClient
+    from .one_c import OneCError, client_from_settings
 
-    if not settings.one_c_base_url:
-        raise SystemExit("не задан KPBOT_ONE_C_BASE_URL — адрес базы 1С")
-    return OneCClient(
-        settings.one_c_base_url,
-        settings.one_c_user,
-        settings.one_c_password,
-        settings.one_c_timeout_seconds,
-        service_url=settings.one_c_service_url,
-    )
+    try:
+        return client_from_settings(settings)
+    except OneCError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def cmd_one_c_check(args: argparse.Namespace) -> int:

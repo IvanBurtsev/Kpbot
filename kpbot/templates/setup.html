@@ -66,9 +66,14 @@
     Excel или CSV из 1С. Колонки ищутся по смыслу: Код/Артикул, Наименование/Номенклатура,
     Единица, Цена. Загрузка заменяет текущий список.
   </p>
-  <form method="post" action="/ui/setup/price" enctype="multipart/form-data" class="row">
+  <form method="post" action="/ui/setup/price" enctype="multipart/form-data" class="upload-row">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="file" name="file" accept=".xlsx,.csv" required>
+    <label class="dropzone" data-dropzone>
+      <input type="file" name="file" accept=".xlsx,.csv" required>
+      <span class="dz-icon" aria-hidden="true">⇪</span>
+      <span class="dz-text"><b>Перетащите прайс сюда</b> или выберите файл
+        <span class="muted small">.xlsx или .csv</span></span>
+    </label>
     <button class="primary" type="submit">Загрузить прайс</button>
   </form>
   <p class="muted small">Сейчас в базе: <b>{{ state.price_count }}</b> позиций.</p>
