@@ -1,4 +1,4 @@
-﻿"""Пайплайн: письмо → позиции → матчинг → расчёт → КП → черновик ответа."""
+"""Пайплайн: письмо → позиции → матчинг → расчёт → КП → черновик ответа."""
 
 from __future__ import annotations
 
@@ -198,7 +198,13 @@ class Pipeline:
 
         html_path = self._render_documents(rfq_id, parsed, lines, quote)
         self.store.set_quote_duration(quote_id, int((time.perf_counter() - started) * 1000))
-        reply_text = build_reply_text(parsed, quote, rfq_id)
+        reply_text = build_reply_text(
+            parsed,
+            quote,
+            rfq_id,
+            company=self.company(),
+            valid_days=self.cfg.quote_valid_days,
+        )
 
         self.store.log(
             rfq_id,
@@ -558,15 +564,30 @@ class Pipeline:
         quote = self.store.get_quote(rfq_id) or {}
         self.store.log(rfq_id, "approved", actor, comment)
 
-        reply = build_reply_text_from_store(rfq, quote, rfq_id)
+        reply = build_reply_text_from_store(
+            rfq,
+            quote,
+            rfq_id,
+            self.company(),
+            valid_days=self.cfg.quote_valid_days,
+        )
         sent_path = self._write_outbox(rfq_id, rfq, reply)
         self.store.add_artifact(rfq_id, "reply_eml", sent_path, sha256_bytes(sent_path.read_bytes()))
-        self.store.set_status(rfq_id, RfqStatus.SENT.value)
-        self.store.log(rfq_id, "sent", actor, "черновик сохранён в outbox (SMTP не настроен)")
+
+        # «Отправлено» — только если письмо действительно ушло. Когда SMTP включён,
+        # заявка ждёт отдельного действия «Отправить»; иначе честный статус — «в отправку».
+        if self.cfg.smtp_enabled:
+            status = RfqStatus.APPROVED.value
+            self.store.set_status(rfq_id, status)
+            self.store.log(rfq_id, "awaiting_send", actor, "одобрено, ждёт отправки по SMTP")
+        else:
+            status = RfqStatus.SENT.value
+            self.store.set_status(rfq_id, status)
+            self.store.log(rfq_id, "sent", actor, "черновик сохранён в outbox (SMTP не настроен)")
 
         return IngestResult(
             rfq_id=rfq_id,
-            status=RfqStatus.SENT.value,
+            status=status,
             lines=len(rfq.get("lines", [])),
             matched=len(quote.get("lines", [])),
             total=str(quote.get("total", "0.00")),
@@ -603,7 +624,26 @@ def _money_text(value: object) -> str:
     return f"{amount:,.2f}".replace(",", " ").replace(".", ",")
 
 
-def build_reply_text(parsed: ParsedEmail, quote: Quote, rfq_id: str, company: dict | None = None) -> str:
+def _validity_phrase(days: int) -> str:
+    """«7 календарных дней», «1 календарный день», «2 календарных дня»."""
+    days = max(1, int(days or 1))
+    if 11 <= days % 100 <= 14:
+        return f"{days} календарных дней"
+    if days % 10 == 1:
+        return f"{days} календарный день"
+    if 2 <= days % 10 <= 4:
+        return f"{days} календарных дня"
+    return f"{days} календарных дней"
+
+
+def build_reply_text(
+    parsed: ParsedEmail,
+    quote: Quote,
+    rfq_id: str,
+    company: dict | None = None,
+    *,
+    valid_days: int = 7,
+) -> str:
     head = [
         "Здравствуйте!",
         "",
@@ -620,7 +660,7 @@ def build_reply_text(parsed: ParsedEmail, quote: Quote, rfq_id: str, company: di
         f"НДС: {_money_text(quote.vat)} ₽",
         f"Итого: {_money_text(quote.total)} ₽",
         "",
-        "Предложение действительно 7 дней.",
+        f"Предложение действительно {_validity_phrase(valid_days)}.",
         "Если всё подходит — ответьте на это письмо, и мы выставим счёт.",
         "",
         "С уважением,",
@@ -642,7 +682,14 @@ def build_reply_text(parsed: ParsedEmail, quote: Quote, rfq_id: str, company: di
     return "\n".join(head)
 
 
-def build_reply_text_from_store(rfq: dict, quote: dict, rfq_id: str, company: dict | None = None) -> str:
+def build_reply_text_from_store(
+    rfq: dict,
+    quote: dict,
+    rfq_id: str,
+    company: dict | None = None,
+    *,
+    valid_days: int = 7,
+) -> str:
     lines_count = len(quote.get("lines", []))
     unmatched = int(quote.get("unmatched", 0) or 0)
     head = [
@@ -659,7 +706,7 @@ def build_reply_text_from_store(rfq: dict, quote: dict, rfq_id: str, company: di
         f"НДС: {_money_text(quote.get('vat'))} ₽",
         f"Итого: {_money_text(quote.get('total'))} ₽",
         "",
-        "Предложение действительно 7 дней.",
+        f"Предложение действительно {_validity_phrase(valid_days)}.",
         "Если всё подходит — ответьте на это письмо, и мы выставим счёт.",
         "",
         "С уважением,",

@@ -13,7 +13,7 @@ from email.utils import format_datetime, make_msgid
 from pathlib import Path
 
 from .config import settings
-from .domain import price_quote, status_for
+from .domain import RfqStatus, price_quote, status_for
 from .logs import mask
 from .mailbox import ImapConfig, ImapMailbox, MailError
 from .mailparse import parse_eml
@@ -798,6 +798,7 @@ def _retry_one(store: Store, mailer, limit: int) -> tuple[int, int]:
             failed += 1
             continue
         store.mark_sent(item["id"])
+        store.set_status(item["rfq_id"], RfqStatus.SENT.value)
         store.log(item["rfq_id"], "sent", "cli:retry", f"кому {item['to_addr']}, вложений {len(attachments)}")
         sent += 1
     return sent, failed
@@ -850,6 +851,7 @@ def cmd_retry_outbox(args: argparse.Namespace) -> int:
             failed += 1
             continue
         store.mark_sent(item["id"])
+        store.set_status(item["rfq_id"], RfqStatus.SENT.value)
         store.log(item["rfq_id"], "sent", "cli:retry", f"кому {item['to_addr']}, вложений {len(attachments)}")
         print(f"  отправлено: {item['to_addr']}")
         sent += 1

@@ -18,7 +18,10 @@ MAX_LINES = 200
 
 _SEGMENT_SPLIT = re.compile(r"[\n;]+")
 _SENTENCE_SPLIT = re.compile(r"\.\s+(?=[А-ЯЁA-Z])")
-_SUB_SPLIT = re.compile(r",\s*(?=\d)|\s+и\s+(?=[А-Яа-яЁёA-Za-z\d])")
+# «и» разделяет позиции: «труба 20 и муфта 25». Запятые разбираются отдельно:
+# «уголок 50х50, 200 шт» — это одна позиция, а не две (см. _split_commas).
+_SUB_SPLIT = re.compile(r"\s+и\s+(?=[А-Яа-яЁёA-Za-z\d])")
+_COMMA = re.compile(r",\s*")
 # Название позиции обязано содержать слово: «1 шт» — это не товар, а обрывок.
 _HAS_WORD = re.compile(r"[A-Za-zА-Яа-яЁё]{3,}")
 _BULLET = re.compile(r"^\s*(?:\d{1,3}[.)]\s*|[-\u2013\u2014\u2022*\u00b7]\s*)+")
@@ -38,12 +41,12 @@ _LEAD_WORDS = re.compile(
 _TRAIL = re.compile(r"[\s.,:;\-–—]+$")
 
 # Единицы: длинные варианты раньше коротких.
-_QTY_UNIT = re.compile(
-    r"(?P<qty>\d{1,7}(?:[.,]\d{1,3})?)\s*"
-    r"(?P<unit>"
+_UNIT_WORDS = (
     r"штук[а-я]*|шт|упак[а-я]*|уп|комплект[а-я]*|компл|рулон[а-я]*|рул|пачк[а-я]*|пач|"
     r"мешк[а-я]*|меш|канистр[а-я]*|лист[а-я]*|погонн[а-я]*|метр[а-я]*|пог\.?\s?м|м\.?\s?п|м|кг|л|т"
-    r")\b",
+)
+_QTY_UNIT = re.compile(
+    rf"(?P<qty>\d{{1,7}}(?:[.,]\d{{1,3}})?)\s*(?P<unit>{_UNIT_WORDS})\b",
     re.IGNORECASE,
 )
 
@@ -83,6 +86,27 @@ def _clean_name(segment: str, match: re.Match[str]) -> str:
     name = _LEAD_WORDS.sub("", name)
     name = _TRAIL.sub("", name)
     return re.sub(r"\s{2,}", " ", name).strip()
+
+
+def _split_commas(segment: str) -> list[str]:
+    """Режет список позиций по запятым, но не отрывает количество от названия.
+
+    «уголок 50х50, 200 шт» — одна позиция (до запятой количества ещё нет),
+    «200 шт уголок, 300 шт труба» — две (до запятой количество уже есть).
+    """
+    parts: list[str] = []
+    start = 0
+    for match in _COMMA.finditer(segment):
+        before = segment[start : match.start()]
+        after = segment[match.end() :]
+        quantity_after = _QTY_UNIT.match(after) is not None
+        if quantity_after and not _QTY_UNIT.search(before):
+            # запятая отделяет название от его количества — оставляем в одной строке
+            continue
+        parts.append(before)
+        start = match.end()
+    parts.append(segment[start:])
+    return [part for part in parts if part.strip()]
 
 
 @dataclass(slots=True)
@@ -138,11 +162,12 @@ class RuleExtractor:
         for chunk in _SEGMENT_SPLIT.split(text or ""):
             for sentence in _SENTENCE_SPLIT.split(chunk):
                 for part in _SUB_SPLIT.split(sentence):
-                    cleaned = _BULLET.sub("", part).strip()
-                    cleaned = _GREETING.sub("", cleaned).strip()
-                    if not cleaned:
-                        continue
-                    if _NOISE.match(cleaned):
-                        continue
-                    segments.append(cleaned[:500])
+                    for piece in _split_commas(part):
+                        cleaned = _BULLET.sub("", piece).strip()
+                        cleaned = _GREETING.sub("", cleaned).strip()
+                        if not cleaned:
+                            continue
+                        if _NOISE.match(cleaned):
+                            continue
+                        segments.append(cleaned[:500])
         return segments

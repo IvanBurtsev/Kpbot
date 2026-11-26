@@ -9,10 +9,55 @@ from datetime import datetime, timezone
 from email import policy
 from email.message import EmailMessage, Message
 from email.utils import formatdate, make_msgid, parseaddr
+from html.parser import HTMLParser
 
 MAX_TEXT_CHARS = 200_000
-_HTML_TAG = re.compile(r"<[^>]{1,200}>")
 _WHITESPACE = re.compile(r"[ \t\u00a0]+")
+
+
+class _HtmlText(HTMLParser):
+    """HTML → текст с сохранением строк таблиц.
+
+    Раньше теги просто заменялись на перевод строки, и табличная заявка
+    превращалась в столбик «Уголок 50х50 / 200 / шт», где количество уже
+    не связано с названием. Теперь ячейки строки склеиваются пробелом,
+    а строки таблицы разделяются переводом строки.
+    """
+
+    _BLOCK = {
+        "p", "div", "br", "li", "ul", "ol", "tr", "table", "h1", "h2", "h3",
+        "h4", "h5", "h6", "blockquote", "pre", "section", "article", "header",
+        "footer",
+    }
+    _CELL = {"td", "th"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"script", "style"}:
+            self._skip_depth += 1
+        elif tag in self._BLOCK:
+            self.parts.append("\n")
+        elif tag in self._CELL:
+            self.parts.append(" ")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style"}:
+            self._skip_depth = max(0, self._skip_depth - 1)
+        elif tag in self._BLOCK:
+            self.parts.append("\n")
+        elif tag in self._CELL:
+            self.parts.append(" ")
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip_depth:
+            self.parts.append(data)
+
+    def text(self) -> str:
+        return "".join(self.parts)
 
 
 @dataclass(slots=True)
@@ -86,7 +131,10 @@ def _extract_text(msg: Message) -> str:
     if plain_parts:
         text = "\n".join(plain_parts)
     else:
-        text = _HTML_TAG.sub("\n", "\n".join(html_parts))
+        parser = _HtmlText()
+        parser.feed("\n".join(html_parts))
+        parser.close()
+        text = parser.text()
 
     text = _WHITESPACE.sub(" ", text)
     lines = [line.strip() for line in text.splitlines()]

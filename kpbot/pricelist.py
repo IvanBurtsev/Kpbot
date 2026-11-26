@@ -12,7 +12,8 @@ from .domain import PriceItem, ValidationError
 # Локальные библиотеки (в песочнице нет доступа к PyPI).
 _VENDOR = Path(__file__).resolve().parent.parent / "vendor"
 if _VENDOR.exists() and str(_VENDOR) not in sys.path:
-    sys.path.insert(0, str(_VENDOR))
+    # В конец: установленные пакеты важнее вендорной копии, vendor — запасной путь.
+    sys.path.append(str(_VENDOR))
 
 # (sku, наименование, единица, цена без НДС)
 DEFAULT_ITEMS: tuple[tuple[str, str, str, str], ...] = (

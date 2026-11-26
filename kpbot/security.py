@@ -97,6 +97,14 @@ class RateLimiter:
             if len(bucket) >= self.per_minute:
                 return False
             bucket.append(now)
-            if len(self._hits) > 10_000:  # защита от роста памяти
-                self._hits.clear()
+            if len(self._hits) > 10_000:
+                # Не сбрасываем счётчики всем (это способ обойти лимит), а выкидываем
+                # только записи, которые уже не влияют на окно, и самые старые.
+                stale = [k for k, hits in self._hits.items() if not hits or now - hits[-1] > window]
+                for stale_key in stale:
+                    self._hits.pop(stale_key, None)
+                if len(self._hits) > 10_000:
+                    oldest = sorted(self._hits.items(), key=lambda pair: pair[1][-1])
+                    for stale_key, _ in oldest[: len(oldest) // 4]:
+                        self._hits.pop(stale_key, None)
             return True

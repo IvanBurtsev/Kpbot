@@ -331,6 +331,9 @@ async def ui_login(request: Request):
             max_age=86400 * 30,
             path="/",
         )
+    else:
+        # Вход без клиента не должен унаследовать базу предыдущего клиента с этой машины.
+        response.delete_cookie(TENANT_COOKIE, path="/")
     response.set_cookie(
         SESSION_COOKIE,
         token,
@@ -352,6 +355,7 @@ async def ui_logout(request: Request):
         return PlainTextResponse("csrf failed", status_code=403)
     response = RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(TENANT_COOKIE, path="/")
     return response
 
 
@@ -1150,7 +1154,13 @@ async def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
             error="заявка закреплена за другим менеджером",
         )
     quote = store.get_quote(rfq_id)
-    reply_text = build_reply_text_from_store(rfq, quote, rfq_id, pipeline.company()) if quote else ""
+    reply_text = (
+        build_reply_text_from_store(
+            rfq, quote, rfq_id, pipeline.company(), valid_days=settings.quote_valid_days
+        )
+        if quote
+        else ""
+    )
     artifacts = {a["kind"] for a in store.artifacts(rfq_id)}
     return page(
         "rfq.html",
@@ -1425,7 +1435,9 @@ async def ui_rfq_send(request: Request, rfq_id: str):
     if quote is None:
         return back_to(rfq_id, "КП ещё не рассчитано")
 
-    body = str(form.get("body", "")).strip() or build_reply_text_from_store(rfq, quote, rfq_id, pipeline.company())
+    body = str(form.get("body", "")).strip() or build_reply_text_from_store(
+        rfq, quote, rfq_id, pipeline.company(), valid_days=settings.quote_valid_days
+    )
     attachments = load_attachments(settings.out_dir, rfq_id, short=rfq_id[:8])
     message = build_kp_message(
         sender=to,
@@ -1445,9 +1457,17 @@ async def ui_rfq_send(request: Request, rfq_id: str):
             body=body,
             error=str(exc),
         )
+        # Письмо не ушло — заявка остаётся одобренной и ждёт повтора, а не «отправленной».
+        store.set_status(rfq_id, RfqStatus.APPROVED.value)
         store.log(rfq_id, "send_failed", f"ui:{client_ip(request)}", f"{to}: {exc}"[:300])
-        return back_to(rfq_id, f"не отправлено: {exc}. Письмо в очереди, повторю автоматически")
+        if mailer.enabled:
+            return back_to(rfq_id, f"не отправлено: {exc}. Письмо в очереди, повторю автоматически")
+        return back_to(
+            rfq_id,
+            f"не отправлено: {exc}. Письмо в очереди; включите SMTP — и оно уйдёт при повторе",
+        )
 
+    store.set_status(rfq_id, RfqStatus.SENT.value)
     store.log(
         rfq_id,
         "sent",

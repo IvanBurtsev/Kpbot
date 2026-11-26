@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import threading
 import uuid
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -172,6 +173,12 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Схема на файл применяется один раз за жизнь процесса: иначе каждый Store()
+# (а их на страницу десятки) гоняет весь DDL и четыре ALTER.
+_INIT_LOCK = threading.Lock()
+_INITIALIZED: set[str] = set()
+
+
 class Store:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -186,26 +193,34 @@ class Store:
         return conn
 
     def init_schema(self) -> None:
-        with closing(self._connect()) as conn, conn:
-            conn.executescript(SCHEMA)
-            # мягкая миграция для баз, созданных до появления поля
-            try:
-                conn.execute("ALTER TABLE llm_usage ADD COLUMN balance_rub TEXT")
-            except sqlite3.OperationalError:
-                pass
-            try:
-                conn.execute("ALTER TABLE quotes ADD COLUMN duration_ms INTEGER")
-            except sqlite3.OperationalError:
-                pass
-            try:
-                conn.execute("ALTER TABLE rfqs ADD COLUMN assignee TEXT")
-            except sqlite3.OperationalError:
-                pass
-            # мягкое удаление пользователей: история заявок и журнал остаются
-            try:
-                conn.execute("ALTER TABLE users ADD COLUMN deleted_at TEXT")
-            except sqlite3.OperationalError:
-                pass
+        key = str(self.db_path.resolve())
+        with _INIT_LOCK:
+            # Файл могли удалить и создать заново (тесты, восстановление из бэкапа):
+            # тогда схему нужно применить снова.
+            if key in _INITIALIZED and self.db_path.exists():
+                return
+            _INITIALIZED.discard(key)
+            with closing(self._connect()) as conn, conn:
+                conn.executescript(SCHEMA)
+                # мягкая миграция для баз, созданных до появления поля
+                try:
+                    conn.execute("ALTER TABLE llm_usage ADD COLUMN balance_rub TEXT")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE quotes ADD COLUMN duration_ms INTEGER")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE rfqs ADD COLUMN assignee TEXT")
+                except sqlite3.OperationalError:
+                    pass
+                # мягкое удаление пользователей: история заявок и журнал остаются
+                try:
+                    conn.execute("ALTER TABLE users ADD COLUMN deleted_at TEXT")
+                except sqlite3.OperationalError:
+                    pass
+            _INITIALIZED.add(key)
 
     # ---------- прайс ----------
 
@@ -616,11 +631,11 @@ class Store:
 
 
     def set_quote_duration(self, quote_id: str, duration_ms: int) -> None:
-            """Сколько занял разбор вместе с подготовкой документов."""
-            with closing(self._connect()) as conn, conn:
-                conn.execute(
-                    "UPDATE quotes SET duration_ms = ? WHERE id = ?", (int(duration_ms), quote_id)
-                )
+        """Сколько занял разбор вместе с подготовкой документов."""
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "UPDATE quotes SET duration_ms = ? WHERE id = ?", (int(duration_ms), quote_id)
+            )
 
     def sent_history(self, rfq_id: str, limit: int = 20) -> list[dict]:
         """История отправок КП: что ушло, кому и когда."""

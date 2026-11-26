@@ -177,6 +177,7 @@ SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
 */10 * * * * kpbot cd /opt/kpbot && .venv/bin/python -m kpbot.cli poll --all-tenants --limit 20 >> /opt/kpbot/data/poll.log 2>&1
 */15 * * * * kpbot cd /opt/kpbot && .venv/bin/python -m kpbot.cli 1c-stock --limit 2000 >> /opt/kpbot/data/1c-stock.log 2>&1
+*/30 * * * * kpbot cd /opt/kpbot && .venv/bin/python -m kpbot.cli retry-outbox --all --limit 20 >> /opt/kpbot/data/outbox.log 2>&1
 0 3 * * * kpbot cd /opt/kpbot && .venv/bin/python -m kpbot.cli backup --all --keep 14 >> /opt/kpbot/data/backup.log 2>&1
 CRON
 ```

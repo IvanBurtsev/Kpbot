@@ -21,7 +21,9 @@ log = logging.getLogger("kpbot.render")
 
 _VENDOR = BASE_DIR / "vendor"
 if _VENDOR.exists() and str(_VENDOR) not in sys.path:
-    sys.path.insert(0, str(_VENDOR))
+    # В конец, а не в начало: установленные пакеты важнее вендорной копии.
+    # Vendor остаётся запасным вариантом для окружений без PyPI.
+    sys.path.append(str(_VENDOR))
 
 _env = Environment(
     loader=FileSystemLoader(str(settings.templates_dir)),

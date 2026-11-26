@@ -85,8 +85,8 @@ class Settings(BaseSettings):
     max_qty: Decimal = Decimal("1000000")
 
     # --- матчинг ---
-    match_auto_threshold: float = 0.62
-    match_ambiguous_threshold: float = 0.45
+    match_auto_threshold: float = 0.75
+    match_ambiguous_threshold: float = 0.50
 
     # --- лимиты (защита от дурака и от DoS) ---
     max_upload_bytes: int = 2 * 1024 * 1024

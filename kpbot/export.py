@@ -11,7 +11,8 @@ from .domain import LineStatus, PriceItem
 
 _VENDOR = Path(__file__).resolve().parent.parent / "vendor"
 if _VENDOR.exists() and str(_VENDOR) not in sys.path:
-    sys.path.insert(0, str(_VENDOR))
+    # В конец: установленные пакеты важнее вендорной копии, vendor — запасной путь.
+    sys.path.append(str(_VENDOR))
 
 STATUS_LABELS = {
     LineStatus.OK.value: "в прайсе",
