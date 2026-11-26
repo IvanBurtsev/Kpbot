@@ -16,6 +16,7 @@ from .domain import (
     Quote,
     RfqLine,
     RfqStatus,
+    ValidationError,
     build_reply_subject,
     price_quote,
     status_for,
@@ -576,6 +577,12 @@ class Pipeline:
         rfq = self.store.get_rfq(rfq_id)
         if rfq is None:
             raise KeyError(rfq_id)
+        current = RfqStatus(rfq["status"])
+        if current in (RfqStatus.APPROVED, RfqStatus.SENT):
+            # Повторное одобрение — это второй черновик и риск второго письма.
+            raise ValidationError(
+                f"нельзя перевести заявку в «одобрена»: текущий статус — «{current.value}»"
+            )
         quote = self.store.get_quote(rfq_id) or {}
         self.store.log(rfq_id, "approved", actor, comment)
 
@@ -589,16 +596,21 @@ class Pipeline:
         sent_path = self._write_outbox(rfq_id, rfq, reply)
         self.store.add_artifact(rfq_id, "reply_eml", sent_path, sha256_bytes(sent_path.read_bytes()))
 
-        # «Отправлено» — только если письмо действительно ушло. Когда SMTP включён,
-        # заявка ждёт отдельного действия «Отправить»; иначе честный статус — «в отправку».
-        self.store.set_status(rfq_id, RfqStatus.APPROVED.value)
+        # «Отправлено» ставит только фактическая отправка (SMTP). Одобрение —
+        # это «КП проверено и готово»: заявка остаётся редактируемой, а черновик
+        # письма лежит в outbox. Раньше при выключенном SMTP одобрение ставило
+        # sent, и заявка навсегда теряла возможность правки, хотя письмо не ушло.
+        status = RfqStatus.APPROVED.value
+        self.store.set_status(rfq_id, status)
         if self.cfg.smtp_enabled:
-            status = RfqStatus.APPROVED.value
             self.store.log(rfq_id, "awaiting_send", actor, "одобрено, ждёт отправки по SMTP")
         else:
-            status = RfqStatus.SENT.value
-            self.store.set_status(rfq_id, RfqStatus.SENT.value)
-            self.store.log(rfq_id, "sent", actor, "черновик сохранён в outbox (SMTP не настроен)")
+            self.store.log(
+                rfq_id,
+                "approved_draft",
+                actor,
+                "черновик ответа сохранён в outbox (SMTP не настроен)",
+            )
 
         return IngestResult(
             rfq_id=rfq_id,

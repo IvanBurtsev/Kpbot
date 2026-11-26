@@ -21,6 +21,19 @@ STATUS_LABELS = {
     LineStatus.INVALID.value: "нет количества или единицы",
 }
 
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def safe_text(value: object) -> str:
+    """Строка для ячейки, которая не станет формулой.
+
+    openpyxl (и Excel при открытии CSV) считает формулой всё, что начинается
+    с «= + - @». Текст письма пишет посторонний человек, поэтому такие строки
+    помечаем апострофом — Excel покажет их как текст, а не выполнит.
+    """
+    text = "" if value is None else str(value)
+    return "'" + text if text.startswith(_FORMULA_START) else text
+
 
 def build_rfq_xlsx(
     rfq: dict,
@@ -55,7 +68,7 @@ def build_rfq_xlsx(
     )
     for offset, (label, value) in enumerate(meta, start=3):
         sheet.cell(row=offset, column=1, value=label).font = bold
-        sheet.cell(row=offset, column=2, value=str(value or ""))
+        sheet.cell(row=offset, column=2, value=safe_text(value))
 
     table_row = 9
     headers = ("№", "Артикул", "Наименование", "Ед.", "Кол-во", "Цена, ₽", "Сумма, ₽")
@@ -69,9 +82,9 @@ def build_rfq_xlsx(
     lines = (quote or {}).get("lines", [])
     for number, line in enumerate(lines, start=1):
         sheet.cell(row=row, column=1, value=number)
-        sheet.cell(row=row, column=2, value=line["sku"])
-        sheet.cell(row=row, column=3, value=line["name"])
-        sheet.cell(row=row, column=4, value=line["unit"])
+        sheet.cell(row=row, column=2, value=safe_text(line["sku"]))
+        sheet.cell(row=row, column=3, value=safe_text(line["name"]))
+        sheet.cell(row=row, column=4, value=safe_text(line["unit"]))
         sheet.cell(row=row, column=5, value=float(Decimal(str(line["qty"]))))
         sheet.cell(row=row, column=6, value=float(Decimal(str(line["price"]))))
         sheet.cell(row=row, column=7, value=float(Decimal(str(line["amount"]))))
@@ -105,7 +118,7 @@ def build_rfq_xlsx(
         if line["sku"] in seen:
             continue
         seen.add(line["sku"])
-        nom.append((line["name"], line["sku"], line["unit"]))
+        nom.append((safe_text(line["name"]), safe_text(line["sku"]), safe_text(line["unit"])))
     for column, width in {"A": 60, "B": 16, "C": 18}.items():
         nom.column_dimensions[column].width = width
 
@@ -119,8 +132,8 @@ def build_rfq_xlsx(
         entry = (stock or {}).get(line["sku"]) or {}
         one_c.append(
             (
-                line["sku"],
-                line["name"],
+                safe_text(line["sku"]),
+                safe_text(line["name"]),
                 float(Decimal(str(line["qty"]))),
                 float(Decimal(str(line["price"]))),
                 float(Decimal(str(line["amount"]))),
@@ -139,12 +152,12 @@ def build_rfq_xlsx(
         cell.fill = header_fill
     for offset, line in enumerate(rfq.get("lines", []), start=2):
         second.cell(row=offset, column=1, value=line["idx"])
-        second.cell(row=offset, column=2, value=line["raw_text"])
+        second.cell(row=offset, column=2, value=safe_text(line["raw_text"]))
         second.cell(row=offset, column=3, value=line.get("qty") or "")
-        second.cell(row=offset, column=4, value=line.get("unit") or "")
+        second.cell(row=offset, column=4, value=safe_text(line.get("unit") or ""))
         second.cell(row=offset, column=5, value=STATUS_LABELS.get(line["status"], line["status"]))
         second.cell(row=offset, column=6, value=round(float(line.get("score") or 0), 2))
-        second.cell(row=offset, column=7, value=line.get("matched_name") or "")
+        second.cell(row=offset, column=7, value=safe_text(line.get("matched_name") or ""))
     for column, width in {"A": 6, "B": 46, "C": 10, "D": 8, "E": 30, "F": 8, "G": 46}.items():
         second.column_dimensions[column].width = width
 
@@ -255,7 +268,7 @@ def build_rfq_csv(
             if line["sku"] in seen:
                 continue
             seen.add(line["sku"])
-            writer.writerow((line["name"], line["sku"], line["unit"]))
+            writer.writerow((safe_text(line["name"]), safe_text(line["sku"]), safe_text(line["unit"])))
     written.append(nom_path)
 
     order_path = out_dir / f"1c-order-{short}.csv"
@@ -267,8 +280,8 @@ def build_rfq_csv(
             entry = (stock or {}).get(line["sku"]) or {}
             writer.writerow(
                 (
-                    line["sku"],
-                    line["name"],
+                    safe_text(line["sku"]),
+                    safe_text(line["name"]),
                     _ru_number(line["qty"]),
                     _ru_number(line["price"]),
                     _ru_number(line["amount"]),

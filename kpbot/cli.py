@@ -381,7 +381,7 @@ def _poll_all_tenants(args: argparse.Namespace) -> int:
         token_path = (
             settings.oauth_token_path
             if tenant_id == "default"
-            else _tenant_token_path(Path(tenant["db_path"]))
+            else _tenant_token_path(Path(store.db_path))
         )
         try:
             mailbox = _mailbox(overrides, token_path)

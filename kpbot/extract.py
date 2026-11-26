@@ -47,8 +47,10 @@ def _glue_thousands(text: str) -> str:
     """Склеивает «10 000» → «10000», но не трогает размеры и количества подряд.
 
     «Уголок 50х50 200 шт» — это размер 50х50 и количество 200, а не 50200.
-    Группа цифр склеивается, только если она начинается на границе слова
-    (не сразу после буквы, цифры, точки или запятой).
+    «кабель 3х2.5 150 м» — это размер 3х2.5 и количество 150, а не 5150:
+    поэтому группа цифр склеивается, только если она начинается на границе
+    слова, а точка и запятая границей не считаются (после них идёт дробная
+    часть размера, а не новое число).
     """
     out: list[str] = []
     index = 0
@@ -63,10 +65,12 @@ def _glue_thousands(text: str) -> str:
         while end < len(text) and text[end].isdigit():
             end += 1
         run = text[index:end]
-        boundary_ok = index == 0 or not text[index - 1].isalnum()
+        first_len = len(run)
+        previous = text[index - 1] if index else ""
+        boundary_ok = not previous or (not previous.isalnum() and previous not in ".,")
         while (
             boundary_ok
-            and len(run) <= 3
+            and first_len <= 3
             and end + 4 <= len(text)
             and text[end] in "\u00a0\u202f\u2009 "
             and text[end + 1 : end + 4].isdigit()
@@ -77,6 +81,17 @@ def _glue_thousands(text: str) -> str:
         out.append(run)
         index = end
     return "".join(out)
+
+
+# «1.500», «10.000», «1.234.567»: в выгрузках 1С и Excel точка — разделитель
+# тысяч, а не десятичная. Дробные размеры с точкой («3.5», «2.25») шаблон
+# не ловит: после точки там меньше трёх цифр.
+_THOUSANDS_DOT = re.compile(r"(?<![\d.,])(\d{1,3}(?:\.\d{3})+)(?![\d])")
+
+
+def _dot_thousands(text: str) -> str:
+    """«10.000 шт» → «10000 шт»: иначе заявка уменьшается в тысячу раз."""
+    return _THOUSANDS_DOT.sub(lambda match: match.group(1).replace(".", ""), text)
 
 # Единицы: длинные варианты раньше коротких.
 _UNIT_WORDS = (
@@ -160,7 +175,7 @@ class RuleExtractor:
         lines: list[RfqLine] = []
         seen: set[tuple[str, str, str]] = set()
 
-        for segment in self._segments(_glue_thousands(text)):
+        for segment in self._segments(_dot_thousands(_glue_thousands(text))):
             if len(lines) >= limit:
                 break
             matches = list(_QTY_UNIT.finditer(segment))

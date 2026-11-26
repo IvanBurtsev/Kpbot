@@ -395,10 +395,22 @@ class Store:
     # ---------- КП ----------
 
     def save_quote(self, quote_id: str, rfq_id: str, quote: Quote, *, duration_ms: int | None = None) -> int:
-        """Сохраняет снимок КП и возвращает его сквозной номер в базе клиента."""
+        """Сохраняет снимок КП. Номер закрепляется за заявкой и не меняется.
+
+        Номер — это то, на что клиент ссылается в переписке («КП № 12»).
+        Правка строк создаёт новую версию расчёта, но номер у неё тот же:
+        иначе клиент и менеджер видят разные номера одного документа.
+        """
         with closing(self._connect()) as conn, conn:
-            row = conn.execute("SELECT COALESCE(MAX(number), 0) + 1 AS n FROM quotes").fetchone()
-            number = int(row["n"])
+            existing = conn.execute(
+                "SELECT number FROM quotes WHERE rfq_id = ? ORDER BY rowid LIMIT 1",
+                (rfq_id,),
+            ).fetchone()
+            if existing is not None and existing["number"] is not None:
+                number = int(existing["number"])
+            else:
+                row = conn.execute("SELECT COALESCE(MAX(number), 0) + 1 AS n FROM quotes").fetchone()
+                number = int(row["n"])
             quote.number = number
             conn.execute(
                 "INSERT INTO quotes(id, rfq_id, number, subtotal, vat, delivery, total, vat_rate,"
@@ -572,9 +584,12 @@ class Store:
             head = conn.execute(
                 """
                 SELECT COUNT(DISTINCT r.id) AS rfqs,
-                       COUNT(DISTINCT q.id) AS quotes,
+                       COUNT(q.id) AS quotes,
                        COALESCE(SUM(CAST(q.total AS REAL)), 0) AS total_sum
-                FROM rfqs r LEFT JOIN quotes q ON q.rfq_id = r.id
+                FROM rfqs r
+                LEFT JOIN quotes q ON q.id = (
+                    SELECT id FROM quotes WHERE rfq_id = r.id ORDER BY rowid DESC LIMIT 1
+                )
                 WHERE r.created_at >= ?
                 """,
                 (since,),

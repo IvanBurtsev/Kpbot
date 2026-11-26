@@ -32,6 +32,9 @@ os.environ["KPBOT_ENV"] = "dev"
 os.environ["KPBOT_API_KEY"] = "test-key"
 os.environ["KPBOT_UI_PASSWORD"] = "test-pass"
 os.environ["KPBOT_SESSION_SECRET"] = "test-secret"
+# Общий пароль в тестах нужен явно: после аудита он выключен по умолчанию
+# даже в dev, чтобы случайно не оказаться включённым на публичном хосте.
+os.environ["KPBOT_ALLOW_SHARED_LOGIN"] = "1"
 
 os.environ["KPBOT_PDF_ENABLED"] = "false"
 os.environ["KPBOT_LLM_ENABLED"] = "false"

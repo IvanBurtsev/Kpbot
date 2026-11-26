@@ -186,9 +186,13 @@ class DocumentFixesTest(unittest.TestCase):
 
 
 class LoggingInProdTest(unittest.TestCase):
-    def test_shared_login_is_off_in_production(self) -> None:
+    def test_shared_login_is_off_by_default_and_in_production(self) -> None:
         self.assertFalse(Settings(env="prod", allow_shared_login=False).shared_login_allowed)
-        self.assertTrue(Settings(env="dev").shared_login_allowed)
+        # dev сам по себе больше не включает общий пароль: только явный флаг
+        self.assertFalse(Settings(env="dev", allow_shared_login=False).shared_login_allowed)
+        self.assertTrue(Settings(env="dev", allow_shared_login=True).shared_login_allowed)
+        # в проде явный флаг тоже не помогает
+        self.assertFalse(Settings(env="prod", allow_shared_login=True).shared_login_allowed)
 
 
 class AuthzTest(unittest.TestCase):

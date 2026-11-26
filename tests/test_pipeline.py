@@ -1,4 +1,4 @@
-﻿import support  # общий стенд: изолированные данные, сеть запрещена
+import support  # общий стенд: изолированные данные, сеть запрещена
 
 import shutil
 import unittest
@@ -87,20 +87,20 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(first.rfq_id, second.rfq_id)
         self.assertEqual(self.store.stats()["rfqs"], 1)
 
-    def test_approve_writes_outbox_and_marks_sent(self) -> None:
+    def test_approve_writes_outbox_and_marks_approved(self) -> None:
         result = self.pipeline.process_eml_bytes(build_eml("уголок 50х50 — 10 шт"), actor="test")
         approved = self.pipeline.approve(result.rfq_id, actor="test", comment="ок")
 
-        self.assertEqual(approved.status, "sent")
+        self.assertEqual(approved.status, "approved")
         outbox = self.settings.out_dir / "sent" / f"{result.rfq_id}.eml"
         self.assertTrue(outbox.exists())
         self.assertIn("420,90", parse_eml(outbox.read_bytes()).text)
 
         rfq = self.store.get_rfq(result.rfq_id)
-        self.assertEqual(rfq["status"], "sent")
+        self.assertEqual(rfq["status"], "approved")
         actions = [row["action"] for row in self.store.decisions(result.rfq_id)]
         self.assertIn("approved", actions)
-        self.assertIn("sent", actions)
+        self.assertIn("approved_draft", actions)
 
     def test_reject_marks_status(self) -> None:
         result = self.pipeline.process_eml_bytes(build_eml("уголок 50х50 — 10 шт"), actor="test")

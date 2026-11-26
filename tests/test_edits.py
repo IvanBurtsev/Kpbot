@@ -1,4 +1,4 @@
-﻿"""Правка строк, экспорт в Excel и бэкап — глазами HTTP."""
+"""Правка строк, экспорт в Excel и бэкап — глазами HTTP."""
 
 import support  # общий стенд: изолированные данные, сеть запрещена
 
@@ -125,7 +125,8 @@ class EditFlowTest(unittest.TestCase):
 
     def test_sent_rfq_cannot_be_edited(self) -> None:
         rfq_id = self._create_rfq("уголок 50х50 — 10 шт")
-        self.client.post(f"/ui/rfq/{rfq_id}/approve", data={"csrf_token": self.csrf})
+        # sent ставит только фактическая отправка; в тесте доводим статус вручную
+        store.set_status(rfq_id, "sent", force=True)
         self.assertEqual(store.get_rfq(rfq_id)["status"], "sent")
 
         response = self.client.post(

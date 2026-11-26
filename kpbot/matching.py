@@ -238,7 +238,10 @@ class PriceIndex:
     затем отсекаются по верхней оценке скоринга (без дорогого SequenceMatcher).
     """
 
-    __slots__ = ("items", "_norm", "_tokens", "_numbers", "_postings", "max_candidates", "_last_second")
+    __slots__ = (
+        "items", "_norm", "_tokens", "_numbers", "_postings", "_exact",
+        "max_candidates", "_last_second",
+    )
 
     def __init__(self, items: list[PriceItem], *, max_candidates: int = 200) -> None:
         self.items = list(items)
@@ -248,6 +251,10 @@ class PriceIndex:
         self._tokens: list[list[str]] = []
         self._numbers: list[list[str]] = []
         self._postings: dict[str, set[int]] = {}
+        # Точное совпадение названия ищем отдельно и всегда: пул кандидатов
+        # ограничен, и на большом каталоге однотипных позиций нужная могла
+        # в него не попасть — тогда выбиралась чужая с высокой оценкой.
+        self._exact: dict[str, list[int]] = {}
 
         for idx, item in enumerate(self.items):
             norm = normalize(item.name)
@@ -255,6 +262,7 @@ class PriceIndex:
             self._norm.append(norm)
             self._tokens.append(item_tokens)
             self._numbers.append([t for t in item_tokens if _DIGIT.search(t)])
+            self._exact.setdefault(norm, []).append(idx)
             for token in set(item_tokens):
                 self._postings.setdefault(_key(token), set()).add(idx)
 
@@ -281,6 +289,16 @@ class PriceIndex:
         if not any(_WORD.search(token) for token in q_tokens):
             return (None, 0.0, False) if detect_tie else (None, 0.0)
         q_numbers = [t for t in q_tokens if _DIGIT.search(t)]
+
+        # Точное совпадение названия — вне зависимости от пула кандидатов.
+        # Иначе на каталоге из сотен однотипных позиций («кабель 3х2.5, вариант N»)
+        # нужная строка не попадала в первые 200 и выбиралась чужая.
+        exact = self._exact.get(q)
+        if exact:
+            tied = len(exact) > 1
+            self._last_second = 1.0 if tied else 0.0
+            chosen = self.items[exact[0]]
+            return (chosen, 1.0, tied) if detect_tie else (chosen, 1.0)
 
         pool = self.candidates(q_tokens)
         if not pool and q_numbers:

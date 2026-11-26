@@ -218,8 +218,8 @@ class Settings(BaseSettings):
 
     @property
     def shared_login_allowed(self) -> bool:
-        """Общий пароль интерфейса — только dev или явное разрешение в проде."""
-        return self.allow_shared_login or not self.is_production
+        """Общий пароль интерфейса — только если явно разрешён и это не прод."""
+        return self.allow_shared_login and not self.is_production
 
     def production_problems(self) -> list[str]:
         """Что нельзя оставлять дефолтным на боевом сервере."""

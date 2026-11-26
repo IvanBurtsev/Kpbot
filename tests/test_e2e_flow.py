@@ -49,8 +49,9 @@ class E2EFlowTest(unittest.TestCase):
             f"/ui/rfq/{rfq_id}/approve", data={"csrf_token": self.csrf}
         )
         self.assertEqual(approved.status_code, 303)
-        # одобрение сохраняет черновик письма в outbox и переводит заявку в sent
-        self.assertEqual(store.get_rfq(rfq_id)["status"], "sent")
+        # одобрение сохраняет черновик письма в outbox и переводит заявку в approved;
+        # sent ставит только фактическая отправка по SMTP
+        self.assertEqual(store.get_rfq(rfq_id)["status"], "approved")
 
         export = self.client.get(f"/ui/rfq/{rfq_id}/export.xlsx")
         self.assertEqual(export.status_code, 200)
