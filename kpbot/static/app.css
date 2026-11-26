@@ -1137,7 +1137,6 @@ tr.needs-attention td {
 
   .cards-table td {
     display: table-cell;
-    grid-template-columns: none;
     gap: 0;
     padding: 12px;
     border-bottom: 1px solid var(--line);
@@ -1282,4 +1281,23 @@ code { overflow-wrap: anywhere; }
   .tabs a { white-space: nowrap; }
 
   .pager { display: flex; gap: 12px; align-items: center; }
+}
+
+@media (max-width: 768px) {
+  /* Бренд и меню: на телефоне подпись убираем, ссылки чуть меньше */
+  .brand span.muted { display: none; }
+  .nav { gap: 8px; font-size: 13px; }
+  .nav a { font-size: 13px; }
+
+  /* Подпись колонки — над значением. Иначе бейджи и кнопки становятся
+     grid-элементами, растягиваются на всю ширину и «вылезают» из строки. */
+  .cards-table td {
+    display: block;
+    padding: 10px 12px;
+  }
+  .cards-table td::before {
+    display: block;
+    margin-bottom: 3px;
+    min-width: 0;
+  }
 }
