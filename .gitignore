@@ -5,6 +5,8 @@
 .ssh/
 data/
 .tmp/
+# тестовая база 1С (1,7 ГБ) — не в git
+1c-test/
 vendor/
 __pycache__/
 *.pyc
