@@ -6,6 +6,7 @@ import argparse
 import shutil
 import sys
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from email.message import EmailMessage
 from email.utils import format_datetime, make_msgid
 from pathlib import Path
@@ -1175,6 +1176,36 @@ def cmd_one_c_invoice(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_cabinet_demo(args: argparse.Namespace) -> int:
+    """Демо-клиент ЛК: компания, два пользователя, персональные цены и кратность."""
+    from .cabinet_store import CabinetStore
+
+    supplier = Store(settings.db_path)
+    builder = Pipeline(supplier, settings)
+    builder.ensure_price_list()
+    cabinet = CabinetStore(settings.db_path)
+    company = cabinet.create_company("ООО Гарант-Строй", inn="2634000000", kpp="263401001")
+    admin_password = "client-admin-1"
+    manager_password = "client-manager-1"
+    cabinet.create_user(company["id"], email="director@garant-stroy.example",
+                        password=admin_password, role="client_admin", name="Директор")
+    cabinet.create_user(company["id"], email="zakupki@garant-stroy.example",
+                        password=manager_password, role="client_manager", name="Закупщик")
+    items = supplier.price_items()[:10]
+    for item in items:
+        cabinet.set_pack(item.sku, 10)
+        cabinet.set_price(company["id"], item.sku,
+                          str((item.price * Decimal("0.95")).quantize(Decimal("0.01"))))
+    if supplier.stock_count() == 0:
+        supplier.replace_stock([(item.sku, "100", item.unit, "Основной склад") for item in items])
+    print(f"клиент: {company['name']} ({company['id']})")
+    print(f"  client_admin:   director@garant-stroy.example / {admin_password}")
+    print(f"  client_manager: zakupki@garant-stroy.example / {manager_password}")
+    print(f"  цены: скидка 5% на {len(items)} позиций, кратность 10")
+    print("  вход: http://127.0.0.1:8000/cabinet/login")
+    return 0
+
+
 def cmd_backup(args: argparse.Namespace) -> int:
     """Консистентная копия базы через sqlite backup API + ротация старых копий."""
     import contextlib
@@ -1283,6 +1314,9 @@ def main(argv: list[str] | None = None) -> int:
 
     seed = sub.add_parser("seed", help="создать демо-прайс и письма")
     seed.set_defaults(func=cmd_seed)
+
+    cabinet_demo = sub.add_parser("cabinet-demo", help="создать демо-клиента личного кабинета")
+    cabinet_demo.set_defaults(func=cmd_cabinet_demo)
 
     demo_stand = sub.add_parser("demo-stand", help="демо-стенд на номенклатуре клиента")
     demo_stand.add_argument("--price", default="", help="файл выгрузки из 1С (xlsx/csv)")

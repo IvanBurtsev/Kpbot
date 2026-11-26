@@ -142,7 +142,7 @@ def main() -> int:
     payload = {
         "date": "2026-11-26",
         "checks": checks,
-        "tests": {"count": 265, "status": "ok", "seconds": 48, "external_calls": 0},
+        "tests": {"count": 279, "status": "ok", "seconds": 64, "external_calls": 0},
         "bench": {"10000_positions_index_ms": 473, "per_line_ms": 4.08, "lines_per_second": 245},
         "smoke": {"passed": 8, "failed": 0},
     }

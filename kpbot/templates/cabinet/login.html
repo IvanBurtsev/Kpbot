@@ -1,0 +1,20 @@
+{% extends "cabinet/base.html" %}
+{% block title %}Вход в кабинет · kpbot{% endblock %}
+{% block content %}
+<section class="card narrow cabinet-login">
+  <h1>Кабинет клиента</h1>
+  <p class="muted small">Заказ у поставщика: каталог, цены и остатки, история заказов.</p>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
+  <form method="post" action="/cabinet/login" class="stack">
+    <label>E-mail
+      <input type="email" name="email" autocomplete="username" required autofocus placeholder="zakupki@firma.ru">
+    </label>
+    <label>Пароль
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+    <button class="primary" type="submit">Войти</button>
+  </form>
+  <p class="muted small">Пароль выдаёт поставщик. Забыли — обратитесь к вашему менеджеру.</p>
+</section>
+{% endblock %}

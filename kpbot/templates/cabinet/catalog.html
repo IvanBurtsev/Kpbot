@@ -1,0 +1,62 @@
+{% extends "cabinet/base.html" %}
+{% block title %}Каталог · кабинет клиента{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Каталог</h1>
+  <p class="muted small">Цены и остатки — от поставщика. Персональные цены отмечены.
+    В корзине {{ cart_count }} шт.</p>
+  {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
+
+  <form method="get" action="/cabinet/catalog" class="row">
+    <input type="search" name="q" value="{{ query }}" placeholder="поиск по названию или артикулу">
+    <button type="submit" class="mini">Найти</button>
+    {% if query %}<a class="mini" href="/cabinet/catalog">Сбросить</a>{% endif %}
+  </form>
+</section>
+
+<section class="card">
+  {% if items %}
+  <table class="cards-table cabinet-catalog">
+    <thead>
+      <tr>
+        <th>Товар</th>
+        <th class="num">Цена</th>
+        <th class="num">Остаток</th>
+        <th class="num">Кратность</th>
+        <th class="num">Заказ</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+      <tr>
+        <td data-label="Товар">
+          <b>{{ item.name }}</b>
+          <div class="muted small"><code>{{ item.sku }}</code> · {{ item.unit }}</div>
+        </td>
+        <td data-label="Цена" class="num">
+          {{ "%.2f"|format(item.price) }} ₽
+          {% if item.personal %}<div><span class="badge s-approved">ваша цена</span></div>{% endif %}
+        </td>
+        <td data-label="Остаток" class="num">
+          {% if item.available is none %}<span class="muted">нет данных</span>
+          {% elif item.available > 0 %}{{ "%g"|format(item.available) }} {{ item.unit }}
+          {% else %}<span class="warn">нет</span>{% endif %}
+        </td>
+        <td data-label="Кратность" class="num">{{ item.pack }} {{ item.unit }}</td>
+        <td data-label="Заказ" class="num">
+          <form method="post" action="/cabinet/cart/add" class="inline cabinet-add">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="sku" value="{{ item.sku }}">
+            <input type="number" name="qty" value="{{ item.pack }}" min="{{ item.pack }}" step="{{ item.pack }}" class="qty-input" {% if not item.can_order %}disabled{% endif %}>
+            <button type="submit" class="primary mini" {% if not item.can_order %}disabled{% endif %}>В корзину</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">Ничего не найдено. Попробуйте другой запрос.</p>
+  {% endif %}
+</section>
+{% endblock %}

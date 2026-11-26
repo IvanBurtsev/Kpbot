@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Кабинет клиента · kpbot{% endblock %}</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="cabinet-body">
+<header class="topbar cabinet-topbar">
+  <a class="brand" href="/cabinet">kpbot <span class="muted">· кабинет клиента</span></a>
+  {% if user %}
+  <nav class="nav cabinet-nav">
+    <a href="/cabinet/catalog"{% if active == "catalog" %} class="active"{% endif %}>Каталог</a>
+    <a href="/cabinet/cart"{% if active == "cart" %} class="active"{% endif %}>Корзина</a>
+    <a href="/cabinet/orders"{% if active == "orders" %} class="active"{% endif %}>Заказы</a>
+    <span class="badge">{{ company.name }}</span>
+    <span class="muted small">{{ "администратор" if is_admin else "менеджер" }}</span>
+    <form method="post" action="/cabinet/logout" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="link" type="submit">Выйти</button>
+    </form>
+  </nav>
+  {% endif %}
+</header>
+<main class="wrap cabinet-wrap">
+  {% block content %}{% endblock %}
+</main>
+<script src="/static/app.js" defer></script>
+</body>
+</html>

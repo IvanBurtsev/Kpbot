@@ -1222,3 +1222,25 @@ tr.needs-attention td {
   .dropzone { flex-basis: 100%; }
   .dz-file { margin-left: 0; }
 }
+/* ---------- кабинет клиента ---------- */
+.cabinet-wrap { max-width: 1120px; }
+.cabinet-login { max-width: 460px; margin: 4vh auto 0; }
+.cabinet-actions { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin-top: 1rem; }
+.cabinet-actions .button, .cabinet-actions button { white-space: nowrap; }
+.cabinet-catalog .qty-input { width: 5rem; }
+.qty-input { width: 5rem; padding: .35rem .4rem; }
+.cabinet-add { display: flex; gap: .35rem; justify-content: flex-end; align-items: center; }
+.cabinet-totals { margin: 1rem 0; display: flex; flex-direction: column; gap: .25rem; align-items: flex-end; }
+.cabinet-totals .total { font-size: 1.2rem; }
+.money-debt { color: #b91c1c; }
+.badge.order-pending { background: #fef3c7; color: #92400e; }
+.badge.order-processing { background: #dbeafe; color: #1e40af; }
+.badge.order-shipped { background: #dcfce7; color: #166534; }
+.badge.order-cancelled { background: #fee2e2; color: #991b1b; }
+@media (max-width: 768px) {
+  .cabinet-actions { flex-direction: column; align-items: stretch; }
+  .cabinet-actions .button, .cabinet-actions button { width: 100%; }
+  .cabinet-add { justify-content: stretch; }
+  .cabinet-add .qty-input { flex: 1; }
+  .cabinet-totals { align-items: stretch; }
+}

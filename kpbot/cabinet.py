@@ -1,0 +1,616 @@
+"""Личный кабинет клиента (B2B-портал покупателя).
+
+Отдельный от админки поставщика вход и сессия: клиент видит только свой каталог,
+корзину и заказы. Мультитенантность — база поставщика на клиента (tenant) плюс
+жёсткая фильтрация по company_id из сессии.
+
+Заказ из корзины превращается в обычную заявку поставщика (RFQ) с готовым
+расчётом, поэтому попадает в ту же очередь, что и письма.
+"""
+
+from __future__ import annotations
+
+import secrets
+import uuid
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+
+from fastapi import APIRouter, Request, status
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from urllib.parse import quote
+
+from .cabinet_store import (
+    ORDER_STATUSES,
+    CabinetStore,
+)
+from .config import settings
+from .domain import LineStatus, PriceItem, RfqLine, price_quote
+from .render import html_to_pdf, render_template
+from .security import (
+    RateLimiter,
+    constant_time_equal,
+    csrf_for,
+    make_user_session,
+    user_from_session,
+    verify_csrf,
+)
+from .store import Store
+
+router = APIRouter(prefix="/cabinet", tags=["cabinet"])
+CLIENT_COOKIE = "kpbot_client_session"
+CSRF_FIELD = "csrf_token"
+
+_limiter = RateLimiter(settings.rate_limit_per_minute)
+
+
+class OrderError(ValueError):
+    """Заказ нельзя оформить: причина показывается покупателю."""
+
+
+def cabinet_store() -> CabinetStore:
+    store = CabinetStore(settings.db_path)
+    store.init_schema()
+    return store
+
+
+# ---------- сессия и контекст ----------
+
+
+def _session(request: Request) -> str | None:
+    return request.cookies.get(CLIENT_COOKIE)
+
+
+def _user(request: Request) -> dict | None:
+    user_id = user_from_session(settings.session_secret, _session(request), settings.session_ttl_seconds)
+    if not user_id:
+        return None
+    return cabinet_store().user_by_id(user_id)
+
+
+def _company(request: Request, user: dict) -> dict | None:
+    return cabinet_store().company(user["company_id"])
+
+
+def _login_redirect(request: Request) -> RedirectResponse:
+    return RedirectResponse("/cabinet/login", status_code=status.HTTP_303_SEE_OTHER)
+
+
+def _csrf(request: Request) -> str:
+    return csrf_for(settings.session_secret, _session(request))
+
+
+def _page(request: Request, template: str, *, code: int = 200, **context) -> HTMLResponse:
+    user = context.pop("user", None) or _user(request)
+    company = context.pop("company", None)
+    if company is None and user:
+        company = _company(request, user)
+    body = render_template(
+        template,
+        request=request,
+        user=user,
+        company=company,
+        csrf_token=_csrf(request),
+        is_admin=bool(user and user["role"] == "client_admin"),
+        **context,
+    )
+    return HTMLResponse(body, status_code=code)
+
+
+def _check_csrf(request: Request, form) -> bool:
+    return verify_csrf(settings.session_secret, _session(request), str(form.get(CSRF_FIELD, "")))
+
+
+def _seller() -> dict:
+    """Реквизиты поставщика для документов: настройки компании из админки."""
+    return Store(settings.db_path).get_settings()
+
+
+def _fmt(value: object) -> Decimal:
+    try:
+        return Decimal(str(value or "0"))
+    except (InvalidOperation, ValueError):
+        return Decimal(0)
+
+
+# ---------- вход ----------
+
+
+@router.get("/login", response_class=HTMLResponse)
+async def login_form(request: Request, flash: str = ""):
+    if _user(request) is not None:
+        return RedirectResponse("/cabinet", status_code=status.HTTP_303_SEE_OTHER)
+    return _page(request, "cabinet/login.html", flash=flash[:200], user=None, company=None)
+
+
+@router.post("/login")
+async def login(request: Request):
+    if not _limiter.allow(f"cabinet-login:{request.client.host if request.client else 'x'}"):
+        return _page(request, "cabinet/login.html", code=429,
+                     error="слишком много попыток, подождите минуту", user=None, company=None)
+    form = await request.form()
+    email = str(form.get("email", "")).strip()
+    password = str(form.get("password", ""))
+    store = cabinet_store()
+    user = store.authenticate(email, password)
+    if user is None:
+        return _page(request, "cabinet/login.html", code=401,
+                     error="неверный логин или пароль", user=None, company=None)
+    company = store.company(user["company_id"])
+    if company is None or company["status"] != "active":
+        return _page(request, "cabinet/login.html", code=403,
+                     error="доступ компании приостановлен, обратитесь к поставщику",
+                     user=None, company=None)
+    token = make_user_session(settings.session_secret, user["id"], settings.session_ttl_seconds)
+    response = RedirectResponse("/cabinet", status_code=status.HTTP_303_SEE_OTHER)
+    response.set_cookie(
+        CLIENT_COOKIE, token, httponly=True, samesite="lax",
+        secure=settings.public_base_url.lower().startswith("https"),
+        max_age=settings.session_ttl_seconds, path="/",
+    )
+    return response
+
+
+@router.post("/logout")
+async def logout(request: Request):
+    response = RedirectResponse("/cabinet/login", status_code=status.HTTP_303_SEE_OTHER)
+    response.delete_cookie(CLIENT_COOKIE, path="/")
+    return response
+
+
+# ---------- дашборд ----------
+
+
+@router.get("", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse)
+async def dashboard(request: Request):
+    user = _user(request)
+    if user is None:
+        return _login_redirect(request)
+    company = _company(request, user)
+    if company is None:
+        return _login_redirect(request)
+    orders = cabinet_store().list_orders(company["id"], limit=3)
+    return _page(
+        request, "cabinet/dashboard.html", user=user, company=company,
+        orders=orders,
+        debt=_fmt(company["debt"]),
+        balance=_fmt(company["balance"]),
+        credit=_fmt(company["credit_limit"]),
+        available=_fmt(company["credit_limit"]) - _fmt(company["debt"]),
+    )
+
+
+# ---------- каталог ----------
+
+
+def _catalog(company_id: str, query: str = "") -> list[dict]:
+    supplier = Store(settings.db_path)
+    cabinet = cabinet_store()
+    personal = cabinet.price_map(company_id)
+    packs = cabinet.pack_map()
+    stock = supplier.stock_map()
+    needle = (query or "").strip().lower()
+    items: list[dict] = []
+    for item in supplier.price_items():
+        if needle and needle not in item.name.lower() and needle not in item.sku.lower():
+            continue
+        price = _fmt(personal.get(item.sku, item.price))
+        stock_row = stock.get(item.sku) or {}
+        available = _fmt(stock_row.get("qty")) if stock_row else None
+        pack = int(packs.get(item.sku, 1) or 1)
+        items.append({
+            "sku": item.sku,
+            "name": item.name,
+            "unit": item.unit,
+            "price": price,
+            "base_price": _fmt(item.price),
+            "personal": item.sku in personal,
+            "pack": pack,
+            "available": available,
+            "can_order": (available is None) or (available >= pack),
+        })
+        if len(items) >= 300:
+            break
+    return items
+
+
+@router.get("/catalog", response_class=HTMLResponse)
+async def catalog(request: Request, q: str = "", flash: str = ""):
+    user = _user(request)
+    if user is None:
+        return _login_redirect(request)
+    company = _company(request, user)
+    items = _catalog(company["id"], q)
+    cart_count = sum(item["qty"] for item in cabinet_store().cart_items(user["id"]))
+    return _page(
+        request, "cabinet/catalog.html", user=user, company=company,
+        items=items, query=q.strip(), flash=flash[:200],
+        cart_count=cart_count,
+    )
+
+
+# ---------- корзина ----------
+
+
+def _cart_context(request: Request, user: dict, company: dict) -> dict:
+    supplier = Store(settings.db_path)
+    cabinet = cabinet_store()
+    by_sku = {item.sku: item for item in supplier.price_items()}
+    personal = cabinet.price_map(company["id"])
+    packs = cabinet.pack_map()
+    stock = supplier.stock_map()
+    rows: list[dict] = []
+    total = Decimal(0)
+    vat = settings.vat_rate
+    for entry in cabinet.cart_items(user["id"]):
+        item = by_sku.get(entry["sku"])
+        if item is None:
+            cabinet.set_cart_qty(user["id"], entry["sku"], 0)
+            continue
+        qty = int(entry["qty"])
+        price = _fmt(personal.get(item.sku, item.price))
+        amount = price * qty
+        total += amount
+        stock_row = stock.get(item.sku) or {}
+        rows.append({
+            "sku": item.sku, "name": item.name, "unit": item.unit,
+            "qty": qty, "price": price, "amount": amount,
+            "pack": int(packs.get(item.sku, 1) or 1),
+            "available": _fmt(stock_row.get("qty")) if stock_row else None,
+        })
+    return {
+        "rows": rows,
+        "subtotal": total,
+        "vat": (total * vat).quantize(Decimal("0.01")),
+        "total": (total * (1 + vat)).quantize(Decimal("0.01")),
+    }
+
+
+@router.get("/cart", response_class=HTMLResponse)
+async def cart(request: Request, flash: str = "", error: str = ""):
+    user = _user(request)
+    if user is None:
+        return _login_redirect(request)
+    company = _company(request, user)
+    context = _cart_context(request, user, company)
+    return _page(
+        request, "cabinet/cart.html", user=user, company=company,
+        flash=flash[:200], error=error[:300], **context,
+    )
+
+
+@router.post("/cart/add")
+async def cart_add(request: Request):
+    user = _user(request)
+    if user is None:
+        return _login_redirect(request)
+    form = await request.form()
+    if not _check_csrf(request, form):
+        return PlainTextResponse("csrf failed", status_code=403)
+    sku = str(form.get("sku", ""))
+    try:
+        qty = int(str(form.get("qty", "1")))
+    except ValueError:
+        qty = 0
+    cabinet = cabinet_store()
+    pack = cabinet.pack_map().get(sku, 1)
+    qty = max(pack, ((qty + pack - 1) // pack) * pack)
+    cabinet.set_cart_qty(user["id"], sku, cabinet.cart_qty(user["id"], sku) + qty)
+    return RedirectResponse(f"/cabinet/catalog?flash={quote('добавлено в корзину')}",
+                            status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/cart/qty")
+async def cart_qty(request: Request):
+    user = _user(request)
+    if user is None:
+        return _login_redirect(request)
+    form = await request.form()
+    if not _check_csrf(request, form):
+        return PlainTextResponse("csrf failed", status_code=403)
+    sku = str(form.get("sku", ""))
+    try:
+        qty = int(str(form.get("qty", "0")))
+    except ValueError:
+        qty = 0
+    cabinet_store().set_cart_qty(user["id"], sku, qty)
+    return RedirectResponse("/cabinet/cart", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/cart/remove")
+async def cart_remove(request: Request):
+    user = _user(request)
+    if user is None:
+        return _login_redirect(request)
+    form = await request.form()
+    if not _check_csrf(request, form):
+        return PlainTextResponse("csrf failed", status_code=403)
+    cabinet_store().set_cart_qty(user["id"], str(form.get("sku", "")), 0)
+    return RedirectResponse("/cabinet/cart", status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ---------- оформление заказа ----------
+
+
+def _validate_order(user: dict, company: dict) -> tuple[list[dict], Decimal, Decimal]:
+    supplier = Store(settings.db_path)
+    cabinet = cabinet_store()
+    by_sku = {item.sku: item for item in supplier.price_items()}
+    personal = cabinet.price_map(company["id"])
+    packs = cabinet.pack_map()
+    stock = supplier.stock_map()
+    rows: list[dict] = []
+    subtotal = Decimal(0)
+    for entry in cabinet.cart_items(user["id"]):
+        sku, qty = entry["sku"], int(entry["qty"])
+        item = by_sku.get(sku)
+        if item is None:
+            raise OrderError(f"позиция {sku} больше не в прайсе — удалите её из корзины")
+        pack = int(packs.get(sku, 1) or 1)
+        if qty <= 0 or qty % pack:
+            raise OrderError(f"{item.name}: заказ кратен {pack} {item.unit}")
+        if stock:
+            if sku not in stock:
+                raise OrderError(f"{item.name}: нет на складе")
+            available = _fmt(stock[sku].get("qty"))
+            if qty > available:
+                raise OrderError(f"{item.name}: на складе только {available:g} {item.unit}")
+        price = _fmt(personal.get(sku, item.price))
+        amount = price * qty
+        subtotal += amount
+        rows.append({
+            "sku": sku, "name": item.name, "unit": item.unit, "qty": qty,
+            "price": price, "amount": amount,
+        })
+    if not rows:
+        raise OrderError("корзина пуста")
+    vat = (subtotal * settings.vat_rate).quantize(Decimal("0.01"))
+    return rows, subtotal, subtotal + vat
+
+
+def _rfq_from_order(user: dict, company: dict, rows: list[dict], order_number: str) -> str:
+    """Заказ ЛК → обычная заявка поставщика с готовым расчётом."""
+    store = Store(settings.db_path)
+    rfq_id = uuid.uuid4().hex
+    lines = [
+        RfqLine(
+            idx=index, raw_text=f"{row['name']} — {row['qty']} {row['unit']}",
+            qty=Decimal(row["qty"]), unit=row["unit"],
+            matched_sku=row["sku"], match_score=1.0, matched_name=row["name"],
+            status=LineStatus.OK,
+        )
+        for index, row in enumerate(rows, start=1)
+    ]
+    store.save_rfq(
+        rfq_id=rfq_id,
+        message_id=f"cabinet:{uuid.uuid4().hex}",
+        sender=f"{company['name']} <{user['email']}>",
+        subject=f"Заказ из ЛК {order_number}",
+        received_at=datetime.now(timezone.utc).isoformat(),
+        status="draft_ready",
+        raw_text="\n".join(line.raw_text for line in lines),
+        lines=lines,
+    )
+    catalogue = {
+        row["sku"]: PriceItem(sku=row["sku"], name=row["name"], unit=row["unit"], price=row["price"])
+        for row in rows
+    }
+    quote = price_quote(lines, catalogue, vat_rate=settings.vat_rate)
+    store.save_quote(uuid.uuid4().hex, rfq_id, quote)
+    store.log(rfq_id, "cabinet_order", f"client:{user['id']}", order_number)
+    return rfq_id
+
+
+@router.post("/orders")
+async def create_order(request: Request):
+    user = _user(request)
+    if user is None:
+        return _login_redirect(request)
+    company = _company(request, user)
+    if company is None or company["status"] != "active":
+        return RedirectResponse(f"/cabinet/cart?error={quote('компания заблокирована')}",
+                                status_code=status.HTTP_303_SEE_OTHER)
+    form = await request.form()
+    if not _check_csrf(request, form):
+        return PlainTextResponse("csrf failed", status_code=403)
+    comment = str(form.get("comment", "")).strip()[:500]
+    try:
+        rows, subtotal, total = _validate_order(user, company)
+    except OrderError as exc:
+        return RedirectResponse(f"/cabinet/cart?error={quote(str(exc))}",
+                                status_code=status.HTTP_303_SEE_OTHER)
+
+    cabinet = cabinet_store()
+    number = cabinet.next_number()
+    rfq_id = _rfq_from_order(user, company, rows, number)
+    order = cabinet.create_order(
+        company_id=company["id"], created_by=user["id"], number=number,
+        comment=comment, total=str(total),
+        lines=[
+            {**row, "price": str(row["price"]), "amount": str(row["amount"])}
+            for row in rows
+        ],
+        rfq_id=rfq_id,
+    )
+    cabinet.clear_cart(user["id"])
+    return RedirectResponse(f"/cabinet/orders/{order['id']}?flash={quote('заявка отправлена поставщику')}",
+                            status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ---------- заказы ----------
+
+
+@router.get("/orders", response_class=HTMLResponse)
+async def orders(request: Request):
+    user = _user(request)
+    if user is None:
+        return _login_redirect(request)
+    company = _company(request, user)
+    return _page(request, "cabinet/orders.html", user=user, company=company,
+                 orders=cabinet_store().list_orders(company["id"]))
+
+
+@router.get("/orders/{order_id}", response_class=HTMLResponse)
+async def order_page(request: Request, order_id: str, flash: str = ""):
+    user = _user(request)
+    if user is None:
+        return _login_redirect(request)
+    company = _company(request, user)
+    order = cabinet_store().order(order_id)
+    if order is None or order["company_id"] != company["id"]:
+        return _page(request, "cabinet/orders.html", code=404, user=user, company=company,
+                     orders=cabinet_store().list_orders(company["id"]), error="заказ не найден",
+                     flash="")
+    return _page(request, "cabinet/order.html", user=user, company=company,
+                 order=order, flash=flash[:200], seller=_seller())
+
+
+DOC_TITLES = {
+    "invoice": "Счёт на оплату",
+    "kp": "Коммерческое предложение",
+    "upd": "Универсальный передаточный документ",
+}
+
+
+@router.get("/orders/{order_id}/doc/{kind}")
+async def order_doc(request: Request, order_id: str, kind: str):
+    user = _user(request)
+    if user is None:
+        return _login_redirect(request)
+    company = _company(request, user)
+    order = cabinet_store().order(order_id)
+    if order is None or order["company_id"] != company["id"]:
+        return PlainTextResponse("заказ не найден", status_code=404)
+    kind = kind if kind in DOC_TITLES else "invoice"
+    seller = _seller()
+    body = render_template(
+        "cabinet/doc.html", order=order, company=company, seller=seller,
+        title=DOC_TITLES[kind], kind=kind,
+    )
+    html_path = settings.out_dir / f"cabinet-{order_id}-{kind}.html"
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text(body, encoding="utf-8")
+    pdf_path = html_path.with_suffix(".pdf")
+    ok, _reason = html_to_pdf(html_path, pdf_path) if settings.pdf_enabled else (False, "off")
+    if ok and pdf_path.exists():
+        return Response(content=pdf_path.read_bytes(), media_type="application/pdf",
+                        headers={"Content-Disposition": f'attachment; filename="{kind}-{order_id[:8]}.pdf"'})
+    return HTMLResponse(body, headers={"Content-Disposition": f'inline; filename="{kind}-{order_id[:8]}.html"'})
+
+
+@router.get("/documents/act")
+async def reconciliation_act(request: Request):
+    """Акт сверки по заказам компании — для client_admin."""
+    user = _user(request)
+    if user is None:
+        return _login_redirect(request)
+    company = _company(request, user)
+    if user["role"] != "client_admin":
+        return PlainTextResponse("акт сверки доступен администратору компании", status_code=403)
+    orders = cabinet_store().list_orders(company["id"], limit=500)
+    body = render_template("cabinet/act.html", company=company, orders=orders,
+                           seller=_seller(), total=sum(_fmt(order["total"]) for order in orders))
+    return HTMLResponse(body, headers={"Content-Disposition": 'inline; filename="act.html"'})
+
+
+@router.post("/orders/{order_id}/repeat")
+async def repeat_order(request: Request, order_id: str):
+    """Повторить заказ: позиции возвращаются в корзину."""
+    user = _user(request)
+    if user is None:
+        return _login_redirect(request)
+    company = _company(request, user)
+    order = cabinet_store().order(order_id)
+    if order is None or order["company_id"] != company["id"]:
+        return RedirectResponse("/cabinet/orders", status_code=status.HTTP_303_SEE_OTHER)
+    cabinet = cabinet_store()
+    packs = cabinet.pack_map()
+    for line in order["lines"]:
+        step = max(1, int(packs.get(line["sku"], 1) or 1))
+        qty = int(line["qty"])
+        qty = max(step, ((qty + step - 1) // step) * step)
+        cabinet.set_cart_qty(user["id"], line["sku"], cabinet.cart_qty(user["id"], line["sku"]) + qty)
+    return RedirectResponse(
+        f"/cabinet/cart?flash={quote('позиции последнего заказа в корзине')}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+# ---------- API-заглушки для 1С ----------
+
+
+def _api_allowed(request: Request) -> bool:
+    key = request.headers.get("X-API-Key", "")
+    return bool(key) and constant_time_equal(key, settings.api_key)
+
+
+@router.get("/api/1c/stock")
+async def api_stock(request: Request):
+    if not _api_allowed(request):
+        return PlainTextResponse("unauthorized", status_code=401)
+    stock = Store(settings.db_path).stock_map()
+    return JSONResponse([{"sku": sku, **row} for sku, row in stock.items()])
+
+
+@router.get("/api/1c/prices")
+async def api_prices(request: Request):
+    if not _api_allowed(request):
+        return PlainTextResponse("unauthorized", status_code=401)
+    items = Store(settings.db_path).price_items()
+    return JSONResponse([{"sku": i.sku, "name": i.name, "unit": i.unit, "price": str(i.price)} for i in items])
+
+
+@router.get("/api/1c/orders")
+async def api_orders(request: Request):
+    if not _api_allowed(request):
+        return PlainTextResponse("unauthorized", status_code=401)
+    return JSONResponse([
+        {"id": order["id"], "number": order["number"], "company": order["company_name"],
+         "status": order["status"], "total": order["total"], "created_at": order["created_at"]}
+        for order in cabinet_store().all_orders()
+    ])
+
+
+@router.post("/api/1c/orders/{order_id}/status")
+async def api_order_status(request: Request, order_id: str):
+    if not _api_allowed(request):
+        return PlainTextResponse("unauthorized", status_code=401)
+    new_status = ""
+    if "application/json" in request.headers.get("content-type", ""):
+        try:
+            payload = await request.json()
+            new_status = str(payload.get("status", ""))
+        except Exception:  # noqa: BLE001
+            new_status = ""
+    else:
+        form = await request.form()
+        new_status = str(form.get("status", "")) if form else ""
+    if new_status not in ORDER_STATUSES:
+        return JSONResponse({"ok": False, "error": "неизвестный статус"}, status_code=422)
+    cabinet_store().update_status(order_id, new_status)
+    return JSONResponse({"ok": True, "status": new_status})
+
+
+@router.post("/api/1c/settlements")
+async def api_settlements(request: Request):
+    if not _api_allowed(request):
+        return PlainTextResponse("unauthorized", status_code=401)
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": "нужен JSON"}, status_code=422)
+    company_id = str(payload.get("company_id", ""))
+    if not company_id:
+        return JSONResponse({"ok": False, "error": "нужен company_id"}, status_code=422)
+    store = cabinet_store()
+    if store.company(company_id) is None:
+        return JSONResponse({"ok": False, "error": "компания не найдена"}, status_code=404)
+    store.update_finance(
+        company_id,
+        balance=payload.get("balance"),
+        credit_limit=payload.get("credit_limit"),
+        debt=payload.get("debt"),
+        status=payload.get("status"),
+    )
+    return JSONResponse({"ok": True})

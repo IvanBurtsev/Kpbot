@@ -1,0 +1,48 @@
+{% extends "cabinet/base.html" %}
+{% block title %}Заказ {{ order.number }} · кабинет клиента{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/cabinet/orders">← Все заказы</a></p>
+<section class="card">
+  <h1>Заказ {{ order.number }}</h1>
+  <p>
+    <span class="badge order-{{ order.status }}">{{ order.status_label }}</span>
+    <span class="muted small">от {{ order.created_at[:16].replace("T", " ") }} · {{ company.name }}</span>
+  </p>
+  {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
+  {% if order.comment %}<p class="muted small">Комментарий: {{ order.comment }}</p>{% endif %}
+</section>
+
+<section class="card">
+  <h2>Состав заказа</h2>
+  <table class="cards-table">
+    <thead><tr><th>Товар</th><th class="num">Кол-во</th><th class="num">Цена</th><th class="num">Сумма</th></tr></thead>
+    <tbody>
+      {% for line in order.lines %}
+      <tr>
+        <td data-label="Товар"><b>{{ line.name }}</b><div class="muted small"><code>{{ line.sku }}</code></div></td>
+        <td data-label="Кол-во" class="num">{{ line.qty }}</td>
+        <td data-label="Цена" class="num">{{ "%.2f"|format(line.price|float) }} ₽</td>
+        <td data-label="Сумма" class="num">{{ "%.2f"|format(line.amount|float) }} ₽</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="cabinet-totals">
+    <div class="total"><span>Итого с НДС</span> <b>{{ "%.2f"|format(order.total|float) }} ₽</b></div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Документы</h2>
+  <div class="row cabinet-actions">
+    <a class="button" href="/cabinet/orders/{{ order.id }}/doc/kp">КП</a>
+    <a class="button" href="/cabinet/orders/{{ order.id }}/doc/invoice">Счёт</a>
+    <a class="button" href="/cabinet/orders/{{ order.id }}/doc/upd">УПД</a>
+    <form method="post" action="/cabinet/orders/{{ order.id }}/repeat" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="primary">Повторить заказ</button>
+    </form>
+  </div>
+  <p class="muted small">PDF формируется на сервере (Chrome); если его нет — откроется версия для печати.</p>
+</section>
+{% endblock %}

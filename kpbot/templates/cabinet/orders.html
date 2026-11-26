@@ -1,0 +1,29 @@
+{% extends "cabinet/base.html" %}
+{% block title %}Заказы · кабинет клиента{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>История заказов</h1>
+  <p class="muted small">Статусы: Ожидает → В обработке → Отгружен. Отменён — если поставщик или вы отменили заказ.</p>
+</section>
+<section class="card">
+  {% if orders %}
+  <table class="cards-table">
+    <thead><tr><th>Номер</th><th>Дата</th><th class="num">Позиций</th><th class="num">Сумма</th><th>Статус</th><th></th></tr></thead>
+    <tbody>
+      {% for order in orders %}
+      <tr>
+        <td data-label="Номер"><a href="/cabinet/orders/{{ order.id }}">{{ order.number }}</a></td>
+        <td data-label="Дата" class="small muted">{{ order.created_at[:16].replace("T", " ") }}</td>
+        <td data-label="Позиций" class="num">{{ order.line_count }}</td>
+        <td data-label="Сумма" class="num">{{ "%.2f"|format(order.total|float) }} ₽</td>
+        <td data-label="Статус"><span class="badge order-{{ order.status }}">{{ order.status_label }}</span></td>
+        <td><a class="mini" href="/cabinet/orders/{{ order.id }}">Документы</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">Заказов пока нет. <a href="/cabinet/catalog">Собрать первый заказ</a>.</p>
+  {% endif %}
+</section>
+{% endblock %}

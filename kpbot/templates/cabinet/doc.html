@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>{{ title }} {{ order.number }}</title>
+<style>
+  body { font: 14px/1.45 "Segoe UI", Arial, sans-serif; color:#111827; margin: 32px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .muted { color:#6b7280; }
+  .row { display:flex; justify-content:space-between; gap:24px; }
+  table { width:100%; border-collapse:collapse; margin-top:16px; }
+  th, td { border-bottom:1px solid #e5e7eb; padding:8px 6px; text-align:left; }
+  th { background:#f3f4f6; font-weight:600; }
+  td.num, th.num { text-align:right; white-space:nowrap; }
+  .total { font-size:16px; font-weight:700; text-align:right; margin-top:12px; }
+  .sign { margin-top:48px; display:flex; justify-content:space-between; gap:40px; }
+  .sign div { flex:1; border-top:1px solid #9ca3af; padding-top:6px; }
+  @media print { body { margin: 12mm; } }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div>
+      <h1>{{ seller.get("company_name") or "Поставщик" }}</h1>
+      <div class="muted">ИНН {{ seller.get("company_inn") or "—" }} · КПП {{ seller.get("company_kpp") or "—" }}</div>
+      <div class="muted">{{ seller.get("company_address") or "" }}</div>
+      <div class="muted">{{ seller.get("company_phone") or "" }} · {{ seller.get("company_email") or "" }}</div>
+    </div>
+    <div style="text-align:right">
+      <h1>{{ title }}</h1>
+      <div>№ {{ order.number }}</div>
+      <div class="muted">от {{ order.created_at[:10] }}</div>
+    </div>
+  </div>
+
+  <p style="margin-top:24px">
+    <b>Покупатель:</b> {{ company.name }}<br>
+    <span class="muted">ИНН {{ company.inn or "—" }} · КПП {{ company.kpp or "—" }}</span><br>
+    <span class="muted">Заказ: {{ order.number }} · статус: {{ order.status_label }}</span>
+  </p>
+
+  <table>
+    <thead><tr><th>№</th><th>Товар</th><th class="num">Кол-во</th><th class="num">Цена, ₽</th><th class="num">Сумма, ₽</th></tr></thead>
+    <tbody>
+      {% for line in order.lines %}
+      <tr>
+        <td>{{ loop.index }}</td>
+        <td>{{ line.name }} <span class="muted">({{ line.sku }})</span></td>
+        <td class="num">{{ line.qty }}</td>
+        <td class="num">{{ "%.2f"|format(line.price|float) }}</td>
+        <td class="num">{{ "%.2f"|format(line.amount|float) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="total">Итого с НДС: {{ "%.2f"|format(order.total|float) }} ₽</div>
+  {% if order.comment %}<p class="muted">Комментарий: {{ order.comment }}</p>{% endif %}
+
+  <div class="sign">
+    <div>Поставщик<br>{{ seller.get("company_signer") or "" }}</div>
+    <div>Покупатель<br>{{ company.name }}</div>
+  </div>
+</body>
+</html>

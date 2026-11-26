@@ -1,0 +1,59 @@
+{% extends "cabinet/base.html" %}
+{% block title %}Корзина · кабинет клиента{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Корзина</h1>
+  {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  {% if rows %}
+  <table class="cards-table">
+    <thead><tr><th>Товар</th><th class="num">Цена</th><th class="num">Кол-во</th><th class="num">Сумма</th><th></th></tr></thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td data-label="Товар">
+          <b>{{ row.name }}</b>
+          <div class="muted small"><code>{{ row.sku }}</code> · кратно {{ row.pack }} {{ row.unit }}</div>
+        </td>
+        <td data-label="Цена" class="num">{{ "%.2f"|format(row.price) }} ₽</td>
+        <td data-label="Кол-во" class="num">
+          <form method="post" action="/cabinet/cart/qty" class="inline cabinet-add">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="sku" value="{{ row.sku }}">
+            <input type="number" name="qty" value="{{ row.qty }}" min="{{ row.pack }}" step="{{ row.pack }}" class="qty-input">
+            <button type="submit" class="mini">ОК</button>
+          </form>
+        </td>
+        <td data-label="Сумма" class="num">{{ "%.2f"|format(row.amount) }} ₽</td>
+        <td>
+          <form method="post" action="/cabinet/cart/remove" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="sku" value="{{ row.sku }}">
+            <button type="submit" class="mini danger">Убрать</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="cabinet-totals">
+    <div><span class="muted">Без НДС</span> <b>{{ "%.2f"|format(subtotal) }} ₽</b></div>
+    <div><span class="muted">НДС</span> <b>{{ "%.2f"|format(vat) }} ₽</b></div>
+    <div class="total"><span>Итого с НДС</span> <b>{{ "%.2f"|format(total) }} ₽</b></div>
+  </div>
+
+  <form method="post" action="/cabinet/orders" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Комментарий к заказу
+      <textarea name="comment" maxlength="500" rows="3" placeholder="например: нужна доставка до 12:00"></textarea>
+    </label>
+    <button class="primary" type="submit">Отправить заявку поставщику</button>
+    <span class="muted small">Заявка попадёт в очередь поставщика; менеджер подтвердит и выставит документы.</span>
+  </form>
+  {% else %}
+  <p class="empty">Корзина пуста. <a href="/cabinet/catalog">Перейти в каталог</a>.</p>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Акт сверки · {{ company.name }}</title>
+<style>
+  body { font: 14px/1.45 "Segoe UI", Arial, sans-serif; color:#111827; margin: 32px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .muted { color:#6b7280; }
+  .row { display:flex; justify-content:space-between; gap:24px; }
+  table { width:100%; border-collapse:collapse; margin-top:16px; }
+  th, td { border-bottom:1px solid #e5e7eb; padding:8px 6px; text-align:left; }
+  th { background:#f3f4f6; }
+  td.num, th.num { text-align:right; white-space:nowrap; }
+  .total { font-size:16px; font-weight:700; text-align:right; margin-top:12px; }
+  .sign { margin-top:48px; display:flex; justify-content:space-between; gap:40px; }
+  .sign div { flex:1; border-top:1px solid #9ca3af; padding-top:6px; }
+  @media print { body { margin: 12mm; } }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div>
+      <h1>{{ seller.get("company_name") or "Поставщик" }}</h1>
+      <div class="muted">ИНН {{ seller.get("company_inn") or "—" }}</div>
+    </div>
+    <div style="text-align:right">
+      <h1>Акт сверки взаиморасчётов</h1>
+      <div class="muted">на {{ orders[0].created_at[:10] if orders else "" }}</div>
+    </div>
+  </div>
+  <p style="margin-top:20px"><b>Покупатель:</b> {{ company.name }} · ИНН {{ company.inn or "—" }}</p>
+  <table>
+    <thead><tr><th>Номер заказа</th><th>Дата</th><th>Статус</th><th class="num">Сумма, ₽</th></tr></thead>
+    <tbody>
+      {% for order in orders %}
+      <tr>
+        <td>{{ order.number }}</td>
+        <td>{{ order.created_at[:10] }}</td>
+        <td>{{ order.status_label }}</td>
+        <td class="num">{{ "%.2f"|format(order.total|float) }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">заказов нет</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="total">Итого: {{ "%.2f"|format(total) }} ₽</div>
+  <p class="muted" style="margin-top:12px">
+    Баланс: {{ "%.2f"|format(company.balance|float) }} ₽ · долг: {{ "%.2f"|format(company.debt|float) }} ₽ ·
+    кредитный лимит: {{ "%.2f"|format(company.credit_limit|float) }} ₽
+  </p>
+  <div class="sign">
+    <div>Поставщик</div>
+    <div>Покупатель</div>
+  </div>
+</body>
+</html>

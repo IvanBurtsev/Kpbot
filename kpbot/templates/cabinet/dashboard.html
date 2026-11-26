@@ -1,0 +1,68 @@
+{% extends "cabinet/base.html" %}
+{% block title %}Главная · кабинет клиента{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Здравствуйте, {{ company.name }}</h1>
+  <p class="muted small">Заказы, каталог и документы — в одном месте. Цены и остатки обновляет поставщик.</p>
+
+  {% if is_admin %}
+  <div class="stats">
+    <div class="stat">
+      <div class="label">Баланс</div>
+      <div class="value">{{ "%.2f"|format(balance) }} <small>₽</small></div>
+    </div>
+    <div class="stat">
+      <div class="label">Кредитный лимит</div>
+      <div class="value">{{ "%.2f"|format(credit) }} <small>₽</small></div>
+    </div>
+    <div class="stat">
+      <div class="label">Долг</div>
+      <div class="value {{ 'money-debt' if debt > 0 else '' }}">{{ "%.2f"|format(debt) }} <small>₽</small></div>
+    </div>
+    <div class="stat">
+      <div class="label">Доступно</div>
+      <div class="value">{{ "%.2f"|format(available) }} <small>₽</small></div>
+      <div class="muted small">статус: {{ "активен" if company.status == "active" else "заблокирован" }}</div>
+    </div>
+  </div>
+  <div class="row cabinet-actions">
+    {% if orders %}
+    <form method="post" action="/cabinet/orders/{{ orders[0].id }}/repeat" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="primary">Повторить последний заказ</button>
+    </form>
+    {% endif %}
+    <a class="button" href="/cabinet/documents/act">Скачать акт сверки</a>
+    <a class="button" href="/cabinet/catalog">Перейти в каталог</a>
+  </div>
+  {% else %}
+  <p class="muted small">Финансы и акт сверки видит администратор компании.</p>
+  <div class="row cabinet-actions">
+    <a class="button primary" href="/cabinet/catalog">Перейти в каталог</a>
+  </div>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Последние заказы</h2>
+  {% if orders %}
+  <table class="cards-table">
+    <thead><tr><th>Номер</th><th>Дата</th><th>Статус</th><th class="num">Сумма</th><th></th></tr></thead>
+    <tbody>
+      {% for order in orders %}
+      <tr>
+        <td data-label="Номер"><a href="/cabinet/orders/{{ order.id }}">{{ order.number }}</a></td>
+        <td data-label="Дата" class="small muted">{{ order.created_at[:16].replace("T", " ") }}</td>
+        <td data-label="Статус"><span class="badge order-{{ order.status }}">{{ order.status_label }}</span></td>
+        <td data-label="Сумма" class="num">{{ "%.2f"|format(order.total|float) }} ₽</td>
+        <td><a class="mini" href="/cabinet/orders/{{ order.id }}">Открыть</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p><a class="mini" href="/cabinet/orders">Все заказы</a></p>
+  {% else %}
+  <p class="empty">Заказов пока нет. Начните с каталога.</p>
+  {% endif %}
+</section>
+{% endblock %}

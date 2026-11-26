@@ -14,6 +14,8 @@
     <a href="/ui/admin?tab=learned" {% if tab == "learned" %}class="active"{% endif %}>Обучение</a>
     <a href="/ui/admin?tab=events" {% if tab == "events" %}class="active"{% endif %}>Журнал</a>
     <a href="/ui/admin?tab=company" {% if tab == "company" %}class="active"{% endif %}>Компания</a>
+    <a href="/ui/admin?tab=clients" {% if tab == "clients" %}class="active"{% endif %}>Клиенты ЛК</a>
+    <a href="/ui/admin?tab=orders" {% if tab == "orders" %}class="active"{% endif %}>Заказы ЛК</a>
   </nav>
 
   {% if tab == "state" %}
@@ -95,6 +97,112 @@
     </select>
     <button type="submit" class="primary mini">Создать</button>
   </form>
+
+  {% elif tab == "clients" %}
+  <h2>Клиенты ЛК</h2>
+  <p class="muted small">
+    Компании-покупатели и их доступ в личный кабинет. Пароль показывается один раз —
+    передайте его клиенту. Блокировка компании запрещает вход.
+  </p>
+  <table class="cards-table">
+    <thead><tr><th>Компания</th><th>ИНН</th><th>Статус</th><th>Пользователи</th><th>Действия</th></tr></thead>
+    <tbody>
+      {% for c in clients %}
+      <tr>
+        <td data-label="Компания"><b>{{ c.name }}</b></td>
+        <td data-label="ИНН">{{ c.inn or "—" }}</td>
+        <td data-label="Статус">
+          <span class="badge {{ 's-ok' if c.status == 'active' else 's-rejected' }}">
+            {{ "активен" if c.status == "active" else "заблокирован" }}
+          </span>
+        </td>
+        <td data-label="Пользователи" class="small">
+          {% for u in c.users %}{{ u.email }} · {{ u.role }}<br>{% else %}<span class="muted">нет</span>{% endfor %}
+        </td>
+        <td data-label="Действия">
+          <div class="form-actions">
+            <form method="post" action="/ui/admin/clients/{{ c.id }}/status" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="status" value="{{ 'blocked' if c.status == 'active' else 'active' }}">
+              <button type="submit" class="mini">{{ "Заблокировать" if c.status == "active" else "Разблокировать" }}</button>
+            </form>
+            <form method="post" action="/ui/admin/clients/{{ c.id }}/users" class="line-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="email" name="email" placeholder="e-mail" required>
+              <select name="role">
+                <option value="client_manager">client_manager</option>
+                <option value="client_admin">client_admin</option>
+              </select>
+              <input type="text" name="password" placeholder="пароль (пусто — сгенерируем)">
+              <button type="submit" class="mini">Добавить</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">клиентов пока нет</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h3>Новая компания</h3>
+  <form method="post" action="/ui/admin/clients" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="row">
+      <input type="text" name="name" placeholder="название компании" required>
+      <input type="text" name="inn" placeholder="ИНН">
+      <input type="text" name="kpp" placeholder="КПП">
+    </div>
+    <div class="row">
+      <input type="email" name="email" placeholder="e-mail администратора" required>
+      <input type="text" name="user_name" placeholder="имя">
+      <select name="role">
+        <option value="client_admin">client_admin</option>
+        <option value="client_manager">client_manager</option>
+      </select>
+      <input type="text" name="password" placeholder="пароль (пусто — сгенерируем)">
+    </div>
+    <button type="submit" class="primary">Создать клиента и доступ</button>
+    <span class="muted small">Клиент сразу сможет войти на /cabinet.</span>
+  </form>
+
+  {% elif tab == "orders" %}
+  <h2>Заказы из ЛК</h2>
+  <p class="muted small">
+    Заказ покупателя создаёт заявку в очереди поставщика (ссылка «заявка»).
+    Статус здесь — то, что видит клиент.
+  </p>
+  <table class="cards-table">
+    <thead><tr><th>Номер</th><th>Компания</th><th>Дата</th><th class="num">Позиций</th><th class="num">Сумма</th><th>Статус</th><th></th></tr></thead>
+    <tbody>
+      {% for order in client_orders %}
+      <tr>
+        <td data-label="Номер"><b>{{ order.number }}</b></td>
+        <td data-label="Компания">{{ order.company_name }}</td>
+        <td data-label="Дата" class="small muted">{{ order.created_at[:16].replace("T", " ") }}</td>
+        <td data-label="Позиций" class="num">{{ order.line_count }}</td>
+        <td data-label="Сумма" class="num">{{ "%.2f"|format(order.total|float) }} ₽</td>
+        <td data-label="Статус"><span class="badge order-{{ order.status }}">{{ order.status_label }}</span></td>
+        <td data-label="Действия">
+          <div class="form-actions">
+            {% if order.rfq_id %}<a class="mini" href="/ui/rfq/{{ order.rfq_id }}">заявка</a>{% endif %}
+            <form method="post" action="/ui/admin/orders/{{ order.id }}/status" class="line-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <select name="status">
+                {% for status in order_statuses %}
+                <option value="{{ status }}" {% if status == order.status %}selected{% endif %}>{{ order_labels.get(status, status) }}</option>
+                {% endfor %}
+              </select>
+              <button type="submit" class="mini">Статус</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="muted">заказов из ЛК пока нет</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
 
   {% elif tab == "learned" %}
   <h2>Что сервис выучил</h2>

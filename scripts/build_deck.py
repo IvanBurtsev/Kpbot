@@ -236,7 +236,7 @@ def build(prs: Presentation) -> None:
          size=24, color=RGBColor(0xCB, 0xD5, 0xE1))
     text(slide, 0.9, 4.35, 9.5, 0.6, "Для оптовиков и производств: разбор почты, прайс, НДС, КП, 1С.",
          size=14, color=RGBColor(0x94, 0xA3, 0xB8))
-    for index, (value, label) in enumerate((("265", "автотестов"), ("2,2 с", "на письмо"), ("1С", "OData на живой базе"), ("10 000", "позиций прайса"))):
+    for index, (value, label) in enumerate((("279", "автотестов"), ("2,2 с", "на письмо"), ("1С", "OData на живой базе"), ("10 000", "позиций прайса"))):
         x = 0.9 + index * 3.0
         text(slide, x, 5.5, 2.8, 0.55, value, size=30, bold=True, color=WHITE)
         text(slide, x, 6.05, 2.8, 0.35, label, size=11, color=RGBColor(0x94, 0xA3, 0xB8))
@@ -332,7 +332,28 @@ def build(prs: Presentation) -> None:
          size=11, color=INK_SOFT, spacing=1.2)
     footer(slide, 6)
 
-    # 7. 1С
+    # 7. личный кабинет
+    slide = new_slide(prs)
+    header(slide, "Личный кабинет", "Покупатель заказывает сам — без писем и Excel",
+           "Отдельный вход /cabinet: каталог, корзина, история и документы. Данные изолированы по компании.")
+    cards = (
+        ("Каталог", "персональные цены,\nостатки, кратность,\nпоиск по артикулу"),
+        ("Заказ", "корзина проверяет остаток\nи кратность; заявка уходит\nв очередь поставщика"),
+        ("Роли", "client_admin видит финансы,\nclient_manager — только\nкаталог и заказы"),
+        ("Документы", "КП, счёт, УПД и акт\nсверки: PDF или версия\nдля печати"),
+    )
+    for index, (title, detail) in enumerate(cards):
+        x = 0.85 + index * 3.0
+        rect(slide, x, 2.45, 2.8, 2.35, WHITE, line=LINE, radius=0.08)
+        text(slide, x + 0.25, 2.65, 2.3, 0.4, title, size=16, bold=True, color=ACCENT)
+        text(slide, x + 0.25, 3.15, 2.3, 1.5, detail, size=10.5, color=INK_SOFT, spacing=1.15)
+    rect(slide, 0.85, 5.1, 11.6, 0.85, ACCENT_SOFT, radius=0.08)
+    text(slide, 1.1, 5.25, 11.1, 0.55,
+         "1С: остатки, цены, статусы заказов и взаиморасчёты — через API-заглушки; заказ из ЛК создаёт обычную заявку поставщика.",
+         size=12, bold=True, color=INK)
+    footer(slide, 7)
+
+    # 8. 1С
     slide = new_slide(prs)
     header(slide, "1С", "Что проверено на живой базе, а что — нет",
            "1С:Бухгалтерия на Fresh, OData, пользователь с ограниченными правами. Проверка 26.11.2026.")
@@ -353,14 +374,14 @@ def build(prs: Presentation) -> None:
     text(slide, 1.1, 6.27, 11.1, 0.45,
          "Вывод: файл «Для 1С» — сегодня; прямая запись — HTTP-сервис (шаблон в deploy/1c) или база УТ/ERP.",
          size=12, bold=True, color=INK)
-    footer(slide, 7)
+    footer(slide, 8)
 
     # 8. надёжность
     slide = new_slide(prs)
     header(slide, "Надёжность", "Приёмка: что уже проверено",
-           "265 автотестов, изолированный прогон, ноль внешних вызовов.")
+           "279 автотестов, изолированный прогон, ноль внешних вызовов.")
     columns = (
-        ("Тесты", ("265 тестов, 49 секунд", "боевой .env не читается", "сеть в тестах запрещена", "сквозной HTTP-сценарий")),
+        ("Тесты", ("279 тестов, 49 секунд", "боевой .env не читается", "сеть в тестах запрещена", "сквозной HTTP-сценарий")),
         ("Безопасность", ("параметризованный SQL", "CSRF, CSP, X-Frame-Options", "шифрование паролей ящиков", "ключи не попадают в логи")),
         ("Эксплуатация", ("бэкап + проверка восстановления", "сторож: healthz и журнал", "doctor.py перед демо", "smoke.py после деплоя")),
     )
@@ -372,7 +393,7 @@ def build(prs: Presentation) -> None:
             text(slide, x + 0.3, 3.2 + row * 0.62, 3.1, 0.5, "• " + item, size=11, color=INK_SOFT, spacing=1.1)
     text(slide, 0.85, 6.3, 11.6, 0.4, "Проверки повторяемы: scripts/acceptance.py собирает отчёт одной командой.",
          size=12, color=MUTED)
-    footer(slide, 8)
+    footer(slide, 9)
 
     # 9. замеры
     slide = new_slide(prs)
@@ -394,7 +415,7 @@ def build(prs: Presentation) -> None:
     text(slide, 8.7, 5.35, 4.1, 1.4,
          "Замеры — scripts/bench.py.\nПисьмо и КП: демо-набор из 8 писем\nс опечатками и количествами словами.",
          size=10, color=MUTED, spacing=1.2)
-    footer(slide, 9)
+    footer(slide, 10)
 
     # 10. экономика
     slide = new_slide(prs)
@@ -413,7 +434,7 @@ def build(prs: Presentation) -> None:
     rect(slide, 0.85, 6.25, 11.6, 0.6, GREEN_SOFT, radius=0.08)
     text(slide, 1.1, 6.35, 11.1, 0.4, "Окупаемость: 2–3 месяца. Дальше — экономия и скорость ответа.",
          size=12, bold=True, color=GREEN)
-    footer(slide, 10)
+    footer(slide, 11)
 
     # 11. внедрение
     slide = new_slide(prs)
@@ -432,7 +453,7 @@ def build(prs: Presentation) -> None:
     rect(slide, 0.85, 5.9, 11.6, 0.85, WHITE, line=LINE, radius=0.08)
     text(slide, 1.1, 6.05, 11.1, 0.55, "Что нужно от клиента: прайс, доступ к ящику (или пересылка писем) и 20–30 примеров заявок.",
          size=12, color=INK_SOFT)
-    footer(slide, 11)
+    footer(slide, 12)
 
     # 12. ограничения
     slide = new_slide(prs)
@@ -448,7 +469,7 @@ def build(prs: Presentation) -> None:
     table(slide, 0.85, 2.35, 11.6, rows, [3.4, 6.4, 1.8], size=11, row_h=0.62, header_h=0.45)
     text(slide, 0.85, 6.2, 11.6, 0.5, "Поэтому предложение — пилот, а не «купите коробку»: проверяем на данных клиента и фиксируем цифры.",
          size=12, bold=True, color=INK)
-    footer(slide, 12)
+    footer(slide, 13)
 
     # 13. финал
     slide = new_slide(prs, INK)

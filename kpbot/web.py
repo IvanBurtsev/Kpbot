@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import logging
 import re
+import sqlite3
 import secrets
 import string
 import time
@@ -28,6 +29,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from pydantic import BaseModel, Field, field_validator
 
+from .cabinet import router as cabinet_router
+from .cabinet_store import ORDER_STATUS_LABELS, ORDER_STATUSES, CabinetStore
 from .config import settings
 from .domain import LineStatus, RfqLine, RfqStatus, ValidationError, quantity
 from .export import build_rfq_xlsx
@@ -61,6 +64,7 @@ log = logging.getLogger("kpbot.web")
 
 app = FastAPI(title="kpbot", version="0.1.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
 app.mount("/static", StaticFiles(directory=str(settings.static_dir)), name="static")
+app.include_router(cabinet_router)
 
 settings.ensure_dirs()
 registry = TenantRegistry(settings.tenants_db_path, settings.db_path)
@@ -672,13 +676,26 @@ async def render_admin(request: Request, *, tab: str = "state", flash: str = "")
     denied = admin_only(request)
     if denied is not None:
         return denied
+    allowed = ("state", "users", "learned", "events", "company", "clients", "orders")
+    tab = tab if tab in allowed else "state"
+    context = admin_context(request)
+    if tab == "clients":
+        cabinet = CabinetStore(settings.db_path)
+        companies = cabinet.list_companies()
+        for company in companies:
+            company["users"] = cabinet.list_users(company["id"])
+        context["clients"] = companies
+    elif tab == "orders":
+        context["client_orders"] = CabinetStore(settings.db_path).all_orders()
+    context["order_statuses"] = ORDER_STATUSES
+    context["order_labels"] = ORDER_STATUS_LABELS
     return page(
         "admin.html",
         request,
         active_page="admin",
-        tab=tab if tab in ("state", "users", "learned", "events", "company") else "state",
+        tab=tab,
         flash=flash[:200],
-        **admin_context(request),
+        **context,
     )
 
 
@@ -871,6 +888,118 @@ async def ui_admin_user_delete(request: Request, user_id: str):
     store.log_event("user_blocked", f"ui:{client_ip(request)}", current.email)
     return RedirectResponse(
         f"/ui/admin/users?flash={quote('пользователь заблокирован, история сохранена')}", status_code=303
+    )
+
+
+# ---------- ЛК клиента: управление из админки поставщика ----------
+
+
+@app.post("/ui/admin/clients")
+async def ui_admin_client_create(request: Request):
+    """Поставщик создаёт компанию-покупателя и первого пользователя ЛК."""
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    form = await verified_form(request)
+    name = str(form.get("name", "")).strip()
+    email = str(form.get("email", "")).strip().lower()
+    role = str(form.get("role", "client_admin"))
+    if not name or "@" not in email:
+        return RedirectResponse(
+            f"/ui/admin?tab=clients&flash={quote('нужны название компании и e-mail')}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    password = str(form.get("password", "")).strip() or secrets.token_urlsafe(9)
+    cabinet = CabinetStore(settings.db_path)
+    try:
+        company = cabinet.create_company(
+            name, inn=str(form.get("inn", "")).strip(), kpp=str(form.get("kpp", "")).strip()
+        )
+        cabinet.create_user(company["id"], email=email, password=password, role=role,
+                            name=str(form.get("user_name", "")).strip())
+    except (ValueError, sqlite3.IntegrityError) as exc:
+        return RedirectResponse(
+            f"/ui/admin?tab=clients&flash={quote(str(exc)[:160])}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    store.log_event("client_created", f"ui:{client_ip(request)}", f"{name} / {email}")
+    message = f"клиент {name} создан. Вход: {email}, пароль: {password} — покажите один раз"
+    return RedirectResponse(
+        f"/ui/admin?tab=clients&flash={quote(message[:300])}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/ui/admin/clients/{company_id}/status")
+async def ui_admin_client_status(request: Request, company_id: str):
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    form = await verified_form(request)
+    new_status = str(form.get("status", "active"))
+    cabinet = CabinetStore(settings.db_path)
+    if cabinet.company(company_id) is None:
+        return RedirectResponse(
+            f"/ui/admin?tab=clients&flash={quote('компания не найдена')}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    cabinet.set_company_status(company_id, new_status)
+    store.log_event("client_status", f"ui:{client_ip(request)}", f"{company_id}: {new_status}")
+    return RedirectResponse(
+        f"/ui/admin?tab=clients&flash={quote('статус компании обновлён')}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/ui/admin/clients/{company_id}/users")
+async def ui_admin_client_user(request: Request, company_id: str):
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    form = await verified_form(request)
+    email = str(form.get("email", "")).strip().lower()
+    password = str(form.get("password", "")).strip() or secrets.token_urlsafe(9)
+    role = str(form.get("role", "client_manager"))
+    cabinet = CabinetStore(settings.db_path)
+    if cabinet.company(company_id) is None:
+        return RedirectResponse(
+            f"/ui/admin?tab=clients&flash={quote('компания не найдена')}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    try:
+        cabinet.create_user(company_id, email=email, password=password, role=role,
+                            name=str(form.get("name", "")).strip())
+    except (ValueError, sqlite3.IntegrityError) as exc:
+        return RedirectResponse(
+            f"/ui/admin?tab=clients&flash={quote(str(exc)[:160])}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    store.log_event("client_user_created", f"ui:{client_ip(request)}", email)
+    message = f"пользователь {email} создан, пароль: {password} — покажите один раз"
+    return RedirectResponse(
+        f"/ui/admin?tab=clients&flash={quote(message[:300])}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/ui/admin/orders/{order_id}/status")
+async def ui_admin_order_status(request: Request, order_id: str):
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    form = await verified_form(request)
+    new_status = str(form.get("status", "pending"))
+    cabinet = CabinetStore(settings.db_path)
+    if cabinet.order(order_id) is None:
+        return RedirectResponse(
+            f"/ui/admin?tab=orders&flash={quote('заказ не найден')}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    cabinet.update_status(order_id, new_status)
+    store.log_event("client_order_status", f"ui:{client_ip(request)}", f"{order_id}: {new_status}")
+    return RedirectResponse(
+        f"/ui/admin?tab=orders&flash={quote('статус заказа обновлён')}",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
