@@ -220,6 +220,19 @@ class LlmGroundingTest(unittest.TestCase):
         self.assertTrue(any("уголок" in text for text in texts), texts)
         self.assertFalse(any("кабель" in text for text in texts), texts)
 
+    def test_grounding_accepts_word_forms(self) -> None:
+        """«уголок» в ответе модели и «уголков» в письме — одно и то же слово."""
+        class FakeClient:
+            def complete(self, text: str) -> LlmAnswer:
+                return LlmAnswer(
+                    payload=LlmPayload(lines=[LlmLine(name="уголок 50х50", qty="10", unit="шт")]),
+                    usage=LlmUsage(),
+                )
+
+        extractor = LlmExtractor(FakeClient())
+        lines = extractor.extract("нужен десяток уголков 50х50")
+        self.assertTrue(any("уголок" in line.raw_text for line in lines), lines)
+
 
 if __name__ == "__main__":
     unittest.main()

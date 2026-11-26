@@ -95,7 +95,7 @@ def normalize(text: str) -> str:
 
 
 def tokens(text: str) -> list[str]:
-    return [t for t in normalize(text).split() if t and t not in STOPWORDS]
+    return [t.strip(".") for t in normalize(text).split() if t and t not in STOPWORDS]
 
 
 def _stem(token: str) -> str:
@@ -124,6 +124,21 @@ def _token_equal(left: str, right: str) -> bool:
     if len(left) >= 3 and len(right) >= 3:
         return left.startswith(right) or right.startswith(left)
     return False
+
+
+def token_matches(left: str, right: str) -> bool:
+    """«Одно и то же слово» — для grounding и подсказок, а не для скоринга.
+
+    Русские словоформы: «уголок» и «уголков» имеют общий корень из четырёх букв.
+    Числа и размеры так сравнивать нельзя: «4.2x75» и «4.2x70» — разные позиции.
+    """
+    if left == right:
+        return True
+    if any(ch.isdigit() for ch in left) or any(ch.isdigit() for ch in right):
+        return _token_equal(left, right)
+    if len(left) >= 4 and len(right) >= 4 and left[:4] == right[:4]:
+        return True
+    return _token_equal(left, right)
 
 
 def _token_match_weight(token: str, others: list[str]) -> float:

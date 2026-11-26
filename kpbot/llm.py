@@ -25,6 +25,7 @@ from .domain import LineStatus, RfqLine, quantity
 from .extract import RuleExtractor, canonical_unit
 from .logs import redact
 from .matching import normalize as match_normalize
+from .matching import token_matches
 from .matching import tokens as match_tokens
 
 log = logging.getLogger("kpbot.llm")
@@ -324,12 +325,11 @@ class LlmExtractor:
                 continue
             hits = 0
             for token in name_tokens:
-                prefix = token[:5]
-                if token in source_tokens or any(t.startswith(prefix) for t in source_tokens):
+                if any(token_matches(token, source) for source in source_tokens):
                     hits += 1
             numbers = [t for t in name_tokens if any(ch.isdigit() for ch in t)]
             numbers_ok = all(
-                token in source_tokens or any(t.startswith(token[:5]) for t in source_tokens)
+                any(token_matches(token, source) for source in source_tokens)
                 for token in numbers
             )
             if numbers_ok and hits / len(name_tokens) >= 0.6:
