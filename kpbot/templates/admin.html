@@ -25,7 +25,7 @@
       <tr>
         <th>Окружение</th>
         <td data-label="Окружение">
-          {% if diagnostics.env in ("prod", "production") %}<span class="badge s-ok">боевой</span>{% else %}<span class="badge s-human_review">разработка</span>{% endif %}
+          {% if diagnostics.env == "боевой" %}<span class="badge s-ok">боевой</span>{% else %}<span class="badge s-human_review">разработка</span>{% endif %}
         </td>
       </tr>
       <tr>

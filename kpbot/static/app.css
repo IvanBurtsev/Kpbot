@@ -1301,3 +1301,21 @@ code { overflow-wrap: anywhere; }
     min-width: 0;
   }
 }
+
+@media (max-width: 768px) {
+  /* Меню — одна прокручиваемая строка: ничего не обрезается справа */
+  .nav {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    width: 100%;
+    padding-bottom: 4px;
+    scrollbar-width: none;
+  }
+  .nav::-webkit-scrollbar { display: none; }
+  .nav > * { flex: 0 0 auto; }
+
+  /* Очередь на телефоне: главное в карточке, остальное — внутри заявки */
+  .inbox-table td[data-label="Получено"],
+  .inbox-table td[data-label="Исполнитель"],
+  .inbox-table td[data-label="Строк"] { display: none; }
+}
