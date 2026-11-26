@@ -90,6 +90,30 @@ class TimingTest(unittest.TestCase):
         self.assertIsNotNone(report["median_seconds"])
 
 
+class PriceMergeTest(unittest.TestCase):
+    def test_updates_adds_keeps_and_skips_bad(self) -> None:
+        from kpbot.domain import PriceItem
+        from kpbot.pricelist import merge_prices
+
+        existing = [
+            PriceItem(sku="KR-001", name="Уголок", unit="шт", price=Decimal("34.50")),
+            PriceItem(sku="OLD-1", name="Старая позиция", unit="шт", price=Decimal("10")),
+        ]
+        incoming = [
+            {"sku": "KR-001", "price": "40"},
+            {"sku": "NEW-1", "name": "Новая", "unit": "м", "price": "15.5"},
+            {"sku": "BAD", "price": "не число"},
+        ]
+        items, changed = merge_prices(existing, incoming)
+        by_sku = {item.sku: item for item in items}
+        self.assertEqual(changed, 2)
+        self.assertEqual(by_sku["KR-001"].price, Decimal("40"))
+        self.assertEqual(by_sku["KR-001"].name, "Уголок")  # имя из прайса сохранено
+        self.assertEqual(by_sku["NEW-1"].unit, "м")
+        self.assertIn("OLD-1", by_sku)  # чего нет в 1С — не удаляем
+        self.assertNotIn("BAD", by_sku)
+
+
 class Export1cTest(unittest.TestCase):
     def test_exported_sheet_is_valid_for_1c(self) -> None:
         from kpbot.export import build_rfq_xlsx, check_1c_sheet

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import sys
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from .domain import PriceItem, ValidationError
@@ -148,6 +148,48 @@ def _header_indexes(header: list[object]) -> dict[str, int] | None:
         "unit": unit if unit is not None else -1,
         "price": price,
     }
+
+
+def merge_prices(
+    existing: list[PriceItem], incoming: list[dict]
+) -> tuple[list[PriceItem], int]:
+    """Добавляет/обновляет цены из 1С, сохраняя названия и единицы.
+
+    incoming: [{sku, name, unit, price}]. Позиции, которых нет в 1С, не удаляем:
+    клиент мог держать в прайсе то, чего в базе ещё нет.
+    Возвращает (новый список, сколько изменилось).
+    """
+    by_sku = {item.sku: item for item in existing}
+    changed = 0
+    for row in incoming:
+        sku = str(row.get("sku") or "").strip()
+        if not sku:
+            continue
+        try:
+            price = Decimal(str(row.get("price")))
+        except (InvalidOperation, ValueError, TypeError):
+            continue
+        if price < 0:
+            continue
+        current = by_sku.get(sku)
+        if current is None:
+            by_sku[sku] = PriceItem(
+                sku=sku,
+                name=str(row.get("name") or sku),
+                unit=str(row.get("unit") or "шт"),
+                price=price,
+            )
+            changed += 1
+        elif current.price != price:
+            by_sku[sku] = PriceItem(
+                sku=sku,
+                name=current.name or str(row.get("name") or sku),
+                unit=current.unit or str(row.get("unit") or "шт"),
+                price=price,
+                currency=current.currency,
+            )
+            changed += 1
+    return sorted(by_sku.values(), key=lambda item: item.sku), changed
 
 
 def load_price_items(path: Path, *, max_rows: int = 100_000) -> list[PriceItem]:

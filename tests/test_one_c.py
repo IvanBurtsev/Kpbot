@@ -402,5 +402,56 @@ class InvoiceServiceTest(unittest.TestCase):
         self.assertIn("502", str(ctx.exception))
 
 
+class PricesFromOneCTest(unittest.TestCase):
+    def test_latest_period_wins_and_units_resolved(self) -> None:
+        fixture = {
+            "value": [
+                {"Номенклатура_Key": "n-1", "Цена": 34.5, "Period": "2026-01-01T00:00:00"},
+                {"Номенклатура_Key": "n-1", "Цена": 36.0, "Period": "2026-06-01T00:00:00"},
+                {"Номенклатура_Key": "n-2", "Цена": "128"},
+            ]
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "InformationRegister_ЦеныНоменклатуры" in request.url.path:
+                return httpx.Response(200, json=fixture)
+            return base_handler(request)
+
+        rows = client_with(handler).prices()
+        by_sku = {row["sku"]: row for row in rows}
+        self.assertEqual(by_sku["KR-001"]["price"], "36")
+        self.assertEqual(by_sku["KR-001"]["unit"], "шт")
+        self.assertEqual(by_sku["EL-001"]["price"], "128")
+
+    def test_empty_register_is_explained(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "InformationRegister_ЦеныНоменклатуры" in request.url.path:
+                return httpx.Response(200, json={"value": []})
+            return base_handler(request)
+
+        with self.assertRaises(OneCError) as ctx:
+            client_with(handler).prices()
+        self.assertIn("нет цен", str(ctx.exception))
+
+
+class DecisionMarkerTest(unittest.TestCase):
+    def test_last_decision_returns_latest(self) -> None:
+        from kpbot.store import Store
+
+        store = Store(support.ROOT / "marker.sqlite3")
+        store.save_rfq(
+            rfq_id="rfq-1", message_id="m1", sender="a@b.ru", subject="Заявка",
+            received_at="2026-11-26T00:00:00+00:00", status="draft_ready",
+            raw_text="уголок 1 шт", lines=[],
+        )
+        store.log("rfq-1", "invoice_1c", "cli", "0000-000001")
+        store.log("rfq-1", "invoice_1c", "cli", "0000-000002")
+        store.log("rfq-1", "approved", "ui", "")
+        marker = store.last_decision("rfq-1", "invoice_1c")
+        self.assertIsNotNone(marker)
+        self.assertIn("0000-000002", marker["detail"])
+        self.assertIsNone(store.last_decision("rfq-1", "invoice_odata"))
+
+
 if __name__ == "__main__":
     unittest.main()

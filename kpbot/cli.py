@@ -1103,6 +1103,32 @@ def cmd_one_c_order(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_one_c_price(args: argparse.Namespace) -> int:
+    """Забирает цены из 1С в прайс: без ручной выгрузки в Excel."""
+    from .one_c import OneCError
+    from .pricelist import merge_prices
+
+    try:
+        incoming = _one_c_client().prices(limit=args.limit)
+    except (OneCError, SystemExit) as exc:
+        print(f"1С: {exc}")
+        return 1
+
+    print(f"цен из 1С: {len(incoming)}")
+    if not args.apply:
+        for row in incoming[:10]:
+            print(f"  {row['sku']}: {row['price']} — {row['name'][:50]}")
+        print("--apply — записать в прайс (названия и единицы сохраняются)")
+        return 0
+
+    store = Store(settings.db_path)
+    items, changed = merge_prices(store.price_items(), incoming)
+    count = store.replace_price_items(items)
+    store.log_event("price_from_1c", "cli", f"изменено {changed}, всего {count}")
+    print(f"прайс обновлён: {count} позиций, изменено {changed}")
+    return 0
+
+
 def cmd_one_c_invoice(args: argparse.Namespace) -> int:
     """Создаёт «Счёт на оплату покупателю» по подтверждённому расчёту заявки."""
     from .one_c import OneCError
@@ -1123,6 +1149,12 @@ def cmd_one_c_invoice(args: argparse.Namespace) -> int:
     if not args.counterparty:
         print("нужен --counterparty (Ref_Key контрагента из 1С)")
         return 2
+
+    marker = store.last_decision(rfq["id"], "invoice_1c")
+    if marker and not args.force:
+        print(f"счёт уже выгружен: {marker['detail']} ({marker['created_at']})")
+        print("--force — создать ещё один документ")
+        return 0
 
     lines = [(line["sku"], line["qty"], line["price"]) for line in quote["lines"]]
     client = _one_c_client()
@@ -1342,6 +1374,7 @@ def main(argv: list[str] | None = None) -> int:
     one_c_invoice = sub.add_parser("1c-invoice", help="создать «Счёт на оплату» в 1С по расчёту")
     one_c_invoice.add_argument("--rfq", dest="rfq_id", default="", help="id заявки; по умолчанию последняя")
     one_c_invoice.add_argument("--counterparty", default="", help="Ref_Key контрагента из 1С")
+    one_c_invoice.add_argument("--force", action="store_true", help="выгрузить повторно, если счёт уже создан")
     one_c_invoice.add_argument(
         "--via",
         choices=("auto", "service", "odata"),
@@ -1349,6 +1382,11 @@ def main(argv: list[str] | None = None) -> int:
         help="auto — HTTP-сервис, если задан KPBOT_ONE_C_SERVICE_URL, иначе OData",
     )
     one_c_invoice.set_defaults(func=cmd_one_c_invoice)
+
+    one_c_price = sub.add_parser("1c-price", help="забрать цены из 1С в прайс")
+    one_c_price.add_argument("--limit", type=int, default=5000)
+    one_c_price.add_argument("--apply", action="store_true", help="записать в прайс, иначе только показать")
+    one_c_price.set_defaults(func=cmd_one_c_price)
 
     backup = sub.add_parser("backup", help="сделать копию базы и удалить старые")
     backup.add_argument("--keep", type=int, default=7, help="сколько копий хранить")

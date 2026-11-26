@@ -1,4 +1,4 @@
-﻿"""Хранилище на SQLite. Все запросы — параметризованные (?), без склейки строк."""
+"""Хранилище на SQLite. Все запросы — параметризованные (?), без склейки строк."""
 
 from __future__ import annotations
 
@@ -443,6 +443,15 @@ class Store:
                 "SELECT * FROM decisions WHERE rfq_id = ? ORDER BY id", (rfq_id,)
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def last_decision(self, rfq_id: str, action: str) -> dict | None:
+        """Последнее событие заданного типа: нужно, чтобы не выгружать счёт дважды."""
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM decisions WHERE rfq_id = ? AND action = ? ORDER BY id DESC LIMIT 1",
+                (rfq_id, action),
+            ).fetchone()
+        return dict(row) if row else None
 
     # ---------- расход на LLM ----------
 

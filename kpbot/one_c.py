@@ -352,6 +352,40 @@ class OneCClient:
                 result.setdefault(sku, ref)
         return result
 
+    def prices(self, limit: int = 5000) -> list[dict]:
+        """Цены номенклатуры из регистра сведений: [{sku, name, unit, price}].
+
+        Берём последнюю запись по каждой номенклатуре: регистр периодический.
+        """
+        payload = self._json(
+            "/InformationRegister_ЦеныНоменклатуры", {"$format": "json", "$top": limit}
+        )
+        rows = payload.get("value") or []
+        latest: dict[str, tuple[str, str]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ref = _text(_exact(row, "номенклатура_key", "номенклатура"))
+            price = _number(_exact(row, "цена", "price"))
+            if not ref or price is None:
+                continue
+            period = _text(_exact(row, "period", "период", "date"))
+            current = latest.get(ref)
+            if current is None or period >= current[0]:
+                latest[ref] = (period, format(price.normalize(), "f"))
+        if not latest:
+            raise OneCError(
+                "в 1С нет цен номенклатуры: заполните регистр «Цены номенклатуры» "
+                "или загрузите прайс файлом"
+            )
+
+        names = self.nomenclature()
+        result: list[dict] = []
+        for ref, (_period, price) in latest.items():
+            sku, name, unit = names.get(ref, (ref, "", ""))
+            result.append({"sku": sku, "name": name, "unit": unit, "price": price})
+        return sorted(result, key=lambda item: item["sku"])
+
     def _entity_exists(self, entity: str) -> bool:
         """Есть ли такая сущность в конфигурации (404 = нет)."""
         try:
