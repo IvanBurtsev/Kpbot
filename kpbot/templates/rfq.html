@@ -5,7 +5,7 @@
 {% set line_css = {"ok": "s-sent", "ambiguous": "s-human_review", "no_match": "s-rejected", "invalid": "s-rejected"} %}
 {% set rfq_labels = {"received": "принята", "parsed": "разобрана", "priced": "рассчитана",
                      "draft_ready": "КП готово", "human_review": "нужна проверка",
-                     "approved": "одобрена", "sent": "КП отправлено", "rejected": "отказ"} %}
+                     "approved": "одобрена", "sent": "КП передано в отправку", "rejected": "отказ"} %}
 
 <p class="crumbs"><a href="/ui">← Все заявки</a></p>
 
@@ -31,7 +31,7 @@
       <span class="muted">— похоже: {{ ambiguous }}, не найдено: {{ not_found }}, без количества: {{ invalid }}.
       Это строки письма, которые не вошли в расчёт, а не остатки.</span>{% endif %}</p>
   <p class="muted small">Путь заявки: нужна проверка → КП готово → одобрена → КП отправлено.
-    «Отказ» — если клиент отказался; причина сохраняется в журнале.</p>
+    «Отказ» — если клиент отказался; причина сохраняется в журнале. Фактическая отправка по SMTP отмечается записью «отправлено» в журнале решений.</p>
   {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
 </section>
