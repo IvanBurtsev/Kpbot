@@ -20,18 +20,54 @@
 
   {% if tab == "state" %}
   <h2>Что включено</h2>
-  <table>
+  <table class="cards-table state-table">
     <tbody>
-      <tr><th>Окружение</th><td>{{ diagnostics.env }}</td></tr>
+      <tr>
+        <th>Окружение</th>
+        <td data-label="Окружение">
+          {% if diagnostics.env in ("prod", "production") %}<span class="badge s-ok">боевой</span>{% else %}<span class="badge s-human_review">разработка</span>{% endif %}
+        </td>
+      </tr>
       <tr>
         <th>Модель</th>
-        <td>{% if diagnostics.llm %}включена · {{ diagnostics.llm_model }}{% else %}<span class="warn">выключена — разбор по правилам</span>{% endif %}</td>
+        <td data-label="Модель">
+          {% if diagnostics.llm %}
+          <span class="badge s-ok">включена</span> <span class="muted small">{{ diagnostics.llm_model }}</span>
+          {% else %}
+          <span class="badge s-rejected">выключена</span> <span class="muted small">разбор по правилам</span>
+          {% endif %}
+        </td>
       </tr>
-      <tr><th>Отправка КП</th><td>{% if diagnostics.smtp %}настроена{% else %}<span class="warn">выключена</span>{% endif %}</td></tr>
-      <tr><th>Почта</th><td>{{ diagnostics.imap }} · папка <code>{{ diagnostics.imap_folder }}</code></td></tr>
-      <tr><th>Уведомления</th><td>Telegram {% if diagnostics.telegram %}✓{% else %}—{% endif %} · MAX {% if diagnostics.max %}✓{% else %}—{% endif %}</td></tr>
-      <tr><th>PDF</th><td>{% if diagnostics.pdf %}включён{% endif %}{% if not diagnostics.pdf %}выключен{% endif %}</td></tr>
-      <tr><th>Размер базы</th><td class="num">{{ diagnostics.db_mb }} МБ</td></tr>
+      <tr>
+        <th>Отправка КП</th>
+        <td data-label="Отправка КП">
+          {% if diagnostics.smtp %}<span class="badge s-ok">настроена</span>{% else %}<span class="badge s-rejected">выключена</span> <span class="muted small">КП отправляется вручную</span>{% endif %}
+        </td>
+      </tr>
+      <tr>
+        <th>Почта</th>
+        <td data-label="Почта">
+          {% if diagnostics.imap %}
+          <span class="badge s-ok">подключена</span> <span class="muted small">{{ diagnostics.imap }} · папка <code>{{ diagnostics.imap_folder }}</code></span>
+          {% else %}
+          <span class="badge s-rejected">не подключена</span> <span class="muted small">заявки только вручную или через API</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr>
+        <th>Уведомления</th>
+        <td data-label="Уведомления">
+          Telegram {% if diagnostics.telegram %}<span class="badge s-ok">вкл</span>{% else %}<span class="badge s-rejected">выкл</span>{% endif %}
+          · MAX {% if diagnostics.max %}<span class="badge s-ok">вкл</span>{% else %}<span class="badge s-rejected">выкл</span>{% endif %}
+        </td>
+      </tr>
+      <tr>
+        <th>PDF</th>
+        <td data-label="PDF">
+          {% if diagnostics.pdf %}<span class="badge s-ok">включён</span>{% else %}<span class="badge s-rejected">выключен</span> <span class="muted small">остаются HTML и DOCX</span>{% endif %}
+        </td>
+      </tr>
+      <tr><th>Размер базы</th><td data-label="Размер базы" class="num">{{ diagnostics.db_mb }} МБ</td></tr>
     </tbody>
   </table>
 

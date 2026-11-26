@@ -1244,3 +1244,42 @@ tr.needs-attention td {
   .cabinet-add .qty-input { flex: 1; }
   .cabinet-totals { align-items: stretch; }
 }
+/* ========== МОБИЛЬНЫЕ ИСПРАВЛЕНИЯ 27.11.2026 ========== */
+
+/* Длинные адреса, коды и названия не должны вылезать за карточку */
+td, th { overflow-wrap: anywhere; }
+code { overflow-wrap: anywhere; }
+
+/* Кнопки в строке таблицы: ряд с переносом, а не «вылезли за карточку» */
+.actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.actions-row form { margin: 0; }
+.actions-row .button,
+.actions-row button { white-space: nowrap; }
+
+/* Широкая таблица прокручивается внутри карточки, а не рвёт страницу */
+.card { overflow-x: auto; }
+
+@media (max-width: 768px) {
+  .topbar { flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
+  .nav { gap: 10px; font-size: 14px; }
+  .nav .muted.small { display: none; }  /* «55 позиций» — не главное на телефоне */
+  .nav a { font-size: 14px; padding: 4px 0; }
+
+  .actions-row { flex-direction: column; align-items: stretch; }
+  .actions-row .button,
+  .actions-row button { width: 100%; text-align: center; }
+
+  /* В «Состоянии» подписи колонок уже выводятся через data-label */
+  .state-table th { display: none; }
+  .state-table td { grid-template-columns: 110px 1fr; }
+
+  .tabs { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 8px; }
+  .tabs a { white-space: nowrap; }
+
+  .pager { display: flex; gap: 12px; align-items: center; }
+}

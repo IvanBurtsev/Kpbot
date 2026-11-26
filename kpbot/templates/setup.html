@@ -8,22 +8,28 @@
   {% if state.done %}
   <p class="ok"><b>Готово — можно принимать заявки.</b> Все три шага пройдены.</p>
   {% else %}
-  <p class="muted small">Три шага, каждый занимает минуту. Пока шаг не пройден, сервис работает,
-    но КП уходят без ваших реквизитов или без прайса.</p>
+  <p class="error"><b>Не всё готово.</b> Красные шаги ниже нужно закрыть — иначе КП уходят
+    без ваших реквизитов, без прайса или без почты.</p>
   {% endif %}
 
   <div class="stats">
     <div class="stat">
       <div class="label">1. Реквизиты</div>
-      <div class="value">{% if state.company_ready %}<span class="ok">готово</span>{% else %}<span class="warn">нужно</span>{% endif %}</div>
+      <div class="value">
+        {% if state.company_ready %}<span class="badge s-ok">готово</span>{% else %}<span class="badge s-rejected">не заполнено</span>{% endif %}
+      </div>
     </div>
     <div class="stat">
       <div class="label">2. Прайс</div>
-      <div class="value">{{ state.price_count }} <small>позиций</small></div>
+      <div class="value">
+        {% if state.price_count %}<span class="badge s-ok">{{ state.price_count }} позиций</span>{% else %}<span class="badge s-rejected">прайса нет</span>{% endif %}
+      </div>
     </div>
     <div class="stat">
       <div class="label">3. Почта</div>
-      <div class="value">{% if state.mail_ready %}<span class="ok">готово</span>{% else %}<span class="warn">нужно</span>{% endif %}</div>
+      <div class="value">
+        {% if state.mail_ready %}<span class="badge s-ok">готова</span>{% else %}<span class="badge s-rejected">не подключена</span>{% endif %}
+      </div>
     </div>
   </div>
 </section>
