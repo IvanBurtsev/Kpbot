@@ -1319,3 +1319,21 @@ code { overflow-wrap: anywhere; }
   .inbox-table td[data-label="Исполнитель"],
   .inbox-table td[data-label="Строк"] { display: none; }
 }
+
+@media (max-width: 768px) {
+  /* В карточке строк подписи были только у трёх полей — остальные числа
+     висели без объяснения. Добавляем подписи Score, Остаток, Статус. */
+  .lines-table td[data-label="Score"],
+  .lines-table td[data-label="Остаток"],
+  .lines-table td[data-label="Статус"] {
+    display: grid;
+    grid-template-columns: 100px 1fr;
+    gap: 8px;
+  }
+  .lines-table td[data-label="Score"]::before { content: "Score"; }
+  .lines-table td[data-label="Остаток"]::before { content: "Остаток"; }
+  .lines-table td[data-label="Статус"]::before { content: "Статус"; }
+
+  /* Таблица расчёта шире экрана: пусть прокручивается, а не режется */
+  .grid { min-width: 560px; }
+}
