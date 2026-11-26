@@ -56,7 +56,9 @@ def main() -> int:
             return "200"
 
         def login_page() -> str:
-            response = client.get(f"{base}/ui/login")
+            # отдельный клиент: к этому моменту рабочая сессия уже авторизована
+            with httpx.Client(timeout=args.timeout, follow_redirects=False) as fresh:
+                response = fresh.get(f"{base}/ui/login")
             assert response.status_code == 200, f"HTTP {response.status_code}"
             assert "Вход" in response.text, "нет формы входа"
             return "форма входа на месте"

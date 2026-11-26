@@ -244,7 +244,7 @@ class OneCClient:
         units = self.units()
         result: dict[str, tuple[str, str, str]] = {}
         for record in payload.get("value") or []:
-            if not isinstance(record, dict) or record.get("IsFolder"):
+            if not isinstance(record, dict) or record.get("IsFolder") or record.get("DeletionMark"):
                 continue
             ref = _text(_exact(record, "ref_key", "ref"))
             if not ref:
