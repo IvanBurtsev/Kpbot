@@ -464,11 +464,24 @@ class Pipeline:
             matched_name=line["matched_name"], status=LineStatus(line["status"]), note=line["note"],
         ) for line in rfq["lines"]}
 
+        # Один SKU не может стоять в КП двумя строками: менеджер, добавляющий
+        # позицию, которая уже есть, удвоил бы сумму молча.
+        seen_sku: dict[str, RfqLine] = {}
+        for line in lines:
+            if line.status is LineStatus.OK and line.matched_sku:
+                if line.matched_sku in seen_sku:
+                    raise ValidationError(
+                        f"позиция {line.matched_sku} уже есть в КП — "
+                        "измените количество в существующей строке"
+                    )
+                seen_sku[line.matched_sku] = line
+
         for position, line in enumerate(lines, start=1):
             line.idx = position
-        self.store.replace_lines(rfq_id, lines)
 
         index = self.price_index()
+        # Сначала расчёт, потом запись: если строка не проходит проверку,
+        # в базе не останутся новые строки со старым КП.
         quote = price_quote(
             lines,
             {item.sku: item for item in index.items},
@@ -477,6 +490,7 @@ class Pipeline:
             max_qty=self.cfg.max_qty,
             prices_include_vat=self.cfg.prices_include_vat,
         )
+        self.store.replace_lines(rfq_id, lines)
         self._learn_from_edits(before, lines)
         self.store.save_quote(uuid.uuid4().hex, rfq_id, quote)
         self.store.set_status(rfq_id, status_for(quote).value)

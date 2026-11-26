@@ -263,6 +263,18 @@ def is_authenticated(request: Request) -> bool:
     return verify_session(settings.session_secret, session_of(request), settings.session_ttl_seconds)
 
 
+def actor_of(request: Request) -> str:
+    """Кто действует: вошедший пользователь, иначе адрес (общий пароль/демо).
+
+    В журнале должно быть видно человека, а не «ui:127.0.0.1», иначе на вопрос
+    «кто одобрил эту цену» ответить нельзя.
+    """
+    user = current_user(request)
+    if user is not None:
+        return f"user:{user.email}"
+    return f"ui:{client_ip(request)}"
+
+
 def is_admin_request(request: Request) -> bool:
     """Администратор: пользователь с ролью admin или вход общим паролем."""
     user = current_user(request)
@@ -316,9 +328,20 @@ def ui_inbox(request: Request, flash: str = ""):
     if not is_authenticated(request):
         return login_redirect(request)
     user = current_user(request)
-    rfqs = _with_sender_names(
-        store.list_rfqs(100, assignee=None if (user is None or user.is_admin) else user.id)
+    query = (request.query_params.get("q") or "").strip()[:100]
+    status_filter = (request.query_params.get("status") or "").strip()[:30]
+    page_number = safe_int(request.query_params.get("page"), 1, 1, 1000)
+    per_page = 50
+    # +1 строка, чтобы знать, есть ли следующая страница, не считая COUNT(*)
+    rows = store.list_rfqs(
+        per_page + 1,
+        assignee=None if (user is None or user.is_admin) else user.id,
+        query=query or None,
+        status=status_filter or None,
+        offset=(page_number - 1) * per_page,
     )
+    has_next = len(rows) > per_page
+    rfqs = _with_sender_names(rows[:per_page])
     return page(
         "inbox.html",
         request,
@@ -327,6 +350,11 @@ def ui_inbox(request: Request, flash: str = ""):
         users=store.users() if (user and user.is_admin) else [],
         report=store.report(30),
         flash=flash[:200],
+        q=query,
+        status_filter=status_filter,
+        page_number=page_number,
+        per_page=per_page,
+        has_next=has_next,
     )
 
 
@@ -431,7 +459,7 @@ async def ui_upload(request: Request, file: UploadFile):
                     error="файл больше 2 МБ")
     try:
         result = await run_in_threadpool(
-            pipeline.process_eml_bytes, raw, actor=f"ui:{client_ip(request)}"
+            pipeline.process_eml_bytes, raw, actor=actor_of(request)
         )
     except NotAnRfq:
         return page("inbox.html", request, code=422, rfqs=store.list_rfqs(100),
@@ -569,7 +597,7 @@ async def ui_prices_upload(request: Request):
         )
 
     count = store.replace_price_items(items)
-    store.log_event("price_upload", f"ui:{client_ip(request)}", f"позиций {count}, файл {filename}")
+    store.log_event("price_upload", actor_of(request), f"позиций {count}, файл {filename}")
     flash = f"прайс обновлён: {count} позиций"
     return RedirectResponse(f"/ui/prices?flash={quote(flash)}", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -599,7 +627,7 @@ async def ui_settings_save(request: Request):
         return denied
     form = await verified_form(request)
     await apply_company_form(form)
-    store.log_event("company_settings", f"ui:{client_ip(request)}", str(form.get("name", ""))[:120])
+    store.log_event("company_settings", actor_of(request), str(form.get("name", ""))[:120])
     return RedirectResponse(
         f"/ui/settings?flash={quote('настройки сохранены')}", status_code=status.HTTP_303_SEE_OTHER
     )
@@ -640,7 +668,7 @@ async def ui_setup_company(request: Request):
         return denied
     form = await verified_form(request)
     await apply_company_form(form)
-    store.log_event("setup_company", f"ui:{client_ip(request)}", str(form.get("name", ""))[:120])
+    store.log_event("setup_company", actor_of(request), str(form.get("name", ""))[:120])
     return RedirectResponse(
         f"/ui/setup?flash={quote('шаг 1 готов: реквизиты сохранены')}", status_code=status.HTTP_303_SEE_OTHER
     )
@@ -684,7 +712,7 @@ async def ui_setup_price(request: Request):
             f"/ui/setup?flash={quote('файл не разобран: ' + str(exc)[:120])}", status_code=status.HTTP_303_SEE_OTHER
         )
     count = store.replace_price_items(items)
-    store.log_event("setup_price", f"ui:{client_ip(request)}", f"позиций {count}, файл {filename}")
+    store.log_event("setup_price", actor_of(request), f"позиций {count}, файл {filename}")
     return RedirectResponse(
         f"/ui/setup?flash={quote(f'шаг 2 готов: прайс {count} позиций')}", status_code=status.HTTP_303_SEE_OTHER
     )
@@ -705,7 +733,7 @@ async def ui_setup_mail(request: Request):
         return RedirectResponse(
             f"/ui/setup?flash={quote('почта: ' + str(exc)[:160])}", status_code=status.HTTP_303_SEE_OTHER
         )
-    store.log_event("setup_mail", f"ui:{client_ip(request)}", message[:160])
+    store.log_event("setup_mail", actor_of(request), message[:160])
     return RedirectResponse(
         f"/ui/setup?flash={quote('шаг 3 готов: ' + message[:140])}", status_code=status.HTTP_303_SEE_OTHER
     )
@@ -820,7 +848,7 @@ async def ui_ops_create(request: Request):
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    store.log_event("tenant_created", f"ui:{client_ip(request)}", f"{name} · {tenant['id']} · {email}")
+    store.log_event("tenant_created", actor_of(request), f"{name} · {tenant['id']} · {email}")
     flash = f"клиент «{name}»: вход {email} · пароль {password} (покажется один раз)"
     # Отвечаем страницей, а не редиректом: пароль не должен попадать в адресную
     # строку, историю браузера и логи reverse-proxy.
@@ -850,7 +878,7 @@ async def ui_ops_switch(request: Request):
             max_age=86400 * 30,
             path="/",
         )
-    store.log_event("tenant_switch", f"ui:{client_ip(request)}", tenant["id"])
+    store.log_event("tenant_switch", actor_of(request), tenant["id"])
     return response
 
 
@@ -862,7 +890,7 @@ async def ui_ops_status(request: Request):
     tenant_id = str(form.get("tenant_id", "")).strip()
     status_value = str(form.get("status", "active")).strip()
     registry.set_status(tenant_id, status_value)
-    store.log_event("tenant_status", f"ui:{client_ip(request)}", f"{tenant_id} → {status_value}")
+    store.log_event("tenant_status", actor_of(request), f"{tenant_id} → {status_value}")
     return RedirectResponse(f"/ui/ops?flash={quote('статус обновлён')}", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -890,7 +918,7 @@ async def ui_admin_user_create(request: Request):
         user = store.create_user(email=email, password=password, role=role, name=name)
     except Exception as exc:  # noqa: BLE001 - причину показываем человеку
         return RedirectResponse(f"/ui/admin/users?flash={quote(str(exc)[:160])}", status_code=status.HTTP_303_SEE_OTHER)
-    store.log_event("user_created", f"ui:{client_ip(request)}", f"{user.email} · {user.role}")
+    store.log_event("user_created", actor_of(request), f"{user.email} · {user.role}")
     return RedirectResponse(
         f"/ui/admin/users?flash={quote('создан ' + user.email)}", status_code=status.HTTP_303_SEE_OTHER
     )
@@ -911,7 +939,7 @@ async def ui_admin_user_role(request: Request, user_id: str):
             f"/ui/admin/users?flash={quote('нельзя снять роль с последнего администратора')}", status_code=303
         )
     store.set_user_role(user_id, role)
-    store.log_event("user_role", f"ui:{client_ip(request)}", f"{current.email} → {role}")
+    store.log_event("user_role", actor_of(request), f"{current.email} → {role}")
     return RedirectResponse(f"/ui/admin/users?flash={quote('роль обновлена')}", status_code=303)
 
 
@@ -929,7 +957,7 @@ async def ui_admin_user_password(request: Request, user_id: str):
         store.set_user_password(user_id, password)
     except ValueError as exc:
         return RedirectResponse(f"/ui/admin/users?flash={quote(str(exc))}", status_code=303)
-    store.log_event("user_password", f"ui:{client_ip(request)}", current.email)
+    store.log_event("user_password", actor_of(request), current.email)
     return RedirectResponse(f"/ui/admin/users?flash={quote('пароль обновлён')}", status_code=303)
 
 
@@ -952,7 +980,7 @@ async def ui_admin_user_delete(request: Request, user_id: str):
             f"/ui/admin/users?flash={quote('нельзя удалить последнего администратора')}", status_code=303
         )
     store.delete_user(user_id)
-    store.log_event("user_blocked", f"ui:{client_ip(request)}", current.email)
+    store.log_event("user_blocked", actor_of(request), current.email)
     return RedirectResponse(
         f"/ui/admin/users?flash={quote('пользователь заблокирован, история сохранена')}", status_code=303
     )
@@ -989,7 +1017,7 @@ async def ui_admin_client_create(request: Request):
             f"/ui/admin?tab=clients&flash={quote(str(exc)[:160])}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
-    store.log_event("client_created", f"ui:{client_ip(request)}", f"{name} / {email}")
+    store.log_event("client_created", actor_of(request), f"{name} / {email}")
     message = f"клиент {name} создан. Вход: {email}, пароль: {password} — покажите один раз"
     # Пароль — в теле ответа, а не в адресе: иначе он остаётся в логах прокси.
     return await render_admin(request, tab="clients", flash=message[:300])
@@ -1009,7 +1037,7 @@ async def ui_admin_client_status(request: Request, company_id: str):
             status_code=status.HTTP_303_SEE_OTHER,
         )
     cabinet.set_company_status(company_id, new_status)
-    store.log_event("client_status", f"ui:{client_ip(request)}", f"{company_id}: {new_status}")
+    store.log_event("client_status", actor_of(request), f"{company_id}: {new_status}")
     return RedirectResponse(
         f"/ui/admin?tab=clients&flash={quote('статус компании обновлён')}",
         status_code=status.HTTP_303_SEE_OTHER,
@@ -1039,7 +1067,7 @@ async def ui_admin_client_user(request: Request, company_id: str):
             f"/ui/admin?tab=clients&flash={quote(str(exc)[:160])}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
-    store.log_event("client_user_created", f"ui:{client_ip(request)}", email)
+    store.log_event("client_user_created", actor_of(request), email)
     message = f"пользователь {email} создан, пароль: {password} — покажите один раз"
     return await render_admin(request, tab="clients", flash=message[:300])
 
@@ -1058,7 +1086,7 @@ async def ui_admin_order_status(request: Request, order_id: str):
             status_code=status.HTTP_303_SEE_OTHER,
         )
     cabinet.update_status(order_id, new_status)
-    store.log_event("client_order_status", f"ui:{client_ip(request)}", f"{order_id}: {new_status}")
+    store.log_event("client_order_status", actor_of(request), f"{order_id}: {new_status}")
     return RedirectResponse(
         f"/ui/admin?tab=orders&flash={quote('статус заказа обновлён')}",
         status_code=status.HTTP_303_SEE_OTHER,
@@ -1078,7 +1106,7 @@ async def ui_admin_learned_forget(request: Request):
     form = await verified_form(request)
     key = str(form.get("key", "")).strip()
     removed = store.forget_learned(key or None)
-    store.log_event("learned_forget", f"ui:{client_ip(request)}", key or "всё обучение")
+    store.log_event("learned_forget", actor_of(request), key or "всё обучение")
     flash = f"удалено пар: {removed}"
     return RedirectResponse(f"/ui/admin/learned?flash={quote(flash)}", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -1143,7 +1171,7 @@ async def ui_prices_stock(request: Request):
         return RedirectResponse(f"/ui/prices?flash={quote(str(exc))}", status_code=status.HTTP_303_SEE_OTHER)
 
     count = store.replace_stock(items)
-    store.log_event("stock_upload", f"ui:{client_ip(request)}", f"позиций {count}, файл {filename}")
+    store.log_event("stock_upload", actor_of(request), f"позиций {count}, файл {filename}")
     return RedirectResponse(
         f"/ui/prices?flash={quote(f'остатки обновлены: {count} позиций')}", status_code=status.HTTP_303_SEE_OTHER
     )
@@ -1170,7 +1198,7 @@ async def ui_prices_from_1c(request: Request):
         return _prices_flash(f"1С: {exc}")
     items, changed = merge_prices(store.price_items(), incoming)
     count = store.replace_price_items(items)
-    store.log_event("price_from_1c", f"ui:{client_ip(request)}", f"изменено {changed}, всего {count}")
+    store.log_event("price_from_1c", actor_of(request), f"изменено {changed}, всего {count}")
     return _prices_flash(f"цены из 1С: {len(incoming)} позиций, изменено {changed}, всего {count}")
 
 
@@ -1188,7 +1216,7 @@ async def ui_prices_stock_1c(request: Request):
     except OneCError as exc:
         return _prices_flash(f"1С: {exc}")
     count = store.replace_stock(rows)
-    store.log_event("stock_from_1c", f"ui:{client_ip(request)}", f"позиций {count}")
+    store.log_event("stock_from_1c", actor_of(request), f"позиций {count}")
     return _prices_flash(f"остатки из 1С: {count} позиций")
 
 
@@ -1276,7 +1304,7 @@ async def ui_approve(request: Request, rfq_id: str):
         await run_in_threadpool(
             pipeline.approve,
             rfq_id,
-            actor=f"ui:{client_ip(request)}",
+            actor=actor_of(request),
             comment=str(form.get("comment", ""))[:500],
         )
     except KeyError:
@@ -1298,7 +1326,7 @@ async def ui_reject(request: Request, rfq_id: str):
     if not verify_csrf(settings.session_secret, session_of(request), str(form.get(CSRF_FIELD, ""))):
         return PlainTextResponse("csrf failed", status_code=403)
     try:
-        pipeline.reject(rfq_id, actor=f"ui:{client_ip(request)}", reason=str(form.get("reason", ""))[:500])
+        pipeline.reject(rfq_id, actor=actor_of(request), reason=str(form.get("reason", ""))[:500])
     except KeyError:
         raise HTTPException(status_code=404, detail="заявка не найдена") from None
     except ValidationError as exc:
@@ -1426,7 +1454,7 @@ async def ui_line_confirm(request: Request, rfq_id: str, idx: int):
         return back_to(rfq_id, "у строки нет подобранной позиции — выберите её вручную")
     target.status = LineStatus.OK
     target.note = ""
-    return await save_edits(rfq_id, lines, f"ui:{client_ip(request)}", f"подтверждена строка {idx}")
+    return await save_edits(rfq_id, lines, actor_of(request), f"подтверждена строка {idx}")
 
 
 @app.post("/ui/rfq/{rfq_id}/lines/{idx}/update")
@@ -1457,7 +1485,7 @@ async def ui_line_update(request: Request, rfq_id: str, idx: int):
         target.status = LineStatus.OK
         target.note = ""
         target.match_score = 1.0
-    return await save_edits(rfq_id, lines, f"ui:{client_ip(request)}", f"изменена строка {idx}")
+    return await save_edits(rfq_id, lines, actor_of(request), f"изменена строка {idx}")
 
 
 @app.post("/ui/rfq/{rfq_id}/lines/{idx}/delete")
@@ -1470,7 +1498,7 @@ async def ui_line_delete(request: Request, rfq_id: str, idx: int):
     remaining = [line for line in lines if line.idx != idx]
     if len(remaining) == len(lines):
         return back_to(rfq_id, "строка не найдена")
-    return await save_edits(rfq_id, remaining, f"ui:{client_ip(request)}", f"удалена строка {idx}")
+    return await save_edits(rfq_id, remaining, actor_of(request), f"удалена строка {idx}")
 
 
 @app.post("/ui/rfq/{rfq_id}/lines/add")
@@ -1505,7 +1533,7 @@ async def ui_line_add(request: Request, rfq_id: str):
             note="",
         )
     )
-    return await save_edits(rfq_id, lines, f"ui:{client_ip(request)}", f"добавлена позиция {item.sku}")
+    return await save_edits(rfq_id, lines, actor_of(request), f"добавлена позиция {item.sku}")
 
 
 @app.post("/ui/rfq/{rfq_id}/send")
@@ -1556,7 +1584,7 @@ async def ui_rfq_send(request: Request, rfq_id: str):
         # Письмо не ушло — заявка остаётся одобренной и ждёт повтора, а не «отправленной».
         # force: статус мог быть sent из старой схемы «черновик = отправлено».
         store.set_status(rfq_id, RfqStatus.APPROVED.value, force=True)
-        store.log(rfq_id, "send_failed", f"ui:{client_ip(request)}", f"{to}: {exc}"[:300])
+        store.log(rfq_id, "send_failed", actor_of(request), f"{to}: {exc}"[:300])
         if mailer.enabled:
             return back_to(rfq_id, f"не отправлено: {exc}. Письмо в очереди, повторю автоматически")
         return back_to(
@@ -1568,7 +1596,7 @@ async def ui_rfq_send(request: Request, rfq_id: str):
     store.log(
         rfq_id,
         "sent",
-        f"ui:{client_ip(request)}",
+        actor_of(request),
         f"кому {to}, вложений {len(attachments)}",
     )
     return back_to(rfq_id, f"КП отправлено на {to}")
@@ -1593,7 +1621,7 @@ async def ui_rfq_assign(request: Request, rfq_id: str):
         return back_to(rfq_id, "эту заявку ведёт другой менеджер")
 
     store.set_assignee(rfq_id, target)
-    store.log(rfq_id, "assigned", f"ui:{client_ip(request)}", f"исполнитель {target[:8]}")
+    store.log(rfq_id, "assigned", actor_of(request), f"исполнитель {target[:8]}")
     return back_to(rfq_id, "исполнитель назначен")
 
 

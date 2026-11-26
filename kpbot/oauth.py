@@ -11,6 +11,7 @@ http://127.0.0.1:<port>/ → обмен кода на токены → refresh-�
 from __future__ import annotations
 
 import json
+import hmac
 import logging
 import secrets
 import threading
@@ -171,6 +172,13 @@ class _CodeReceiver(BaseHTTPRequestHandler):
         params = parse_qs(parsed.query)
         code = (params.get("code") or [""])[0]
         error = (params.get("error") or [""])[0]
+        state = (params.get("state") or [""])[0]
+        expected = getattr(self.server, "expected_state", "")
+        # state привязывает ответ к нашему запросу: без проверки в 5-минутное
+        # окно можно подсунуть чужой authorization code.
+        if expected and not hmac.compare_digest(state, expected):
+            self.server.error = "state_mismatch"
+            code = ""
         # favicon и прочие запросы без параметров не должны затирать уже полученный код
         if code:
             self.server.code = code  # type: ignore[attr-defined]
@@ -213,6 +221,7 @@ def run_local_flow(
 
     server.code = ""  # type: ignore[attr-defined]
     server.error = ""  # type: ignore[attr-defined]
+    server.expected_state = state  # type: ignore[attr-defined]
     server.timeout = 5
 
     print("Откройте ссылку и разрешите доступ к почте:", flush=True)

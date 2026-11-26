@@ -4,7 +4,11 @@
 {% set labels = {"received": "принята", "parsed": "разобрана", "priced": "рассчитана",
                  "draft_ready": "КП готово", "human_review": "нужна проверка",
                  "approved": "одобрена", "sent": "КП передано в отправку", "rejected": "отказ"} %}
-
+{# страницу «Заявки» рендерят и обработчики ошибок — без фильтров и пагинации #}
+{% set q = q|default("") %}
+{% set status_filter = status_filter|default("") %}
+{% set page_number = page_number|default(1) %}
+{% set has_next = has_next|default(false) %}
 <section class="card">
   <h1>Заявки</h1>
   <p class="muted small">Сюда попадают письма клиентов. Каждое превращается в КП за секунды.</p>
@@ -45,6 +49,19 @@
         <span class="muted small">.eml или .txt, до 2 МБ</span></span>
     </label>
     <button class="primary" type="submit">Разобрать письмо</button>
+  </form>
+
+  <form method="get" action="/ui" class="row filters">
+    <input type="search" name="q" value="{{ q or '' }}" placeholder="поиск: тема или отправитель" size="28">
+    <select name="status">
+      <option value="">все статусы</option>
+      <option value="issues" {% if status_filter == 'issues' %}selected{% endif %}>нужна проверка</option>
+      {% for key, label in labels.items() %}
+      <option value="{{ key }}" {% if status_filter == key %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <button class="mini" type="submit">Найти</button>
+    {% if q or status_filter %}<a class="button" href="/ui">Сбросить</a>{% endif %}
   </form>
 </section>
 
@@ -91,9 +108,24 @@
     «Проверить» — это строки письма, которые не вошли в расчёт. Кликните по теме, чтобы увидеть,
     что именно не распознано. Остатки и нехватка показываются в карточке заявки.
   </p>
+  {% if page_number > 1 or has_next %}
+  <p class="pager small">
+    {% if page_number > 1 %}
+    <a href="/ui?{{ {'q': q, 'status': status_filter, 'page': page_number - 1}|urlencode }}">← новее</a>
+    {% endif %}
+    <span class="muted">страница {{ page_number }}</span>
+    {% if has_next %}
+    <a href="/ui?{{ {'q': q, 'status': status_filter, 'page': page_number + 1}|urlencode }}">старее →</a>
+    {% endif %}
+  </p>
+  {% endif %}
+  {% else %}
+  {% if q or status_filter %}
+  <p class="empty">По фильтру ничего не найдено. <a href="/ui">Сбросить</a>.</p>
   {% else %}
   <p class="empty">Пока пусто. Загрузите письмо кнопкой выше — или запустите демо-стенд:
     <code>python -m kpbot.cli demo-stand</code>.</p>
+  {% endif %}
   {% endif %}
 </section>
 {% endblock %}

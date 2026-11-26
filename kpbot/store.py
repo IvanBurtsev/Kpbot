@@ -361,17 +361,37 @@ class Store:
         *,
         assignee: str | None = None,
         include_unassigned: bool = True,
+        query: str | None = None,
+        status: str | None = None,
+        offset: int = 0,
     ) -> list[dict]:
-        """assignee=None — без фильтра (админ). Иначе только свои и свободные."""
+        """Очередь заявок: фильтры, поиск и пагинация.
+
+        assignee=None — без фильтра (админ). Иначе только свои и свободные.
+        status="issues" — только заявки, где есть строки для человека.
+        """
         limit = max(1, min(int(limit), 500))
-        where = ""
+        offset = max(0, int(offset))
+        clauses: list[str] = []
         params: list[object] = []
         if assignee is not None:
             if include_unassigned:
-                where = "WHERE (r.assignee = ? OR r.assignee IS NULL)"
+                clauses.append("(r.assignee = ? OR r.assignee IS NULL)")
             else:
-                where = "WHERE r.assignee = ?"
+                clauses.append("r.assignee = ?")
             params.append(assignee)
+        if status == "issues":
+            clauses.append(
+                "EXISTS (SELECT 1 FROM rfq_lines l WHERE l.rfq_id = r.id AND l.status <> 'ok')"
+            )
+        elif status:
+            clauses.append("r.status = ?")
+            params.append(status)
+        if query:
+            like = f"%{query.strip()[:100]}%"
+            clauses.append("(r.subject LIKE ? OR r.sender LIKE ?)")
+            params.extend([like, like])
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
         with closing(self._connect()) as conn:
             rows = conn.execute(
                 f"""
@@ -386,9 +406,9 @@ class Store:
                 FROM rfqs r
                 {where}
                 ORDER BY r.created_at DESC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (*params, limit),
+                (*params, limit, offset),
             ).fetchall()
         return [dict(row) for row in rows]
 
