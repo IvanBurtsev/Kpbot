@@ -51,6 +51,41 @@ class RfqStatus(str, Enum):
     REJECTED = "rejected"
 
 
+# Разрешённые переходы. Терминальные sent не меняется; rejected можно вернуть
+# в работу правкой строк. Повторный переход в тот же статус — не ошибка.
+RFQ_TRANSITIONS: dict[RfqStatus, frozenset[RfqStatus]] = {
+    RfqStatus.RECEIVED: frozenset(
+        {RfqStatus.PARSED, RfqStatus.DRAFT_READY, RfqStatus.HUMAN_REVIEW, RfqStatus.REJECTED}
+    ),
+    RfqStatus.PARSED: frozenset(
+        {RfqStatus.PRICED, RfqStatus.DRAFT_READY, RfqStatus.HUMAN_REVIEW, RfqStatus.REJECTED}
+    ),
+    RfqStatus.PRICED: frozenset({RfqStatus.DRAFT_READY, RfqStatus.HUMAN_REVIEW, RfqStatus.REJECTED}),
+    RfqStatus.DRAFT_READY: frozenset({RfqStatus.APPROVED, RfqStatus.HUMAN_REVIEW, RfqStatus.REJECTED}),
+    RfqStatus.HUMAN_REVIEW: frozenset({RfqStatus.DRAFT_READY, RfqStatus.APPROVED, RfqStatus.REJECTED}),
+    RfqStatus.APPROVED: frozenset(
+        {RfqStatus.SENT, RfqStatus.DRAFT_READY, RfqStatus.HUMAN_REVIEW, RfqStatus.REJECTED}
+    ),
+    RfqStatus.SENT: frozenset(),
+    RfqStatus.REJECTED: frozenset({RfqStatus.HUMAN_REVIEW, RfqStatus.DRAFT_READY}),
+}
+
+
+def check_transition(current: RfqStatus | str, new: RfqStatus | str) -> None:
+    """Проверяет переход и бросает ValidationError, если он запрещён."""
+    try:
+        current_status = RfqStatus(current)
+        new_status = RfqStatus(new)
+    except ValueError as exc:
+        raise ValidationError(f"неизвестный статус заявки: {exc}") from exc
+    if current_status == new_status:
+        return
+    if new_status not in RFQ_TRANSITIONS[current_status]:
+        raise ValidationError(
+            f"нельзя перевести заявку из «{current_status.value}» в «{new_status.value}»"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class PriceItem:
     sku: str

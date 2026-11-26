@@ -17,7 +17,6 @@ import secrets
 import string
 import time
 import uuid
-from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import quote
@@ -40,21 +39,25 @@ from .one_c import OneCError, client_from_settings
 from .pipeline import NotAnRfq, Pipeline, build_reply_text_from_store
 from .pricelist import load_price_items, load_stock_items, merge_prices
 from .render import render_template
+from .report import build_pilot_report
 from .security import (
     CSRF_FIELD,
     SESSION_COOKIE,
     RateLimiter,
+    client_ip as resolve_client_ip,
     constant_time_equal,
     csrf_for,
     make_session,
     make_user_session,
+    same_origin,
     user_from_session,
     verify_csrf,
     verify_session,
 )
 from .users import ROLE_ADMIN, User, normalize_email
 from .store import Store
-from .tenancy import TenantRegistry
+from .tenancy import get_registry
+from .tenant_ctx import CLIENT_TENANT_COOKIE, client_db, current_supplier_db, supplier_db
 
 from .logs import mask, register_settings_secrets, setup_logging
 
@@ -67,7 +70,7 @@ app.mount("/static", StaticFiles(directory=str(settings.static_dir)), name="stat
 app.include_router(cabinet_router)
 
 settings.ensure_dirs()
-registry = TenantRegistry(settings.tenants_db_path, settings.db_path)
+registry = get_registry(settings)
 
 
 class TenantStore:
@@ -77,7 +80,7 @@ class TenantStore:
         self.default_path = default_path
 
     def _target(self) -> Store:
-        return Store(_tenant_db.get() or self.default_path)
+        return Store(current_supplier_db(self.default_path))
 
     def __getattr__(self, name: str):
         return getattr(self._target(), name)
@@ -101,11 +104,13 @@ async def hardening(request: Request, call_next):
     length = request.headers.get("content-length")
     if length and length.isdigit() and int(length) > settings.max_upload_bytes + 128 * 1024:
         return PlainTextResponse("payload too large", status_code=413)
-    tenant_token = _tenant_db.set(tenant_db_from_request(request))
+    tenant_token = supplier_db.set(tenant_db_from_request(request))
+    client_token = client_db.set(client_tenant_db_from_request(request))
     try:
         response = await call_next(request)
     finally:
-        _tenant_db.reset(tenant_token)
+        client_db.reset(client_token)
+        supplier_db.reset(tenant_token)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
@@ -182,15 +187,13 @@ def rate_key(request: Request) -> str:
 
 
 TENANT_COOKIE = "kpbot_tenant"
-_tenant_db: ContextVar[Path | None] = ContextVar("tenant_db", default=None)
+_tenant_db = supplier_db
 
 
-def tenant_db_from_request(request: Request) -> Path | None:
-    """База клиента по подписанной куке; None — основная база."""
-    value = request.cookies.get(TENANT_COOKIE)
-    if not value:
+def _tenant_path_from_token(token: str | None, ttl: int) -> Path | None:
+    if not token:
         return None
-    tenant_id = user_from_session(settings.session_secret, value, 86400 * 30)
+    tenant_id = user_from_session(settings.session_secret, token, ttl)
     if not tenant_id:
         return None
     tenant = registry.get(tenant_id)
@@ -200,8 +203,18 @@ def tenant_db_from_request(request: Request) -> Path | None:
     return path if path.exists() else None
 
 
+def tenant_db_from_request(request: Request) -> Path | None:
+    """База клиента по подписанной куке админки; None — основная база."""
+    return _tenant_path_from_token(request.cookies.get(TENANT_COOKIE), 86400 * 30)
+
+
+def client_tenant_db_from_request(request: Request) -> Path | None:
+    """База поставщика, в кабинет которого вошёл покупатель; None — основная."""
+    return _tenant_path_from_token(request.cookies.get(CLIENT_TENANT_COOKIE), 86400 * 30)
+
+
 def client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    return resolve_client_ip(request, settings.trusted_proxy_set)
 
 
 def session_of(request: Request) -> str | None:
@@ -269,7 +282,7 @@ def _with_sender_names(rfqs: list[dict]) -> list[dict]:
 
 
 @app.get("/ui", response_class=HTMLResponse)
-async def ui_inbox(request: Request, flash: str = ""):
+def ui_inbox(request: Request, flash: str = ""):
     if not is_authenticated(request):
         return login_redirect(request)
     user = current_user(request)
@@ -298,6 +311,9 @@ async def ui_login_form(request: Request):
 async def ui_login(request: Request):
     if not limiter.allow(f"login:{client_ip(request)}"):
         return page("login.html", request, code=429, error="слишком много попыток, подождите минуту")
+    if not same_origin(request, settings.public_base_url):
+        log.warning("вход с чужого Origin: %s", request.headers.get("origin"))
+        return page("login.html", request, code=403, error="запрос пришёл с другого сайта")
     form = await request.form()
     email = str(form.get("email", "")).strip()
     password = str(form.get("password", ""))
@@ -416,7 +432,7 @@ async def apply_company_form(form) -> None:
 
 
 @app.get("/ui/stats", response_class=HTMLResponse)
-async def ui_stats(request: Request, days: str = "30"):
+def ui_stats(request: Request, days: str = "30"):
     """Сводка живёт на главной: отдельная страница больше не нужна."""
     if not is_authenticated(request):
         return login_redirect(request)
@@ -434,8 +450,18 @@ async def ui_stats(request: Request, days: str = "30"):
     )
 
 
+@app.get("/ui/report", response_class=HTMLResponse)
+def ui_pilot_report(request: Request, days: str = "30"):
+    """Отчёт пилота: цифры для клиента, без текстов писем и персональных данных."""
+    if not is_authenticated(request):
+        return login_redirect(request)
+    period = safe_int(days, 30, 1, 365)
+    company = store.get_settings().get("company_name") or settings.company_name
+    return HTMLResponse(build_pilot_report(store, days=period, company=company))
+
+
 @app.get("/ui/prices", response_class=HTMLResponse)
-async def ui_prices(request: Request, q: str = "", flash: str = ""):
+def ui_prices(request: Request, q: str = "", flash: str = ""):
     """Прайс: сколько позиций, когда обновляли, поиск и загрузка файла."""
     if not is_authenticated(request):
         return login_redirect(request)
@@ -684,13 +710,13 @@ async def render_admin(request: Request, *, tab: str = "state", flash: str = "")
     tab = tab if tab in allowed else "state"
     context = admin_context(request)
     if tab == "clients":
-        cabinet = CabinetStore(settings.db_path)
+        cabinet = CabinetStore(current_supplier_db(settings.db_path))
         companies = cabinet.list_companies()
         for company in companies:
             company["users"] = cabinet.list_users(company["id"])
         context["clients"] = companies
     elif tab == "orders":
-        context["client_orders"] = CabinetStore(settings.db_path).all_orders()
+        context["client_orders"] = CabinetStore(current_supplier_db(settings.db_path)).all_orders()
     context["order_statuses"] = ORDER_STATUSES
     context["order_labels"] = ORDER_STATUS_LABELS
     return page(
@@ -723,7 +749,7 @@ def is_owner(request: Request) -> bool:
 
 
 @app.get("/ui/ops", response_class=HTMLResponse)
-async def ui_ops(request: Request, flash: str = ""):
+def ui_ops(request: Request, flash: str = ""):
     if not is_authenticated(request):
         return login_redirect(request)
     if not is_owner(request):
@@ -914,7 +940,7 @@ async def ui_admin_client_create(request: Request):
             status_code=status.HTTP_303_SEE_OTHER,
         )
     password = str(form.get("password", "")).strip() or secrets.token_urlsafe(9)
-    cabinet = CabinetStore(settings.db_path)
+    cabinet = CabinetStore(current_supplier_db(settings.db_path))
     try:
         company = cabinet.create_company(
             name, inn=str(form.get("inn", "")).strip(), kpp=str(form.get("kpp", "")).strip()
@@ -941,7 +967,7 @@ async def ui_admin_client_status(request: Request, company_id: str):
         return denied
     form = await verified_form(request)
     new_status = str(form.get("status", "active"))
-    cabinet = CabinetStore(settings.db_path)
+    cabinet = CabinetStore(current_supplier_db(settings.db_path))
     if cabinet.company(company_id) is None:
         return RedirectResponse(
             f"/ui/admin?tab=clients&flash={quote('компания не найдена')}",
@@ -964,7 +990,7 @@ async def ui_admin_client_user(request: Request, company_id: str):
     email = str(form.get("email", "")).strip().lower()
     password = str(form.get("password", "")).strip() or secrets.token_urlsafe(9)
     role = str(form.get("role", "client_manager"))
-    cabinet = CabinetStore(settings.db_path)
+    cabinet = CabinetStore(current_supplier_db(settings.db_path))
     if cabinet.company(company_id) is None:
         return RedirectResponse(
             f"/ui/admin?tab=clients&flash={quote('компания не найдена')}",
@@ -993,7 +1019,7 @@ async def ui_admin_order_status(request: Request, order_id: str):
         return denied
     form = await verified_form(request)
     new_status = str(form.get("status", "pending"))
-    cabinet = CabinetStore(settings.db_path)
+    cabinet = CabinetStore(current_supplier_db(settings.db_path))
     if cabinet.order(order_id) is None:
         return RedirectResponse(
             f"/ui/admin?tab=orders&flash={quote('заказ не найден')}",
@@ -1136,7 +1162,7 @@ def stock_for_lines(lines: list[dict], stock: dict, items) -> dict[int, dict]:
 
 
 @app.get("/ui/rfq/{rfq_id}", response_class=HTMLResponse)
-async def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
+def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
     if not is_authenticated(request):
         return login_redirect(request)
     ensure_rfq_id(rfq_id)
@@ -1190,9 +1216,16 @@ async def ui_approve(request: Request, rfq_id: str):
     if not verify_csrf(settings.session_secret, session_of(request), str(form.get(CSRF_FIELD, ""))):
         return PlainTextResponse("csrf failed", status_code=403)
     try:
-        pipeline.approve(rfq_id, actor=f"ui:{client_ip(request)}", comment=str(form.get("comment", ""))[:500])
+        await run_in_threadpool(
+            pipeline.approve,
+            rfq_id,
+            actor=f"ui:{client_ip(request)}",
+            comment=str(form.get("comment", ""))[:500],
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail="заявка не найдена") from None
+    except ValidationError as exc:
+        return back_to(rfq_id, str(exc))
     return RedirectResponse(
         f"/ui/rfq/{rfq_id}?flash={quote('одобрено, черновик ответа в outbox')}",
         status_code=status.HTTP_303_SEE_OTHER,
@@ -1211,6 +1244,8 @@ async def ui_reject(request: Request, rfq_id: str):
         pipeline.reject(rfq_id, actor=f"ui:{client_ip(request)}", reason=str(form.get("reason", ""))[:500])
     except KeyError:
         raise HTTPException(status_code=404, detail="заявка не найдена") from None
+    except ValidationError as exc:
+        return back_to(rfq_id, str(exc))
     return RedirectResponse(
         f"/ui/rfq/{rfq_id}?flash={quote('отклонено')}", status_code=status.HTTP_303_SEE_OTHER
     )
@@ -1304,6 +1339,8 @@ async def save_edits(rfq_id: str, lines: list[RfqLine], actor: str, note: str) -
         return back_to(rfq_id, str(exc))
     except KeyError:
         raise HTTPException(status_code=404, detail="заявка не найдена") from None
+    except ValidationError as exc:
+        return back_to(rfq_id, str(exc))
     return back_to(rfq_id, "строки сохранены, КП пересчитано")
 
 
@@ -1426,6 +1463,8 @@ async def ui_rfq_send(request: Request, rfq_id: str):
     rfq = store.get_rfq(rfq_id)
     if rfq is None:
         raise HTTPException(status_code=404, detail="заявка не найдена")
+    if rfq["status"] == RfqStatus.REJECTED.value:
+        return back_to(rfq_id, "заявка отклонена — отправка невозможна")
 
     to = normalize_email(str(form.get("to", "")).strip() or str(rfq.get("sender", "")))
     if "@" not in to:
@@ -1448,7 +1487,7 @@ async def ui_rfq_send(request: Request, rfq_id: str):
         reply_to=settings.smtp_user or "",
     )
     try:
-        mailer.send(message, to=to)
+        await run_in_threadpool(mailer.send, message, to=to)
     except MailError as exc:
         store.enqueue_message(
             rfq_id=rfq_id,
@@ -1458,7 +1497,8 @@ async def ui_rfq_send(request: Request, rfq_id: str):
             error=str(exc),
         )
         # Письмо не ушло — заявка остаётся одобренной и ждёт повтора, а не «отправленной».
-        store.set_status(rfq_id, RfqStatus.APPROVED.value)
+        # force: статус мог быть sent из старой схемы «черновик = отправлено».
+        store.set_status(rfq_id, RfqStatus.APPROVED.value, force=True)
         store.log(rfq_id, "send_failed", f"ui:{client_ip(request)}", f"{to}: {exc}"[:300])
         if mailer.enabled:
             return back_to(rfq_id, f"не отправлено: {exc}. Письмо в очереди, повторю автоматически")
@@ -1467,7 +1507,7 @@ async def ui_rfq_send(request: Request, rfq_id: str):
             f"не отправлено: {exc}. Письмо в очереди; включите SMTP — и оно уйдёт при повторе",
         )
 
-    store.set_status(rfq_id, RfqStatus.SENT.value)
+    store.set_status(rfq_id, RfqStatus.SENT.value, force=True)
     store.log(
         rfq_id,
         "sent",
@@ -1589,9 +1629,11 @@ async def api_get_rfq(rfq_id: str) -> dict:
 async def api_approve(rfq_id: str) -> dict:
     ensure_rfq_id(rfq_id)
     try:
-        result = pipeline.approve(rfq_id, actor="api")
+        result = await run_in_threadpool(pipeline.approve, rfq_id, actor="api")
     except KeyError:
         raise HTTPException(status_code=404, detail="заявка не найдена") from None
+    except ValidationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     return {"rfq_id": result.rfq_id, "status": result.status}
 
 

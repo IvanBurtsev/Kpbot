@@ -12,9 +12,37 @@ import hmac
 import threading
 import time
 from collections import deque
+from typing import Any
 
 SESSION_COOKIE = "kpbot_session"
 CSRF_FIELD = "csrf_token"
+
+
+def client_ip(request: Any, trusted_proxies: set[str]) -> str:
+    """Адрес клиента с учётом X-Forwarded-For только от доверенного прокси.
+
+    Без списка доверенных адресов заголовок игнорируется: иначе любой клиент
+    подставит чужой IP и обойдёт лимит попыток входа.
+    """
+    peer = request.client.host if getattr(request, "client", None) else "unknown"
+    if peer in trusted_proxies:
+        forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        if forwarded:
+            return forwarded[:64]
+    return peer
+
+
+def same_origin(request: Any, public_base_url: str) -> bool:
+    """Запрос пришёл со страницы того же сайта.
+
+    Браузер присылает Origin на POST. Если он есть и не совпадает с публичным
+    адресом — это login CSRF (чужой сайт авторизует жертву в своём аккаунте).
+    Отсутствие заголовка не блокируем: старые клиенты и curl его не шлют.
+    """
+    origin = (request.headers.get("origin") or "").strip().rstrip("/")
+    if not origin:
+        return True
+    return origin == (public_base_url or "").strip().rstrip("/")
 
 
 def _hmac(secret: str, payload: str) -> str:

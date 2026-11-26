@@ -29,13 +29,17 @@ from .domain import LineStatus, PriceItem, RfqLine, price_quote
 from .render import html_to_pdf, render_template
 from .security import (
     RateLimiter,
+    client_ip as resolve_client_ip,
     constant_time_equal,
     csrf_for,
     make_user_session,
+    same_origin,
     user_from_session,
     verify_csrf,
 )
 from .store import Store
+from .tenancy import get_registry
+from .tenant_ctx import CLIENT_TENANT_COOKIE, current_client_db
 
 router = APIRouter(prefix="/cabinet", tags=["cabinet"])
 CLIENT_COOKIE = "kpbot_client_session"
@@ -49,9 +53,15 @@ class OrderError(ValueError):
 
 
 def cabinet_store() -> CabinetStore:
-    store = CabinetStore(settings.db_path)
+    """Данные кабинета живут в базе поставщика (тенанта), а не в основной."""
+    store = CabinetStore(current_client_db(settings.db_path))
     store.init_schema()
     return store
+
+
+def supplier_store() -> Store:
+    """Прайс, остатки и реквизиты — из той же базы поставщика, что и кабинет."""
+    return Store(current_client_db(settings.db_path))
 
 
 # ---------- сессия и контекст ----------
@@ -103,7 +113,7 @@ def _check_csrf(request: Request, form) -> bool:
 
 def _seller() -> dict:
     """Реквизиты поставщика для документов: настройки компании из админки."""
-    return Store(settings.db_path).get_settings()
+    return supplier_store().get_settings()
 
 
 def _fmt(value: object) -> Decimal:
@@ -116,33 +126,94 @@ def _fmt(value: object) -> Decimal:
 # ---------- вход ----------
 
 
+def _resolve_tenant(code: str) -> dict | None:
+    """Клиент поставщика по коду из ссылки `/cabinet/login?t=<код>`."""
+    code = (code or "").strip()
+    if not code:
+        return None
+    tenant = get_registry(settings).get(code)
+    if not tenant or tenant["status"] != "active":
+        return None
+    path = Path(tenant["db_path"])
+    return tenant if path.exists() else None
+
+
 @router.get("/login", response_class=HTMLResponse)
-async def login_form(request: Request, flash: str = ""):
+def login_form(request: Request, flash: str = "", t: str = ""):
     if _user(request) is not None:
         return RedirectResponse("/cabinet", status_code=status.HTTP_303_SEE_OTHER)
-    return _page(request, "cabinet/login.html", flash=flash[:200], user=None, company=None)
+    tenant = _resolve_tenant(t) if t else None
+    return _page(
+        request,
+        "cabinet/login.html",
+        code=404 if (t and tenant is None) else 200,
+        flash=flash[:200],
+        user=None,
+        company=None,
+        tenant_code=tenant["id"] if tenant else "",
+        tenant_name=tenant["name"] if tenant else "",
+        error="" if (not t or tenant) else "кабинет не найден или приостановлен",
+    )
 
 
 @router.post("/login")
 async def login(request: Request):
-    if not _limiter.allow(f"cabinet-login:{request.client.host if request.client else 'x'}"):
+    if not _limiter.allow(
+        f"cabinet-login:{resolve_client_ip(request, settings.trusted_proxy_set)}"
+    ):
         return _page(request, "cabinet/login.html", code=429,
-                     error="слишком много попыток, подождите минуту", user=None, company=None)
+                     error="слишком много попыток, подождите минуту", user=None, company=None,
+                     tenant_code="", tenant_name="")
+    if not same_origin(request, settings.public_base_url):
+        return _page(request, "cabinet/login.html", code=403,
+                     error="запрос пришёл с другого сайта", user=None, company=None,
+                     tenant_code="", tenant_name="")
     form = await request.form()
     email = str(form.get("email", "")).strip()
     password = str(form.get("password", ""))
-    store = cabinet_store()
+    tenant_code = str(form.get("tenant", "")).strip()
+    tenant = _resolve_tenant(tenant_code) if tenant_code else None
+    if tenant_code and tenant is None:
+        return _page(
+            request,
+            "cabinet/login.html",
+            code=404,
+            error="кабинет не найден или приостановлен",
+            user=None,
+            company=None,
+            tenant_code="",
+            tenant_name="",
+        )
+
+    # Код из ссылки важнее куки: поставщик мог прислать вход в другой кабинет.
+    db_path = Path(tenant["db_path"]) if tenant else current_client_db(settings.db_path)
+    store = CabinetStore(db_path)
+    store.init_schema()
     user = store.authenticate(email, password)
     if user is None:
         return _page(request, "cabinet/login.html", code=401,
-                     error="неверный логин или пароль", user=None, company=None)
+                     error="неверный логин или пароль", user=None, company=None,
+                     tenant_code=tenant["id"] if tenant else "", tenant_name=tenant["name"] if tenant else "")
     company = store.company(user["company_id"])
     if company is None or company["status"] != "active":
         return _page(request, "cabinet/login.html", code=403,
                      error="доступ компании приостановлен, обратитесь к поставщику",
-                     user=None, company=None)
+                     user=None, company=None,
+                     tenant_code=tenant["id"] if tenant else "", tenant_name=tenant["name"] if tenant else "")
     token = make_user_session(settings.session_secret, user["id"], settings.session_ttl_seconds)
     response = RedirectResponse("/cabinet", status_code=status.HTTP_303_SEE_OTHER)
+    if tenant is not None:
+        response.set_cookie(
+            CLIENT_TENANT_COOKIE,
+            make_user_session(settings.session_secret, tenant["id"], 86400 * 30),
+            httponly=True,
+            samesite="lax",
+            secure=settings.public_base_url.lower().startswith("https"),
+            max_age=86400 * 30,
+            path="/",
+        )
+    elif db_path == settings.db_path:
+        response.delete_cookie(CLIENT_TENANT_COOKIE, path="/")
     response.set_cookie(
         CLIENT_COOKIE, token, httponly=True, samesite="lax",
         secure=settings.public_base_url.lower().startswith("https"),
@@ -152,9 +223,10 @@ async def login(request: Request):
 
 
 @router.post("/logout")
-async def logout(request: Request):
+def logout(request: Request):
     response = RedirectResponse("/cabinet/login", status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie(CLIENT_COOKIE, path="/")
+    response.delete_cookie(CLIENT_TENANT_COOKIE, path="/")
     return response
 
 
@@ -163,7 +235,7 @@ async def logout(request: Request):
 
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request):
+def dashboard(request: Request):
     user = _user(request)
     if user is None:
         return _login_redirect(request)
@@ -185,7 +257,7 @@ async def dashboard(request: Request):
 
 
 def _catalog(company_id: str, query: str = "") -> list[dict]:
-    supplier = Store(settings.db_path)
+    supplier = supplier_store()
     cabinet = cabinet_store()
     personal = cabinet.price_map(company_id)
     packs = cabinet.pack_map()
@@ -216,7 +288,7 @@ def _catalog(company_id: str, query: str = "") -> list[dict]:
 
 
 @router.get("/catalog", response_class=HTMLResponse)
-async def catalog(request: Request, q: str = "", flash: str = ""):
+def catalog(request: Request, q: str = "", flash: str = ""):
     user = _user(request)
     if user is None:
         return _login_redirect(request)
@@ -234,7 +306,7 @@ async def catalog(request: Request, q: str = "", flash: str = ""):
 
 
 def _cart_context(request: Request, user: dict, company: dict) -> dict:
-    supplier = Store(settings.db_path)
+    supplier = supplier_store()
     cabinet = cabinet_store()
     by_sku = {item.sku: item for item in supplier.price_items()}
     personal = cabinet.price_map(company["id"])
@@ -268,7 +340,7 @@ def _cart_context(request: Request, user: dict, company: dict) -> dict:
 
 
 @router.get("/cart", response_class=HTMLResponse)
-async def cart(request: Request, flash: str = "", error: str = ""):
+def cart(request: Request, flash: str = "", error: str = ""):
     user = _user(request)
     if user is None:
         return _login_redirect(request)
@@ -334,7 +406,7 @@ async def cart_remove(request: Request):
 
 
 def _validate_order(user: dict, company: dict) -> tuple[list[dict], Decimal, Decimal]:
-    supplier = Store(settings.db_path)
+    supplier = supplier_store()
     cabinet = cabinet_store()
     by_sku = {item.sku: item for item in supplier.price_items()}
     personal = cabinet.price_map(company["id"])
@@ -371,7 +443,7 @@ def _validate_order(user: dict, company: dict) -> tuple[list[dict], Decimal, Dec
 
 def _rfq_from_order(user: dict, company: dict, rows: list[dict], order_number: str) -> str:
     """Заказ ЛК → обычная заявка поставщика с готовым расчётом."""
-    store = Store(settings.db_path)
+    store = supplier_store()
     rfq_id = uuid.uuid4().hex
     lines = [
         RfqLine(
@@ -442,7 +514,7 @@ async def create_order(request: Request):
 
 
 @router.get("/orders", response_class=HTMLResponse)
-async def orders(request: Request):
+def orders(request: Request):
     user = _user(request)
     if user is None:
         return _login_redirect(request)
@@ -452,7 +524,7 @@ async def orders(request: Request):
 
 
 @router.get("/orders/{order_id}", response_class=HTMLResponse)
-async def order_page(request: Request, order_id: str, flash: str = ""):
+def order_page(request: Request, order_id: str, flash: str = ""):
     user = _user(request)
     if user is None:
         return _login_redirect(request)
@@ -474,7 +546,7 @@ DOC_TITLES = {
 
 
 @router.get("/orders/{order_id}/doc/{kind}")
-async def order_doc(request: Request, order_id: str, kind: str):
+def order_doc(request: Request, order_id: str, kind: str):
     user = _user(request)
     if user is None:
         return _login_redirect(request)
@@ -500,7 +572,7 @@ async def order_doc(request: Request, order_id: str, kind: str):
 
 
 @router.get("/documents/act")
-async def reconciliation_act(request: Request):
+def reconciliation_act(request: Request):
     """Акт сверки по заказам компании — для client_admin."""
     user = _user(request)
     if user is None:
@@ -515,7 +587,7 @@ async def reconciliation_act(request: Request):
 
 
 @router.post("/orders/{order_id}/repeat")
-async def repeat_order(request: Request, order_id: str):
+def repeat_order(request: Request, order_id: str):
     """Повторить заказ: позиции возвращаются в корзину."""
     user = _user(request)
     if user is None:
@@ -545,30 +617,50 @@ def _api_allowed(request: Request) -> bool:
     return bool(key) and constant_time_equal(key, settings.api_key)
 
 
+def _api_tenant_path(request: Request) -> Path | None:
+    """База из заголовка `X-Tenant`; без заголовка — текущая/основная."""
+    code = (request.headers.get("X-Tenant") or "").strip()
+    if not code:
+        return current_client_db(settings.db_path)
+    tenant = _resolve_tenant(code)
+    return Path(tenant["db_path"]) if tenant else None
+
+
 @router.get("/api/1c/stock")
-async def api_stock(request: Request):
+def api_stock(request: Request):
     if not _api_allowed(request):
         return PlainTextResponse("unauthorized", status_code=401)
-    stock = Store(settings.db_path).stock_map()
+    path = _api_tenant_path(request)
+    if path is None:
+        return PlainTextResponse("tenant not found", status_code=404)
+    stock = Store(path).stock_map()
     return JSONResponse([{"sku": sku, **row} for sku, row in stock.items()])
 
 
 @router.get("/api/1c/prices")
-async def api_prices(request: Request):
+def api_prices(request: Request):
     if not _api_allowed(request):
         return PlainTextResponse("unauthorized", status_code=401)
-    items = Store(settings.db_path).price_items()
+    path = _api_tenant_path(request)
+    if path is None:
+        return PlainTextResponse("tenant not found", status_code=404)
+    items = Store(path).price_items()
     return JSONResponse([{"sku": i.sku, "name": i.name, "unit": i.unit, "price": str(i.price)} for i in items])
 
 
 @router.get("/api/1c/orders")
-async def api_orders(request: Request):
+def api_orders(request: Request):
     if not _api_allowed(request):
         return PlainTextResponse("unauthorized", status_code=401)
+    path = _api_tenant_path(request)
+    if path is None:
+        return PlainTextResponse("tenant not found", status_code=404)
+    cabinet = CabinetStore(path)
+    cabinet.init_schema()
     return JSONResponse([
         {"id": order["id"], "number": order["number"], "company": order["company_name"],
          "status": order["status"], "total": order["total"], "created_at": order["created_at"]}
-        for order in cabinet_store().all_orders()
+        for order in cabinet.all_orders()
     ])
 
 
@@ -588,7 +680,12 @@ async def api_order_status(request: Request, order_id: str):
         new_status = str(form.get("status", "")) if form else ""
     if new_status not in ORDER_STATUSES:
         return JSONResponse({"ok": False, "error": "неизвестный статус"}, status_code=422)
-    cabinet_store().update_status(order_id, new_status)
+    path = _api_tenant_path(request)
+    if path is None:
+        return PlainTextResponse("tenant not found", status_code=404)
+    cabinet = CabinetStore(path)
+    cabinet.init_schema()
+    cabinet.update_status(order_id, new_status)
     return JSONResponse({"ok": True, "status": new_status})
 
 
@@ -603,7 +700,11 @@ async def api_settlements(request: Request):
     company_id = str(payload.get("company_id", ""))
     if not company_id:
         return JSONResponse({"ok": False, "error": "нужен company_id"}, status_code=422)
-    store = cabinet_store()
+    path = _api_tenant_path(request)
+    if path is None:
+        return PlainTextResponse("tenant not found", status_code=404)
+    store = CabinetStore(path)
+    store.init_schema()
     if store.company(company_id) is None:
         return JSONResponse({"ok": False, "error": "компания не найдена"}, status_code=404)
     store.update_finance(

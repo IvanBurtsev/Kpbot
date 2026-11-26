@@ -87,6 +87,41 @@ class HeadersAndCookieTest(unittest.TestCase):
             settings.public_base_url = original
 
 
+class LoginOriginTest(unittest.TestCase):
+    def test_foreign_origin_is_rejected(self) -> None:
+        client = TestClient(app, follow_redirects=False)
+        response = client.post(
+            "/ui/login",
+            data={"password": settings.ui_password},
+            headers={"Origin": "https://evil.example"},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_same_origin_is_allowed(self) -> None:
+        client = TestClient(app, follow_redirects=False)
+        response = client.post(
+            "/ui/login",
+            data={"password": settings.ui_password},
+            headers={"Origin": settings.public_base_url},
+        )
+        self.assertEqual(response.status_code, 303)
+
+    def test_forwarded_for_is_trusted_only_from_proxy(self) -> None:
+        from starlette.requests import Request
+
+        from kpbot.security import client_ip
+
+        def make(peer: str):
+            return Request({
+                "type": "http",
+                "client": (peer, 1234),
+                "headers": [(b"x-forwarded-for", b"203.0.113.7, 10.0.0.1")],
+            })
+
+        self.assertEqual(client_ip(make("127.0.0.1"), {"127.0.0.1"}), "203.0.113.7")
+        self.assertEqual(client_ip(make("198.51.100.5"), {"127.0.0.1"}), "198.51.100.5")
+
+
 class SqlInjectionTest(unittest.TestCase):
     def test_search_and_subjects_do_not_break_queries(self) -> None:
         client = TestClient(app, follow_redirects=False)

@@ -3,10 +3,12 @@
 {% block content %}
 <section class="card narrow cabinet-login">
   <h1>Кабинет клиента</h1>
+  {% if tenant_name %}<p class="muted small">Поставщик: <strong>{{ tenant_name }}</strong></p>{% endif %}
   <p class="muted small">Заказ у поставщика: каталог, цены и остатки, история заказов.</p>
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
   {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
   <form method="post" action="/cabinet/login" class="stack">
+    <input type="hidden" name="tenant" value="{{ tenant_code or '' }}">
     <label>E-mail
       <input type="email" name="email" autocomplete="username" required autofocus placeholder="zakupki@firma.ru">
     </label>

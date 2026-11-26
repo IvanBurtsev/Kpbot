@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from .domain import PriceItem, Quote, QuoteLine, RfqLine
+from .domain import PriceItem, Quote, QuoteLine, RfqLine, RfqStatus, check_transition
 from .users import ROLE_ADMIN, User, check_role, hash_password, normalize_email, verify_password
 
 SCHEMA = """
@@ -335,9 +335,20 @@ class Store:
             ).fetchall()
         return {**dict(head), "lines": [dict(row) for row in lines]}
 
-    def set_status(self, rfq_id: str, status: str) -> None:
+    def set_status(self, rfq_id: str, status: str, *, force: bool = False) -> None:
+        """Меняет статус, проверяя допустимость перехода.
+
+        force=True — только для служебных путей (повтор уже отправленного письма),
+        которые обязаны довести заявку до sent, даже если статус разошёлся с данными.
+        """
+        new_status = RfqStatus(status)
         with closing(self._connect()) as conn, conn:
-            conn.execute("UPDATE rfqs SET status = ? WHERE id = ?", (status, rfq_id))
+            row = conn.execute("SELECT status FROM rfqs WHERE id = ?", (rfq_id,)).fetchone()
+            if row is None:
+                raise KeyError(rfq_id)
+            if not force:
+                check_transition(row["status"], new_status)
+            conn.execute("UPDATE rfqs SET status = ? WHERE id = ?", (new_status.value, rfq_id))
 
     def list_rfqs(
         self,
@@ -590,6 +601,23 @@ class Store:
             "median_seconds": timing.get("median_seconds"),
             "median_wait_seconds": timing.get("median_wait_seconds"),
         }
+
+    def unmatched_report(self, days: int = 30, limit: int = 10) -> list[dict]:
+        """Что чаще всего не сопоставилось: подсказка клиенту, чего нет в прайсе."""
+        since = (datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))).isoformat()
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT l.raw_text AS text, COUNT(*) AS n
+                FROM rfq_lines l JOIN rfqs r ON r.id = l.rfq_id
+                WHERE r.created_at >= ? AND l.status IN ('no_match', 'ambiguous', 'invalid')
+                GROUP BY lower(l.raw_text)
+                ORDER BY n DESC, l.raw_text
+                LIMIT ?
+                """,
+                (since, max(1, min(int(limit), 50))),
+            ).fetchall()
+        return [{"text": row["text"], "count": int(row["n"])} for row in rows]
 
     def purge_demo_rfqs(self) -> int:
         """Удаляет заявки демо-стенда (адреса @demo.local), не трогая настоящие."""

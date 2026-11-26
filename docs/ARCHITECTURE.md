@@ -44,7 +44,10 @@ api (FastAPI) ── pipeline (use case) ──┬── domain      (сущно
 ## 4. Состояния
 
 `received → parsed → priced → draft_ready → approved → sent`, терминальные `human_review`, `rejected`.
-Переход в `sent` возможен только из `approved` и только действием человека или API-ключа.
+Переходы проверяет `check_transition` (`kpbot/domain.py`): `sent` не меняется, `rejected`
+можно вернуть в работу правкой, повтор в тот же статус — не ошибка. Нарушение даёт 409
+в интерфейсе и API, а не тихую запись «как получится». `force=True` оставлен только
+служебному повтору отправки.
 
 ## 5. Ключевые решения
 
@@ -67,7 +70,8 @@ api (FastAPI) ── pipeline (use case) ──┬── domain      (сущно
 | Валидация входа | Pydantic, `extra="forbid"`, лимиты размеров | `web.py` |
 | XSS | autoescape Jinja2, никакого `\|safe` | `render.py`, шаблоны |
 | CSRF | HMAC-токен от сессии в каждой форме | `security.py`, `web.py` |
-| Подбор пароля | rate limit на вход, constant-time сравнение | `security.py` |
+| Подбор пароля | rate limit на вход, constant-time сравнение, Origin-проверка | `security.py`, `web.py` |
+| Лимиты за прокси | `X-Forwarded-For` принимается только от `KPBOT_TRUSTED_PROXIES` | `security.py` |
 | Утечка через API | ключ в заголовке, 401 без деталей | `web.py` |
 | DoS по размеру | `Content-Length` проверяется до чтения тела; лимит файла | `web.py` |
 | Кликджекинг / MIME-sniffing | CSP, `X-Frame-Options: DENY`, `nosniff` | `web.py` |

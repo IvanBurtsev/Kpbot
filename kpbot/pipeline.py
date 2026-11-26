@@ -576,13 +576,13 @@ class Pipeline:
 
         # «Отправлено» — только если письмо действительно ушло. Когда SMTP включён,
         # заявка ждёт отдельного действия «Отправить»; иначе честный статус — «в отправку».
+        self.store.set_status(rfq_id, RfqStatus.APPROVED.value)
         if self.cfg.smtp_enabled:
             status = RfqStatus.APPROVED.value
-            self.store.set_status(rfq_id, status)
             self.store.log(rfq_id, "awaiting_send", actor, "одобрено, ждёт отправки по SMTP")
         else:
             status = RfqStatus.SENT.value
-            self.store.set_status(rfq_id, status)
+            self.store.set_status(rfq_id, RfqStatus.SENT.value)
             self.store.log(rfq_id, "sent", actor, "черновик сохранён в outbox (SMTP не настроен)")
 
         return IngestResult(

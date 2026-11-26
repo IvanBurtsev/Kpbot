@@ -94,6 +94,9 @@ class Settings(BaseSettings):
     max_email_text_chars: int = 200_000
     max_rfq_lines: int = 200
     rate_limit_per_minute: int = 60
+    # IP обратного прокси, которым можно верить в X-Forwarded-For (через запятую).
+    # Пусто — заголовок игнорируется, лимит считается по адресу соединения.
+    trusted_proxies: str = ""
 
     # --- PDF ---
     pdf_enabled: bool = True
@@ -168,6 +171,10 @@ class Settings(BaseSettings):
     def secrets_key(self) -> str:
         """Чем шифруем секреты в базе: KPBOT_SECRET_KEY или секрет сессии."""
         return self.secret_key or self.session_secret
+
+    @property
+    def trusted_proxy_set(self) -> set[str]:
+        return {item.strip() for item in self.trusted_proxies.split(",") if item.strip()}
 
     @property
     def tenants_db_path(self) -> Path:

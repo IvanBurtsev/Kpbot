@@ -798,7 +798,7 @@ def _retry_one(store: Store, mailer, limit: int) -> tuple[int, int]:
             failed += 1
             continue
         store.mark_sent(item["id"])
-        store.set_status(item["rfq_id"], RfqStatus.SENT.value)
+        store.set_status(item["rfq_id"], RfqStatus.SENT.value, force=True)
         store.log(item["rfq_id"], "sent", "cli:retry", f"кому {item['to_addr']}, вложений {len(attachments)}")
         sent += 1
     return sent, failed
@@ -851,7 +851,7 @@ def cmd_retry_outbox(args: argparse.Namespace) -> int:
             failed += 1
             continue
         store.mark_sent(item["id"])
-        store.set_status(item["rfq_id"], RfqStatus.SENT.value)
+        store.set_status(item["rfq_id"], RfqStatus.SENT.value, force=True)
         store.log(item["rfq_id"], "sent", "cli:retry", f"кому {item['to_addr']}, вложений {len(attachments)}")
         print(f"  отправлено: {item['to_addr']}")
         sent += 1
@@ -976,22 +976,39 @@ def cmd_eval(args: argparse.Namespace) -> int:
     return 0
 
 
-def _backup_one(source: Path, keep: int, suffix: str = "") -> str:
-    """Копия одной базы с ротацией. Возвращает путь и размер для отчёта."""
+def _copy_db(source: Path, target: Path) -> None:
+    """Консистентная копия SQLite через backup API (учитывает WAL)."""
     import contextlib
     import sqlite3
 
+    with contextlib.closing(sqlite3.connect(str(source))) as src, contextlib.closing(
+        sqlite3.connect(str(target))
+    ) as dst:
+        src.backup(dst)
+
+
+def _integrity(path: Path) -> str:
+    import sqlite3
+
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            row = conn.execute("PRAGMA integrity_check").fetchone()
+    except sqlite3.Error as exc:
+        return f"не читается: {exc}"
+    return str(row[0]) if row else "пусто"
+
+
+def _backup_one(source: Path, keep: int, suffix: str = "") -> str:
+    """Копия одной базы с ротацией и проверкой целостности."""
     if not source.exists():
         return f"нет базы {source}"
     target_dir = settings.data_dir / "backups"
     target_dir.mkdir(parents=True, exist_ok=True)
     name_part = f"kpbot-{suffix}-" if suffix else "kpbot-"
     target = target_dir / f"{name_part}{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.sqlite3"
-    with contextlib.closing(sqlite3.connect(str(source))) as src, contextlib.closing(
-        sqlite3.connect(str(target))
-    ) as dst:
-        src.backup(dst)
+    _copy_db(source, target)
 
+    integrity = _integrity(target)
     copies = sorted(target_dir.glob(f"{name_part}*.sqlite3"))
     removed = 0
     for old in copies[: max(0, len(copies) - max(1, keep))]:
@@ -1001,7 +1018,8 @@ def _backup_one(source: Path, keep: int, suffix: str = "") -> str:
         except OSError:
             pass
     size_kb = target.stat().st_size // 1024
-    return f"{target.name} ({size_kb} КБ), удалено старых: {removed}"
+    status = "целостность ok" if integrity == "ok" else f"ВНИМАНИЕ: {integrity[:120]}"
+    return f"{target.name} ({size_kb} КБ, {status}), удалено старых: {removed}"
 
 
 def tenant_stores():
@@ -1283,6 +1301,32 @@ def cmd_cabinet_demo(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_pilot_report(args: argparse.Namespace) -> int:
+    """HTML-отчёт пилота: заявки, авто-строки, время, что требует уточнения."""
+    from .report import build_pilot_report
+    from .tenancy import TenantRegistry
+
+    store = Store(settings.db_path)
+    if args.tenant:
+        registry = TenantRegistry(settings.tenants_db_path, settings.db_path)
+        tenant = registry.get(args.tenant)
+        if tenant is None:
+            print(f"клиент не найден: {args.tenant}")
+            return 2
+        store = Store(Path(tenant["db_path"]))
+
+    html = build_pilot_report(
+        store,
+        days=max(1, min(int(args.days), 365)),
+        company=store.get_settings().get("company_name") or settings.company_name,
+    )
+    target = Path(args.out) if args.out else settings.out_dir / f"pilot-report-{args.days}d.html"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(html, encoding="utf-8")
+    print(f"отчёт: {target}")
+    return 0
+
+
 def cmd_backup(args: argparse.Namespace) -> int:
     """Консистентная копия базы через sqlite backup API + ротация старых копий."""
     import contextlib
@@ -1302,6 +1346,50 @@ def cmd_backup(args: argparse.Namespace) -> int:
         print(f"базы нет: {source}")
         return 2
     print(f"бэкап: {_backup_one(source, args.keep)}")
+    return 0
+
+
+def cmd_restore(args: argparse.Namespace) -> int:
+    """Восстановление базы из копии. Требует остановленного сервиса и --yes."""
+    from .tenancy import TenantRegistry
+
+    source = Path(args.file)
+    if not source.exists():
+        print(f"файла нет: {source}")
+        return 2
+    integrity = _integrity(source)
+    if integrity != "ok":
+        print(f"копия повреждена: {integrity[:200]}")
+        return 2
+
+    target = settings.db_path
+    if args.tenant:
+        registry = TenantRegistry(settings.tenants_db_path, settings.db_path)
+        tenant = registry.get(args.tenant)
+        if tenant is None:
+            print(f"клиент не найден: {args.tenant}")
+            return 2
+        target = Path(tenant["db_path"])
+
+    print(f"копия:   {source}")
+    print(f"цель:    {target}")
+    if not args.yes:
+        print("проверка пройдена. Остановите сервис и повторите с --yes")
+        return 2
+
+    if target.exists():
+        safety = target.with_name(f"{target.stem}.before-restore-{datetime.now():%Y%m%d-%H%M%S}.sqlite3")
+        _copy_db(target, safety)
+        print(f"страховочная копия: {safety}")
+    for suffix in ("-wal", "-shm"):
+        Path(str(target) + suffix).unlink(missing_ok=True)
+
+    _copy_db(source, target)
+    check = _integrity(target)
+    if check != "ok":
+        print(f"ВНИМАНИЕ: после восстановления integrity_check = {check[:200]}")
+        return 1
+    print("восстановлено, целостность ok")
     return 0
 
 
@@ -1507,6 +1595,18 @@ def main(argv: list[str] | None = None) -> int:
     backup.add_argument("--keep", type=int, default=7, help="сколько копий хранить")
     backup.add_argument("--all", action="store_true", help="все клиенты, не только основная база")
     backup.set_defaults(func=cmd_backup)
+
+    restore = sub.add_parser("restore", help="восстановить базу из копии (сервис остановить)")
+    restore.add_argument("--file", required=True, help="путь к копии .sqlite3")
+    restore.add_argument("--tenant", default="", help="код клиента; пусто — основная база")
+    restore.add_argument("--yes", action="store_true", help="подтвердить замену базы")
+    restore.set_defaults(func=cmd_restore)
+
+    report = sub.add_parser("pilot-report", help="HTML-отчёт пилота для клиента")
+    report.add_argument("--days", type=int, default=30)
+    report.add_argument("--tenant", default="", help="код клиента; пусто — основная база")
+    report.add_argument("--out", default="", help="куда сохранить HTML")
+    report.set_defaults(func=cmd_pilot_report)
 
     evaluate_cmd = sub.add_parser("eval", help="замерить качество разбора на размеченных письмах")
     evaluate_cmd.add_argument("--verbose", "-v", action="store_true")

@@ -33,6 +33,19 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_REGISTRIES: dict[tuple[str, str], "TenantRegistry"] = {}
+
+
+def get_registry(settings) -> "TenantRegistry":
+    """Один реестр на процесс: админка и кабинет должны видеть одни и те же базы."""
+    key = (str(settings.tenants_db_path), str(settings.db_path))
+    registry = _REGISTRIES.get(key)
+    if registry is None:
+        registry = TenantRegistry(settings.tenants_db_path, settings.db_path)
+        _REGISTRIES[key] = registry
+    return registry
+
+
 class TenantRegistry:
     """Список клиентов и пути их баз."""
 

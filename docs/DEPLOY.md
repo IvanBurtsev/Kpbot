@@ -77,6 +77,8 @@ KPBOT_OAUTH_CLIENT_ID=...
 KPBOT_OAUTH_CLIENT_SECRET=...
 KPBOT_IMAP_USER=...
 KPBOT_PDF_ENABLED=true
+# Caddy/nginx ходит с 127.0.0.1 — иначе лимит входа считается по IP прокси
+KPBOT_TRUSTED_PROXIES=127.0.0.1
 
 # LLM (необязательно, но с ней recall 100% против 83%)
 KPBOT_LLM_ENABLED=true
@@ -88,6 +90,9 @@ KPBOT_LLM_API_KEY=<ключ провайдера>
 С `KPBOT_ENV=prod` сервис **не стартует**, если остались дефолтные секреты, ключ короче
 24 символов, секрет сессии короче 32 или почта не подключена. Это защита от «забыл поменять
 пароль» — ошибка будет видна сразу в `journalctl -u kpbot`, а не через месяц.
+
+`KPBOT_PUBLIC_BASE_URL` должен точно совпадать со схемой и доменом, по которому открывают
+интерфейс: вход сверяет `Origin` и отклонит POST с «чужого» адреса (это защита от login CSRF).
 
 Проверка живости для прокси и монитора: `GET /healthz` → `{"status":"ok"}` (без авторизации,
 ничего не раскрывает).
@@ -200,6 +205,12 @@ WATCHDOG_ALERT_WINDOW=3600
 # бэкап базы (по cron, каждый день в 3:00)
 crontab -u kpbot -e
 0 3 * * * cd /opt/kpbot && .venv/bin/python -m kpbot.cli backup --keep 14 >> data/backups.log 2>&1
+
+# восстановление: остановить сервис, проверить копию, заменить базу
+sudo systemctl stop kpbot
+sudo -u kpbot .venv/bin/python -m kpbot.cli restore --file data/backups/kpbot-....sqlite3
+sudo -u kpbot .venv/bin/python -m kpbot.cli restore --file data/backups/kpbot-....sqlite3 --yes
+sudo systemctl start kpbot
 
 # забрать почту вручную
 cd /opt/kpbot && sudo -u kpbot .venv/bin/python -m kpbot.cli poll --limit 5
