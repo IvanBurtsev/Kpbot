@@ -1327,6 +1327,39 @@ def cmd_pilot_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_purge(args: argparse.Namespace) -> int:
+    """Удаление старых заявок и их файлов: обещание «данные удаляются» из пилота."""
+    from .tenancy import TenantRegistry
+
+    days = max(1, int(args.days))
+    targets: list[tuple[str, Store]] = []
+    if args.tenant:
+        registry = TenantRegistry(settings.tenants_db_path, settings.db_path)
+        tenant = registry.get(args.tenant)
+        if tenant is None:
+            print(f"клиент не найден: {args.tenant}")
+            return 2
+        targets.append((tenant["name"], Store(Path(tenant["db_path"]))))
+    elif args.all:
+        targets = [(name, store) for _code, name, store in tenant_stores()]
+    else:
+        targets = [("Основной", Store(settings.db_path))]
+
+    dry_run = not args.yes
+    total = 0
+    for name, store in targets:
+        result = store.purge_older_than(days, dry_run=dry_run)
+        count = int(result["rfqs"])
+        total += count
+        print(f"  {name}: заявок старше {days} дн. — {count}, файлов — {len(result['artifacts'])}")
+        if not dry_run:
+            for raw_path in result["artifacts"]:
+                Path(raw_path).unlink(missing_ok=True)
+    if total and dry_run:
+        print("это предпросмотр. Повторите с --yes, чтобы удалить безвозвратно")
+    return 0
+
+
 def cmd_backup(args: argparse.Namespace) -> int:
     """Консистентная копия базы через sqlite backup API + ротация старых копий."""
     import contextlib
@@ -1607,6 +1640,13 @@ def main(argv: list[str] | None = None) -> int:
     report.add_argument("--tenant", default="", help="код клиента; пусто — основная база")
     report.add_argument("--out", default="", help="куда сохранить HTML")
     report.set_defaults(func=cmd_pilot_report)
+
+    purge = sub.add_parser("purge", help="удалить заявки старше срока хранения")
+    purge.add_argument("--days", type=int, default=90)
+    purge.add_argument("--tenant", default="", help="код клиента; пусто — основная база")
+    purge.add_argument("--all", action="store_true", help="все клиенты")
+    purge.add_argument("--yes", action="store_true", help="действительно удалить")
+    purge.set_defaults(func=cmd_purge)
 
     evaluate_cmd = sub.add_parser("eval", help="замерить качество разбора на размеченных письмах")
     evaluate_cmd.add_argument("--verbose", "-v", action="store_true")

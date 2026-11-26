@@ -212,6 +212,10 @@ sudo -u kpbot .venv/bin/python -m kpbot.cli restore --file data/backups/kpbot-..
 sudo -u kpbot .venv/bin/python -m kpbot.cli restore --file data/backups/kpbot-....sqlite3 --yes
 sudo systemctl start kpbot
 
+# срок хранения ПДн: сначала предпросмотр, потом удаление
+sudo -u kpbot .venv/bin/python -m kpbot.cli purge --days 90
+sudo -u kpbot .venv/bin/python -m kpbot.cli purge --days 90 --yes
+
 # забрать почту вручную
 cd /opt/kpbot && sudo -u kpbot .venv/bin/python -m kpbot.cli poll --limit 5
 

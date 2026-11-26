@@ -619,6 +619,29 @@ class Store:
             ).fetchall()
         return [{"text": row["text"], "count": int(row["n"])} for row in rows]
 
+    def purge_older_than(self, days: int, *, dry_run: bool = True) -> dict:
+        """Удаляет заявки старше срока хранения вместе со строками и журналом.
+
+        Возвращает список файлов артефактов: их удаляет вызывающий, чтобы Store
+        не занимался файловой системой. dry_run ничего не меняет.
+        """
+        since = (datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))).isoformat()
+        with closing(self._connect()) as conn, conn:
+            ids = [row["id"] for row in conn.execute(
+                "SELECT id FROM rfqs WHERE created_at < ?", (since,)
+            ).fetchall()]
+            if not ids:
+                return {"rfqs": 0, "artifacts": [], "dry_run": dry_run}
+            placeholders = ",".join("?" for _ in ids)
+            paths = [row["path"] for row in conn.execute(
+                f"SELECT path FROM artifacts WHERE rfq_id IN ({placeholders})", ids
+            ).fetchall()]
+            if dry_run:
+                return {"rfqs": len(ids), "artifacts": paths, "dry_run": True}
+            conn.execute(f"DELETE FROM outbox WHERE rfq_id IN ({placeholders})", ids)
+            conn.execute(f"DELETE FROM rfqs WHERE id IN ({placeholders})", ids)
+        return {"rfqs": len(ids), "artifacts": paths, "dry_run": False}
+
     def purge_demo_rfqs(self) -> int:
         """Удаляет заявки демо-стенда (адреса @demo.local), не трогая настоящие."""
         with closing(self._connect()) as conn, conn:
