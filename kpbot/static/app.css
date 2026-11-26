@@ -1337,3 +1337,18 @@ code { overflow-wrap: anywhere; }
   /* Таблица расчёта шире экрана: пусть прокручивается, а не режется */
   .grid { min-width: 560px; }
 }
+
+@media (max-width: 768px) {
+  /* Расчёт на телефоне: убираем артикул и единицу, иначе таблица режется.
+     Цена и сумма остаются — это то, что проверяет менеджер. */
+  .grid { min-width: 0; }
+  .grid th:nth-child(3), .grid td:nth-child(3),
+  .grid th:nth-child(4), .grid td:nth-child(4) { display: none; }
+  .grid th, .grid td { font-size: 11px; padding: 5px 4px; }
+
+  /* Поля формы не должны вылезать за карточку */
+  textarea, input[type=text], input[type=email], input[type=search] {
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+}
