@@ -309,11 +309,19 @@ def render_quote_docx(
                     cell_run.font.size = Pt(9)
 
     doc.add_paragraph()
-    for label, value in (
-        ("Сумма без НДС", f"{rub(quote.subtotal)} ₽"),
-        (f"НДС {int(round(quote.vat_rate * 100))}%", f"{rub(quote.vat)} ₽"),
-        ("Доставка", f"{rub(quote.delivery)} ₽"),
-    ):
+    if getattr(quote, "prices_include_vat", False):
+        totals = (
+            ("Сумма с НДС", f"{rub(quote.subtotal + quote.vat)} ₽"),
+            (f"В том числе НДС {int(round(quote.vat_rate * 100))}%", f"{rub(quote.vat)} ₽"),
+            ("Доставка", f"{rub(quote.delivery)} ₽"),
+        )
+    else:
+        totals = (
+            ("Сумма без НДС", f"{rub(quote.subtotal)} ₽"),
+            (f"НДС {int(round(quote.vat_rate * 100))}%", f"{rub(quote.vat)} ₽"),
+            ("Доставка", f"{rub(quote.delivery)} ₽"),
+        )
+    for label, value in totals:
         row = doc.add_paragraph()
         row.alignment = WD_ALIGN_PARAGRAPH.RIGHT
         row.add_run(f"{label}: {value}")

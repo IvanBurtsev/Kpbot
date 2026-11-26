@@ -156,6 +156,7 @@ class Pipeline:
             vat_rate=self.cfg.vat_rate,
             delivery=self.cfg.delivery_price,
             max_qty=self.cfg.max_qty,
+            prices_include_vat=self.cfg.prices_include_vat,
         )
         return lines, quote, is_request
 
@@ -474,6 +475,7 @@ class Pipeline:
             vat_rate=self.cfg.vat_rate,
             delivery=self.cfg.delivery_price,
             max_qty=self.cfg.max_qty,
+            prices_include_vat=self.cfg.prices_include_vat,
         )
         self._learn_from_edits(before, lines)
         self.store.save_quote(uuid.uuid4().hex, rfq_id, quote)
@@ -528,6 +530,7 @@ class Pipeline:
             "quote": quote,
             "lines": lines,
             "valid_days": self.cfg.quote_valid_days,
+            "prices_include_vat": quote.prices_include_vat,
         }
         result: dict[str, object] = {"html": None, "docx": None, "pdf": None, "pdf_error": ""}
 

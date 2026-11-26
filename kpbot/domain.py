@@ -138,6 +138,9 @@ class Quote:
     # Сквозной номер КП в базе клиента: бухгалтерии нужен «№ 12 от 20.11.2026»,
     # а не первые 8 символов uuid.
     number: int | None = None
+    # Цены прайса уже включают НДС: тогда строки — «с НДС», а НДС выделяется
+    # из суммы, а не начисляется сверху.
+    prices_include_vat: bool = False
 
 
 def price_quote(
@@ -147,11 +150,16 @@ def price_quote(
     vat_rate: Decimal = Decimal("0.22"),
     delivery: Decimal = Decimal("0.00"),
     max_qty: Decimal = Decimal("1000000"),
+    prices_include_vat: bool = False,
 ) -> Quote:
     """Считает КП строго по подтверждённым строкам.
 
     Строки не в статусе OK в расчёт не попадают и перечисляются в excluded —
     «не нашёл в прайсе» никогда не превращается в выдуманную цену.
+
+    prices_include_vat=True означает, что цена в прайсе уже с НДС: строки и
+    «Итого» показываются с НДС, а НДС выделяется из суммы (иначе он начислился
+    бы второй раз — систематическая переоценка на всю ставку).
     """
     if vat_rate < 0 or vat_rate > 1:
         raise ValidationError("ставка НДС должна быть в диапазоне 0..1")
@@ -194,10 +202,17 @@ def price_quote(
             )
         )
 
-    subtotal = money(sum((ln.amount for ln in quoted), Decimal("0")))
-    vat = money(subtotal * vat_rate)
+    gross = money(sum((ln.amount for ln in quoted), Decimal("0")))
     delivery_money = money(max(delivery, Decimal("0")))
-    total = money(subtotal + vat + delivery_money)
+    if prices_include_vat and vat_rate > 0:
+        # НДС уже внутри цены: выделяем его из суммы, а не начисляем сверху.
+        subtotal = money(gross / (Decimal("1") + vat_rate))
+        vat = money(gross - subtotal)
+        total = money(gross + delivery_money)
+    else:
+        subtotal = gross
+        vat = money(subtotal * vat_rate)
+        total = money(subtotal + vat + delivery_money)
 
     return Quote(
         lines=quoted,
@@ -209,6 +224,7 @@ def price_quote(
         requires_review=bool(excluded) or not quoted,
         unmatched=len(excluded),
         excluded=excluded,
+        prices_include_vat=prices_include_vat,
     )
 
 

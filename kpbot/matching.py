@@ -339,6 +339,37 @@ class PriceIndex:
         """Оценка второго кандидата в последнем best(): 0 — конкурентов нет."""
         return self._last_second
 
+    def top(self, raw_text: str, limit: int = 5) -> list[tuple[PriceItem, float]]:
+        """Лучшие кандидаты для подсказки человеку, а не вся номенклатура.
+
+        Нужен интерфейсу: показывать 10 000 позиций в выпадающем списке каждой
+        строки нельзя — страница превращается в десятки мегабайт.
+        """
+        q = normalize(raw_text)
+        if not q or not self.items:
+            return []
+        q_tokens = tokens(q)
+        if not any(_WORD.search(token) for token in q_tokens):
+            return []
+        q_numbers = [t for t in q_tokens if _DIGIT.search(t)]
+        scored: list[tuple[float, int]] = []
+        for idx in self.candidates(q_tokens, limit=max(self.max_candidates, limit)):
+            score = _score(q, q_tokens, q_numbers, self._norm[idx], self._tokens[idx])
+            if score >= 0.3:
+                scored.append((score, idx))
+        scored.sort(key=lambda pair: (-pair[0], pair[1]))
+        result: list[tuple[PriceItem, float]] = []
+        seen: set[str] = set()
+        for score, idx in scored:
+            item = self.items[idx]
+            if item.sku in seen:
+                continue
+            seen.add(item.sku)
+            result.append((item, score))
+            if len(result) >= limit:
+                break
+        return result
+
     def __len__(self) -> int:
         return len(self.items)
 

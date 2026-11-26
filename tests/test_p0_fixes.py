@@ -82,6 +82,28 @@ class MatchingExactTest(unittest.TestCase):
         self.assertGreaterEqual(score, 0.99)
 
 
+class PriceSearchTest(unittest.TestCase):
+    def test_top_returns_few_candidates_not_whole_catalog(self) -> None:
+        items = [
+            PriceItem(
+                sku=f"S-{index:04d}",
+                name=f"Уголок стальной {index % 7 + 40}х{index % 5 + 40} мм",
+                unit="шт",
+                price=Decimal("100"),
+            )
+            for index in range(3000)
+        ]
+        items.append(PriceItem(sku="EXACT", name="Уголок 50х50", unit="шт", price=Decimal("1")))
+        index = PriceIndex(items)
+        top = index.top("уголок 50х50", 5)
+        self.assertLessEqual(len(top), 5)
+        self.assertEqual(top[0][0].sku, "EXACT")
+
+    def test_top_ignores_meaningless_query(self) -> None:
+        index = PriceIndex([PriceItem(sku="A", name="Уголок 50х50", unit="шт", price=Decimal("1"))])
+        self.assertEqual(index.top("12", 5), [])
+
+
 class QuoteNumberTest(unittest.TestCase):
     def setUp(self) -> None:
         # своя база на тест: соседние тесты в модуле не должны влиять на цифры

@@ -89,6 +89,9 @@ class Settings(BaseSettings):
     vat_rate: Decimal = Decimal("0.22")
     delivery_price: Decimal = Decimal("0.00")
     max_qty: Decimal = Decimal("1000000")
+    # Прайс клиента уже с НДС (типичная выгрузка из 1С/розничного каталога):
+    # тогда НДС выделяется из цены, а не начисляется сверху.
+    prices_include_vat: bool = False
 
     # --- матчинг ---
     match_auto_threshold: float = 0.75

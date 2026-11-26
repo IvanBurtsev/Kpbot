@@ -286,6 +286,7 @@ def page(name: str, request: Request, *, code: int = 200, **context: object) -> 
         csrf_token=csrf_for(settings.session_secret, session),
         price_count=store.price_count(),
         smtp_ready=bool(mailer.enabled and mailer.host),
+        prices_include_vat=settings.prices_include_vat,
         **context,
     )
     return HTMLResponse(body, status_code=code)
@@ -1087,6 +1088,24 @@ async def ui_admin_events(request: Request):
     return await render_admin(request, tab="events")
 
 
+@app.get("/ui/prices/search")
+async def ui_prices_search(request: Request, q: str = "", limit: int = 20):
+    """Подсказка по прайсу для карточки: вместо 10 000 <option> в каждой строке."""
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="нужен вход")
+    query = (q or "").strip()[:80]
+    if len(query) < 2:
+        return JSONResponse([])
+    size = safe_int(limit, 20, 1, 50)
+    index = pipeline.price_index()
+    return JSONResponse(
+        [
+            {"sku": item.sku, "name": item.name, "unit": item.unit, "price": str(item.price)}
+            for item, _score in index.top(query, size)
+        ]
+    )
+
+
 @app.post("/ui/prices/stock")
 async def ui_prices_stock(request: Request):
     """Загрузка остатков из выгрузки 1С: подсказывает, чего не хватает."""
@@ -1219,6 +1238,13 @@ def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
         else ""
     )
     artifacts = {a["kind"] for a in store.artifacts(rfq_id)}
+    # Подсказки только для строк, где нужен человек: иначе страница с большим
+    # прайсом снова распухнет. Для уверенных строк SKU уже известен.
+    index = pipeline.price_index()
+    candidates: dict[int, list] = {}
+    for row in rfq["lines"]:
+        if row["status"] != "ok" or not row["matched_sku"]:
+            candidates[row["idx"]] = index.top(row["raw_text"], 5)
     return page(
         "rfq.html",
         request,
@@ -1226,7 +1252,7 @@ def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
         quote=quote,
         reply_text=reply_text,
         artifacts=artifacts,
-        items=store.price_items(),
+        candidates=candidates,
         llm_usage=store.llm_usage_for(rfq_id),
         timing=store.rfq_timing(rfq_id),
         sends=store.sent_history(rfq_id),

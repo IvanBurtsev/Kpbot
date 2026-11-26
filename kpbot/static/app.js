@@ -42,3 +42,43 @@
     showFile();
   });
 })();
+
+// Поиск позиции прайса в карточке заявки. Сервер отдаёт только топ-20
+// совпадений, поэтому страница не зависит от размера прайса: раньше в каждой
+// строке лежал <select> со всеми 10 000 позициями (десятки мегабайт HTML).
+(function () {
+  document.querySelectorAll("input[data-sku-search]").forEach(function (input) {
+    var list = document.getElementById(input.getAttribute("list"));
+    if (!list) return;
+    var timer = null;
+    var lastQuery = "";
+
+    input.addEventListener("input", function () {
+      var query = input.value.trim();
+      if (query.length < 2 || query === lastQuery) return;
+      clearTimeout(timer);
+      timer = setTimeout(function () {
+        lastQuery = query;
+        fetch("/ui/prices/search?q=" + encodeURIComponent(query) + "&limit=20", {
+          headers: { Accept: "application/json" },
+          credentials: "same-origin"
+        })
+          .then(function (response) {
+            return response.ok ? response.json() : [];
+          })
+          .then(function (items) {
+            list.innerHTML = "";
+            items.forEach(function (item) {
+              var option = document.createElement("option");
+              option.value = item.sku;
+              option.label = item.name + " (" + item.unit + ") — " + item.price;
+              list.appendChild(option);
+            });
+          })
+          .catch(function () {
+            /* подсказки не критичны: поле остаётся обычным вводом */
+          });
+      }, 180);
+    });
+  });
+})();

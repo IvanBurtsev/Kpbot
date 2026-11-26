@@ -67,8 +67,13 @@
     </tbody>
   </table>
   <dl class="totals">
+    {% if prices_include_vat %}
+    <div><dt>Сумма с НДС</dt><dd>{{ quote.subtotal + quote.vat }} ₽</dd></div>
+    <div><dt>В том числе НДС</dt><dd>{{ quote.vat }} ₽</dd></div>
+    {% else %}
     <div><dt>Без НДС</dt><dd>{{ quote.subtotal }} ₽</dd></div>
     <div><dt>НДС</dt><dd>{{ quote.vat }} ₽</dd></div>
+    {% endif %}
     <div><dt>Доставка</dt><dd>{{ quote.delivery }} ₽</dd></div>
     <div class="grand"><dt>Итого</dt><dd>{{ quote.total }} ₽</dd></div>
   </dl>
@@ -104,14 +109,13 @@
         <td data-label="Действия" class="edit">
           <form method="post" action="/ui/rfq/{{ rfq.id }}/lines/{{ l.idx }}/update" class="line-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <select name="sku" title="позиция прайса">
-              <option value="">— не менять —</option>
-              {% for item in items %}
-              <option value="{{ item.sku }}" {% if item.sku == l.matched_sku %}selected{% endif %}>
-                {{ item.sku }} · {{ item.name }}
-              </option>
+            <input type="text" name="sku" value="{{ l.matched_sku or '' }}" list="sku-list-{{ l.idx }}"
+                   data-sku-search placeholder="артикул или название" size="16" title="позиция прайса">
+            <datalist id="sku-list-{{ l.idx }}">
+              {% for item, score in candidates.get(l.idx, []) %}
+              <option value="{{ item.sku }}">{{ item.name }} ({{ item.unit }})</option>
               {% endfor %}
-            </select>
+            </datalist>
             <input type="text" name="qty" value="{{ l.qty or '' }}" size="5" inputmode="decimal" title="количество">
             <div class="form-actions">
               <button type="submit" class="mini">Сохранить</button>
@@ -133,12 +137,9 @@
 
   <form method="post" action="/ui/rfq/{{ rfq.id }}/lines/add" class="row add-line">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <select name="sku" required>
-      <option value="">— выбрать позицию прайса —</option>
-      {% for item in items %}
-      <option value="{{ item.sku }}">{{ item.sku }} · {{ item.name }} ({{ item.unit }})</option>
-      {% endfor %}
-    </select>
+    <input type="text" name="sku" list="sku-list-add" data-sku-search
+           placeholder="артикул или название из прайса" size="30" required>
+    <datalist id="sku-list-add"></datalist>
     <input type="text" name="qty" placeholder="кол-во" size="6" inputmode="decimal" required>
     <button type="submit" class="primary">Добавить позицию</button>
   </form>
