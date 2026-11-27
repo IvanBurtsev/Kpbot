@@ -146,11 +146,17 @@ class SqlInjectionTest(unittest.TestCase):
 class SameOriginTest(unittest.TestCase):
     """CSRF-проверка входа: чужой сайт — нет, свой адрес под любым именем — да."""
 
-    def _request(self, origin: str, host: str = "debtcrm.duckdns.org:8443", scheme: str = "https"):
+    def _request(self, origin: str, host: str = "debtcrm.duckdns.org:8443", scheme: str = "https",
+                 sec_fetch_site: str = ""):
         from types import SimpleNamespace
 
         return SimpleNamespace(
-            headers={"origin": origin, "host": host, "x-forwarded-proto": scheme},
+            headers={
+                "origin": origin,
+                "host": host,
+                "x-forwarded-proto": scheme,
+                "sec-fetch-site": sec_fetch_site,
+            },
             url=SimpleNamespace(scheme=scheme),
         )
 
@@ -174,6 +180,22 @@ class SameOriginTest(unittest.TestCase):
 
     def test_missing_origin_is_allowed(self) -> None:
         self.assertTrue(same_origin(self._request(""), "https://debtcrm.duckdns.org:8443"))
+
+    def test_opaque_origin_from_same_site_is_allowed_for_login(self) -> None:
+        request = self._request("null", sec_fetch_site="same-origin")
+        self.assertTrue(
+            same_origin(request, "https://debtcrm.duckdns.org:8443", allow_opaque=True)
+        )
+
+    def test_opaque_origin_from_cross_site_is_rejected(self) -> None:
+        request = self._request("null", sec_fetch_site="cross-site")
+        self.assertFalse(
+            same_origin(request, "https://debtcrm.duckdns.org:8443", allow_opaque=True)
+        )
+
+    def test_opaque_origin_is_closed_without_allow_flag(self) -> None:
+        request = self._request("null", sec_fetch_site="same-origin")
+        self.assertFalse(same_origin(request, "https://debtcrm.duckdns.org:8443"))
 
 
 if __name__ == "__main__":

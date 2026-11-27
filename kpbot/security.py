@@ -50,7 +50,7 @@ def _host_of(url: str) -> str:
     return host.rsplit(":", 1)[0] if ":" in host else host
 
 
-def same_origin(request: Any, public_base_url: str) -> bool:
+def same_origin(request: Any, public_base_url: str, *, allow_opaque: bool = False) -> bool:
     """Запрос пришёл со страницы того же сайта.
 
     Браузер присылает Origin на POST. Если он есть и указывает на другой сайт —
@@ -61,13 +61,23 @@ def same_origin(request: Any, public_base_url: str) -> bool:
     по IP или по второму домену (прокси при этом передаёт Host без порта, а
     браузер шлёт Origin с портом), и раньше такой вход отвечал 403 «запрос пришёл
     с другого сайта» — со стороны это выглядело как «пароль не подходит».
+
+    allow_opaque разрешает ``Origin: null`` для формы входа, если браузер
+    сообщает ``Sec-Fetch-Site: same-origin/same-site``. Такой Origin бывает у
+    страницы, открытой в sandbox-iframe или расширением, которое чистит
+    заголовки; запрос всё равно инициирован самим сайтом, а не чужим документом.
     """
     origin = (request.headers.get("origin") or "").strip().rstrip("/")
     if not origin:
         return True
     allowed = {_host_of(public_base_url), _host_of(request.headers.get("host") or "")}
     allowed.discard("")
-    return _host_of(origin) in allowed
+    if _host_of(origin) in allowed:
+        return True
+    if allow_opaque and origin.lower() == "null":
+        fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+        return fetch_site in {"same-origin", "same-site"}
+    return False
 
 
 def _hmac(secret: str, payload: str) -> str:

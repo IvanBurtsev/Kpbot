@@ -512,8 +512,12 @@ async def ui_login_form(request: Request):
 async def ui_login(request: Request):
     if not limiter.allow(f"login:{client_ip(request)}"):
         return page("login.html", request, code=429, error="слишком много попыток, подождите минуту")
-    if not same_origin(request, settings.public_base_url):
-        log.warning("вход с чужого Origin: %s", request.headers.get("origin"))
+    if not same_origin(request, settings.public_base_url, allow_opaque=True):
+        log.warning(
+            "вход с чужого Origin: %r (Sec-Fetch-Site: %r)",
+            request.headers.get("origin"),
+            request.headers.get("sec-fetch-site"),
+        )
         return page("login.html", request, code=403, error="запрос пришёл с другого сайта")
     form = await request.form()
     email = str(form.get("email", "")).strip()
