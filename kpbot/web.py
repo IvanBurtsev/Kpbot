@@ -30,11 +30,12 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from pydantic import BaseModel, Field, field_validator
 
+from . import __version__
 from .cabinet import router as cabinet_router
 from .cabinet_store import ORDER_STATUS_LABELS, ORDER_STATUSES, CabinetStore
 from .config import settings
 from .domain import LineStatus, RfqLine, RfqStatus, ValidationError, quantity
-from .export import build_rfq_xlsx
+from .export import build_rfq_xlsx, check_1c_sheet
 from .mailer import MailError, Mailer, build_kp_message, load_attachments, reply_subject
 from .mailparse import sender_display_name
 from .one_c import OneCError, client_from_settings
@@ -68,7 +69,9 @@ setup_logging()
 register_settings_secrets(settings)
 log = logging.getLogger("kpbot.web")
 
-app = FastAPI(title="kpbot", version="0.1.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
+app = FastAPI(
+    title="kpbot", version=__version__, docs_url="/api/docs", openapi_url="/api/openapi.json"
+)
 app.mount("/static", StaticFiles(directory=str(settings.static_dir)), name="static")
 app.include_router(cabinet_router)
 
@@ -154,8 +157,6 @@ async def check_production_config() -> None:
 @app.get("/healthz", include_in_schema=False)
 async def healthz() -> dict:
     """Для reverse proxy и systemd: без авторизации, ничего чувствительного."""
-    from . import __version__
-
     return {"status": "ok", "version": __version__}
 
 
@@ -641,7 +642,7 @@ async def ui_prices_upload(request: Request):
     temp_path = settings.data_dir / f"price_upload{suffix}"
     temp_path.write_bytes(raw)
     try:
-        items = load_price_items(temp_path)
+        items = load_price_items(temp_path, prices_include_vat=settings.prices_include_vat)
     except ValidationError as exc:
         temp_path.unlink(missing_ok=True)
         return RedirectResponse(f"/ui/prices?flash={quote(str(exc))}", status_code=status.HTTP_303_SEE_OTHER)
@@ -757,7 +758,7 @@ async def ui_setup_price(request: Request):
     temp_path = settings.data_dir / f"price_upload{suffix}"
     temp_path.write_bytes(raw)
     try:
-        items = load_price_items(temp_path)
+        items = load_price_items(temp_path, prices_include_vat=settings.prices_include_vat)
     except ValidationError as exc:
         temp_path.unlink(missing_ok=True)
         return RedirectResponse(f"/ui/setup?flash={quote(str(exc))}", status_code=status.HTTP_303_SEE_OTHER)
@@ -1705,6 +1706,10 @@ async def ui_rfq_send(request: Request, rfq_id: str):
         raise HTTPException(status_code=404, detail="заявка не найдена")
     if rfq["status"] == RfqStatus.REJECTED.value:
         return back_to(rfq_id, "заявка отклонена — отправка невозможна")
+    if rfq["status"] not in (RfqStatus.APPROVED.value, RfqStatus.SENT.value):
+        # README обещает «письмо уходит только после одобрения», а проверял это
+        # только интерфейс: из карточки можно было отправить непроверенный расчёт.
+        return back_to(rfq_id, "сначала одобрите КП — без проверки человеком не отправляем")
 
     to = normalize_email(str(form.get("to", "")).strip() or str(rfq.get("sender", "")))
     if "@" not in to:
@@ -1789,6 +1794,10 @@ async def ui_export_xlsx(request: Request, rfq_id: str):
     if rfq is None:
         raise HTTPException(status_code=404, detail="заявка не найдена")
     content = build_rfq_xlsx(rfq, store.get_quote(rfq_id), stock=store.stock_map())
+    # Та же проверка, что в CLI: дубли артикулов и пустые поля до 1С доходить не должны.
+    problems = check_1c_sheet(content)
+    if problems:
+        log.warning("выгрузка для 1С по заявке %s: %s", rfq_id, "; ".join(problems[:5]))
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

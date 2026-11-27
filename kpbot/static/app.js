@@ -82,3 +82,17 @@
     });
   });
 })();
+
+// Подтверждение опасных действий. Inline-обработчики (onsubmit="...") запрещены
+// политикой CSP (script-src 'self'), поэтому подтверждение живёт здесь: без него
+// «Заблокировать пользователя» срабатывало сразу по клику.
+(function () {
+  document.querySelectorAll("form[data-confirm]").forEach(function (form) {
+    form.addEventListener("submit", function (event) {
+      var question = form.getAttribute("data-confirm");
+      if (question && !window.confirm(question)) {
+        event.preventDefault();
+      }
+    });
+  });
+})();

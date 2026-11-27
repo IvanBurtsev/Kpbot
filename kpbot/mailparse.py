@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import email
+import hashlib
 import io
 import re
 import zipfile
@@ -100,7 +101,11 @@ def parse_eml(raw: bytes) -> ParsedEmail:
 
     sender = parseaddr(str(msg.get("From", "")))[1] or str(msg.get("From", "")).strip()
     subject = str(msg.get("Subject", "")).strip()
-    message_id = str(msg.get("Message-ID", "")).strip() or f"local-{abs(hash(raw)):x}"
+    # hash(raw) не годится: в Python он рандомизируется на каждый процесс, и
+    # после рестарта то же письмо получало новый Message-ID — дубль в очереди.
+    message_id = str(msg.get("Message-ID", "")).strip() or (
+        f"local-{hashlib.sha256(raw).hexdigest()[:32]}"
+    )
     received_at = str(msg.get("Date", "")).strip() or datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     text, attachments = _extract_text(msg)

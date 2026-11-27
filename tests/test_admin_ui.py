@@ -86,6 +86,22 @@ class AdminPanelTest(unittest.TestCase):
         page = self.client.get("/ui/admin/events")
         self.assertIn("test_event", page.text)
 
+    def test_destructive_forms_confirm_without_inline_script(self) -> None:
+        # CSP запрещает inline-обработчики: onsubmit="confirm(...)" не выполнялся,
+        # и «Заблокировать» срабатывало сразу по клику.
+        page = self.client.get("/ui/admin/users")
+        self.assertIn('data-confirm="', page.text)
+        self.assertNotIn("onsubmit=", page.text)
+        self.assertNotIn("onclick=", page.text)
+        csp = page.headers.get("content-security-policy", "")
+        self.assertIn("script-src 'self'", csp)
+        self.assertNotIn("unsafe-inline", csp.split("script-src")[-1].split(";")[0])
+
+    def test_confirm_handler_is_shipped_in_app_js(self) -> None:
+        script = self.client.get("/static/app.js")
+        self.assertEqual(script.status_code, 200)
+        self.assertIn("data-confirm", script.text)
+
 
 if __name__ == "__main__":
     unittest.main()

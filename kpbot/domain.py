@@ -141,6 +141,9 @@ class Quote:
     # Цены прайса уже включают НДС: тогда строки — «с НДС», а НДС выделяется
     # из суммы, а не начисляется сверху.
     prices_include_vat: bool = False
+    # НДС, приходящийся на доставку. Отдельным полем, чтобы документ мог показать
+    # «в том числе НДС с доставки», не пересчитывая сумму задним числом.
+    delivery_vat: Decimal = Decimal("0.00")
 
 
 def price_quote(
@@ -160,6 +163,10 @@ def price_quote(
     prices_include_vat=True означает, что цена в прайсе уже с НДС: строки и
     «Итого» показываются с НДС, а НДС выделяется из суммы (иначе он начислился
     бы второй раз — систематическая переоценка на всю ставку).
+
+    Доставка облагается НДС по той же ставке и по тому же правилу, что и товары:
+    при prices_include_vat её цена считается уже с НДС. Раньше НДС на доставку
+    не начислялся вовсе, и «Итого» в письме не сходилось с суммой строк.
     """
     if vat_rate < 0 or vat_rate > 1:
         raise ValidationError("ставка НДС должна быть в диапазоне 0..1")
@@ -206,12 +213,18 @@ def price_quote(
     delivery_money = money(max(delivery, Decimal("0")))
     if prices_include_vat and vat_rate > 0:
         # НДС уже внутри цены: выделяем его из суммы, а не начисляем сверху.
+        # Доставка — такая же услуга и живёт по тому же правилу: её цена с НДС.
         subtotal = money(gross / (Decimal("1") + vat_rate))
-        vat = money(gross - subtotal)
+        delivery_net = money(delivery_money / (Decimal("1") + vat_rate))
+        delivery_vat = money(delivery_money - delivery_net)
+        vat = money((gross - subtotal) + delivery_vat)
         total = money(gross + delivery_money)
     else:
         subtotal = gross
-        vat = money(subtotal * vat_rate)
+        # Доставка облагается НДС по той же ставке, что и товары: иначе «Итого»
+        # не сходится с письмом и с 1С, где НДС считается на всю сумму.
+        delivery_vat = money(delivery_money * vat_rate) if vat_rate > 0 else money(Decimal("0"))
+        vat = money(subtotal * vat_rate + delivery_vat)
         total = money(subtotal + vat + delivery_money)
 
     return Quote(
@@ -225,6 +238,7 @@ def price_quote(
         unmatched=len(excluded),
         excluded=excluded,
         prices_include_vat=prices_include_vat,
+        delivery_vat=delivery_vat,
     )
 
 

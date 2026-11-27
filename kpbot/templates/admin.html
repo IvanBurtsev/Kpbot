@@ -106,7 +106,7 @@
               <button type="submit" class="mini">Пароль</button>
             </form>
             <form method="post" action="/ui/admin/users/{{ user.id }}/delete" class="inline"
-                  onsubmit="return confirm('Заблокировать пользователя {{ user.email }}? История заявок и журнал сохранятся.');">
+                  data-confirm="Заблокировать пользователя {{ user.email }}? История заявок и журнал сохранятся.">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <button type="submit" class="mini danger">Заблокировать</button>
             </form>
@@ -256,7 +256,7 @@
   </p>
   {% if pairs %}
   <form method="post" action="/ui/admin/learned/forget"
-        onsubmit="return confirm('Забыть всё обучение? Разбор вернётся к работе по прайсу.');">
+        data-confirm="Забыть всё обучение? Разбор вернётся к работе по прайсу.">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit" class="mini danger">Забыть всё</button>
   </form>

@@ -88,13 +88,13 @@
 
 <table class="totals">
   {% if quote.prices_include_vat %}
-  <tr><td>Сумма с НДС</td><td class="num">{{ (quote.subtotal + quote.vat)|rub }} ₽</td></tr>
-  <tr><td>В том числе НДС {{ (quote.vat_rate * 100)|round(0, 'floor')|int }}%</td><td class="num">{{ quote.vat|rub }} ₽</td></tr>
+  <tr><td>Сумма с НДС{% if quote.delivery %} по товарам{% endif %}</td><td class="num">{{ (quote.subtotal + quote.vat - quote.delivery_vat)|rub }} ₽</td></tr>
+  <tr><td>В том числе НДС {{ (quote.vat_rate * 100)|round(0, 'floor')|int }}%{% if quote.delivery %} (товары и доставка){% endif %}</td><td class="num">{{ quote.vat|rub }} ₽</td></tr>
   {% else %}
   <tr><td>Сумма без НДС</td><td class="num">{{ quote.subtotal|rub }} ₽</td></tr>
-  <tr><td>НДС {{ (quote.vat_rate * 100)|round(0, 'floor')|int }}%</td><td class="num">{{ quote.vat|rub }} ₽</td></tr>
+  <tr><td>НДС {{ (quote.vat_rate * 100)|round(0, 'floor')|int }}%{% if quote.delivery %} (товары и доставка){% endif %}</td><td class="num">{{ quote.vat|rub }} ₽</td></tr>
   {% endif %}
-  <tr><td>Доставка</td><td class="num">{{ quote.delivery|rub }} ₽</td></tr>
+  <tr><td>Доставка{% if quote.prices_include_vat and quote.delivery %} с НДС{% elif quote.delivery %} без НДС{% endif %}</td><td class="num">{{ quote.delivery|rub }} ₽</td></tr>
   <tr class="grand"><td>Итого к оплате</td><td class="num">{{ quote.total|rub }} ₽</td></tr>
 </table>
 

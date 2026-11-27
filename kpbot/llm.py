@@ -22,7 +22,7 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .domain import LineStatus, RfqLine, quantity
-from .extract import RuleExtractor, canonical_unit
+from .extract import RuleExtractor, canonical_unit, quantities_in, unit_multiplier
 from .logs import redact
 from .matching import normalize as match_normalize
 from .matching import token_matches
@@ -275,28 +275,42 @@ class LlmExtractor:
         self.last_usage = answer.usage
         self.last_source = "llm"
         llm_lines: list[RfqLine] = []
+        # Для проверки количества нужны оба числа: то, что модель назвала, и то,
+        # что получилось после множителя «тыс.» (в письме стоит первое).
+        qty_candidates: dict[int, set[str]] = {}
         for item in payload.lines[:max_lines]:
-            qty_value = item.qty
-            qty = None
-            if qty_value is not None:
+            qty_raw = None
+            if item.qty is not None:
                 try:
-                    qty = quantity(Decimal(str(qty_value).replace(",", ".")))
+                    qty_raw = quantity(Decimal(str(item.qty).replace(",", ".")))
                 except (InvalidOperation, ValueError):
-                    qty = None
-            unit = canonical_unit(item.unit) if item.unit else None
-            llm_lines.append(
-                RfqLine(
-                    idx=len(llm_lines) + 1,
-                    raw_text=item.name[:300],
-                    qty=qty,
-                    unit=unit,
-                    status=LineStatus.INVALID,
-                )
+                    qty_raw = None
+            unit_raw = item.unit or ""
+            unit = canonical_unit(unit_raw) if unit_raw else None
+            multiplier = unit_multiplier(unit_raw)
+            qty = quantity(qty_raw * multiplier) if qty_raw is not None else None
+            line = RfqLine(
+                idx=len(llm_lines) + 1,
+                raw_text=item.name[:300],
+                qty=qty,
+                unit=unit,
+                status=LineStatus.INVALID,
             )
+            llm_lines.append(line)
+            variants = _qty_variants(qty)
+            if qty_raw is not None:
+                variants |= _qty_variants(qty_raw)
+            qty_candidates[id(line)] = variants
 
-        grounded, dropped = self._ground(llm_lines, text)
+        grounded, dropped, qty_dropped = self._ground(
+            llm_lines, text, candidates=qty_candidates
+        )
         if dropped:
             log.warning("LLM вернула %s строк(и) без опоры на текст письма — отброшены", dropped)
+        if qty_dropped:
+            log.warning(
+                "LLM вернула %s количество(а), которых нет в письме — отданы человеку", qty_dropped
+            )
         llm_lines = grounded
 
         if not llm_lines:
@@ -309,15 +323,30 @@ class LlmExtractor:
         return merged
 
     @staticmethod
-    def _ground(lines: list[RfqLine], text: str) -> tuple[list[RfqLine], int]:
-        """Оставляет только строки, которые действительно есть в письме.
+    def _ground(
+        lines: list[RfqLine],
+        text: str,
+        *,
+        candidates: dict[int, set[str]] | None = None,
+    ) -> tuple[list[RfqLine], int, int]:
+        """Оставляет строки, которые действительно есть в письме.
 
-        Модель может «дописать» позицию по инъекции в тексте письма. Такая строка
-        выглядит валидной, но её нет в источнике — значит, это не заявка клиента.
+        Проверяется два независимых утверждения модели:
+
+        * название — слова строки должны найтись в тексте письма (иначе это
+          «дописанная» позиция, в том числе по инъекции в тексте);
+        * количество — число должно стоять в письме рядом с этой позицией.
+          Название может быть настоящим, а количество выдуманным («10» вместо
+          «1000»): такая строка не отбрасывается, но уходит человеку без
+          количества — цену по ней не считаем.
+
+        Возвращает (строки, сколько отброшено, сколько осталось без количества).
         """
         source_tokens = set(match_tokens(text))
+        segments = RuleExtractor._segments(text)
         grounded: list[RfqLine] = []
         dropped = 0
+        qty_dropped = 0
         for line in lines:
             name_tokens = match_tokens(line.raw_text)
             if not name_tokens:
@@ -332,13 +361,20 @@ class LlmExtractor:
                 any(token_matches(token, source) for source in source_tokens)
                 for token in numbers
             )
-            if numbers_ok and hits / len(name_tokens) >= 0.6:
-                grounded.append(line)
-            else:
+            if not (numbers_ok and hits / len(name_tokens) >= 0.6):
                 dropped += 1
+                continue
+            if line.qty is not None and not _qty_in_text(
+                line, segments, text, candidates or {}
+            ):
+                # число не подтверждается письмом: не выдумываем цену по нему
+                line.note = "количество не подтверждается текстом письма — проверьте строку"
+                line.qty = None
+                qty_dropped += 1
+            grounded.append(line)
         for position, line in enumerate(grounded, start=1):
             line.idx = position
-        return grounded, dropped
+        return grounded, dropped, qty_dropped
 
     @staticmethod
     def _merge(llm_lines: list[RfqLine], rule_lines: list[RfqLine], max_lines: int) -> list[RfqLine]:
@@ -365,6 +401,59 @@ class LlmExtractor:
 
 def _name_key(name: str) -> str:
     return re.sub(r"\s+", " ", (name or "").lower().replace("ё", "е")).strip()
+
+
+def _qty_key(value: Decimal) -> str:
+    """Ключ числа: 1500.000 → «1500», 4.200 → «4.2», 0.500 → «0.5»."""
+    text = format(value.normalize(), "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def _qty_variants(value: Decimal | None) -> set[str]:
+    return {_qty_key(value)} if value is not None else set()
+
+
+def _best_segment(name: str, segments: list[str]) -> str | None:
+    """Строка письма, из которой модель взяла эту позицию."""
+    name_tokens = match_tokens(name)
+    if not name_tokens:
+        return None
+    best: str | None = None
+    best_score = 0.0
+    for segment in segments:
+        segment_tokens = set(match_tokens(segment))
+        if not segment_tokens:
+            continue
+        hits = sum(
+            1 for token in name_tokens if any(token_matches(token, s) for s in segment_tokens)
+        )
+        score = hits / len(name_tokens)
+        if score > best_score:
+            best, best_score = segment, score
+    return best if best_score >= 0.6 else None
+
+
+def _qty_in_text(
+    line: RfqLine,
+    segments: list[str],
+    text: str,
+    candidates: dict[int, set[str]],
+) -> bool:
+    """Стоит ли названное моделью количество в письме рядом с этой позицией.
+
+    Сравниваются только числа, которые в тексте стоят вместе с единицей
+    («200 шт»): размер «50х50» и номер строки списка количеством не считаются.
+    Если рядом с позицией числа с единицей нет, количество записано словами
+    («полторы упаковки») — такой перевод модель делать умеет, спорить нечем.
+    """
+    variants = candidates.get(id(line)) or _qty_variants(line.qty)
+    if not variants:
+        return False
+    segment = _best_segment(line.raw_text, segments)
+    quantities = quantities_in(segment if segment is not None else (text or ""))
+    if not quantities:
+        return True
+    return any(_qty_key(value) in variants for value in quantities)
 
 
 def build_extractor(settings) -> RuleExtractor | LlmExtractor:

@@ -98,6 +98,48 @@ class _Sink(socketserver.StreamRequestHandler):
                 self.wfile.write(b"250 ok\r\n")
 
 
+class AuthModeTest(unittest.TestCase):
+    """Gmail без пароля приложения не принимает обычный пароль — нужен XOAUTH2."""
+
+    def _cfg(self, **kwargs) -> Settings:
+        base = dict(data_dir=TMP, smtp_enabled=True, smtp_host="smtp.example", smtp_user="box@example.ru")
+        base.update(kwargs)
+        return Settings(**base)
+
+    def test_auto_uses_xoauth2_without_password(self) -> None:
+        self.assertEqual(Mailer(self._cfg(smtp_password="")).auth_mode(), "xoauth2")
+
+    def test_auto_uses_password_when_set(self) -> None:
+        self.assertEqual(Mailer(self._cfg(smtp_password="app-pass")).auth_mode(), "password")
+
+    def test_explicit_xoauth2_wins(self) -> None:
+        mailer = Mailer(self._cfg(smtp_password="app-pass", smtp_auth="xoauth2"))
+        self.assertEqual(mailer.auth_mode(), "xoauth2")
+
+    def test_missing_password_is_explained(self) -> None:
+        mailer = Mailer(self._cfg(smtp_password="", smtp_auth="password"))
+        with self.assertRaises(MailError) as ctx:
+            mailer.check()
+        self.assertIn("KPBOT_SMTP_AUTH=xoauth2", str(ctx.exception))
+
+    def test_xoauth2_login_sends_bearer(self) -> None:
+        from unittest.mock import patch
+
+        calls: dict = {}
+
+        class FakeClient:
+            def auth(self, mechanism, callback, initial_response_ok=True):
+                calls["mechanism"] = mechanism
+                calls["payload"] = callback(None)
+
+        mailer = Mailer(self._cfg(smtp_password=""))
+        with patch("kpbot.oauth.ensure_access_token", return_value="token-123"):
+            mailer._login(FakeClient())
+        self.assertEqual(calls["mechanism"], "XOAUTH2")
+        self.assertIn("auth=Bearer token-123", calls["payload"])
+        self.assertIn("user=box@example.ru", calls["payload"])
+
+
 class SendTest(unittest.TestCase):
     def setUp(self) -> None:
         self.server = socketserver.TCPServer(("127.0.0.1", 0), _Sink)

@@ -70,12 +70,44 @@ class PriceQuoteTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             price_quote([], {}, vat_rate=Decimal("1.5"))
 
-    def test_delivery_is_added_after_vat(self) -> None:
+    def test_delivery_is_taxed_like_goods(self) -> None:
+        # доставка — услуга, НДС по той же ставке: 1000 + 500 = 1500 без НДС,
+        # НДС 300, итого 1800. Раньше НДС на доставку не начислялся вовсе.
         lines = [RfqLine(idx=1, raw_text="x", qty=Decimal("1"), unit="шт",
                          matched_sku="A", status=LineStatus.OK)]
         quote = price_quote(lines, {"A": item("A", "1000")},
                             vat_rate=Decimal("0.20"), delivery=Decimal("500"))
-        self.assertEqual(quote.total, Decimal("1700.00"))
+        self.assertEqual(quote.subtotal, Decimal("1000.00"))
+        self.assertEqual(quote.delivery, Decimal("500.00"))
+        self.assertEqual(quote.delivery_vat, Decimal("100.00"))
+        self.assertEqual(quote.vat, Decimal("300.00"))
+        self.assertEqual(quote.total, Decimal("1800.00"))
+        # «Итого» обязано сходиться с тем, что видит клиент в письме
+        self.assertEqual(quote.total, quote.subtotal + quote.vat + quote.delivery)
+
+    def test_delivery_in_inclusive_mode(self) -> None:
+        # цены уже с НДС: доставка по тому же правилу — её цена тоже с НДС
+        lines = [RfqLine(idx=1, raw_text="x", qty=Decimal("1"), unit="шт",
+                         matched_sku="A", status=LineStatus.OK)]
+        quote = price_quote(lines, {"A": item("A", "1200")},
+                            vat_rate=Decimal("0.20"), delivery=Decimal("600"),
+                            prices_include_vat=True)
+        self.assertEqual(quote.subtotal, Decimal("1000.00"))
+        self.assertEqual(quote.delivery, Decimal("600.00"))
+        self.assertEqual(quote.delivery_vat, Decimal("100.00"))
+        self.assertEqual(quote.total, Decimal("1800.00"), "итого = товары + доставка, без второго НДС")
+        self.assertEqual(quote.vat, Decimal("300.00"))
+        # НДС уже внутри цен: итого = товары с НДС + доставка с НДС
+        self.assertEqual(
+            quote.subtotal + quote.vat - quote.delivery_vat + quote.delivery, quote.total
+        )
+
+    def test_no_delivery_keeps_old_numbers(self) -> None:
+        lines = [RfqLine(idx=1, raw_text="x", qty=Decimal("1"), unit="шт",
+                         matched_sku="A", status=LineStatus.OK)]
+        quote = price_quote(lines, {"A": item("A", "1000")}, vat_rate=Decimal("0.20"))
+        self.assertEqual(quote.delivery_vat, Decimal("0.00"))
+        self.assertEqual(quote.total, Decimal("1200.00"))
 
     def test_ambiguous_line_is_excluded(self) -> None:
         lines = [RfqLine(idx=1, raw_text="x", qty=Decimal("1"), unit="шт",

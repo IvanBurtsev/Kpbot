@@ -7,7 +7,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from .config import Settings, settings as default_settings
@@ -21,7 +21,7 @@ from .domain import (
     price_quote,
     status_for,
 )
-from .extract import RuleExtractor
+from .extract import RuleExtractor, trailing_quantity
 from .llm import build_extractor, estimate_cost_rub
 from .mailparse import ParsedEmail, parse_eml
 from .matching import PriceIndex, match_lines
@@ -33,7 +33,24 @@ from .store import Store, sha256_bytes
 log = logging.getLogger("kpbot.pipeline")
 
 # Предохранитель: если браузер в окружении не печатает, не долбим его на каждом письме.
+# Но и не отключаем PDF навсегда: через PDF_RETRY_SECONDS пробуем снова, иначе один
+# неудачный запуск Chrome лишал сервис PDF до перезапуска.
 _pdf_works: bool | None = None
+_pdf_failed_at: float = 0.0
+PDF_RETRY_SECONDS = 600.0
+
+
+def _pdf_allowed() -> bool:
+    """Печатать ли PDF сейчас: после сбоя ждём PDF_RETRY_SECONDS."""
+    if _pdf_works is not False:
+        return True
+    return (time.monotonic() - _pdf_failed_at) > PDF_RETRY_SECONDS
+
+
+def _pdf_remember(ok: bool) -> None:
+    global _pdf_works, _pdf_failed_at
+    _pdf_works = ok
+    _pdf_failed_at = 0.0 if ok else time.monotonic()
 
 
 class NotAnRfq(ValueError):
@@ -88,7 +105,9 @@ class Pipeline:
         for candidate in (self.cfg.data_dir / "price_list.xlsx", self.cfg.data_dir / "price_list.csv"):
             if candidate.exists():
                 try:
-                    items = load_price_items(candidate)
+                    items = load_price_items(
+                        candidate, prices_include_vat=self.cfg.prices_include_vat
+                    )
                     count = self.store.replace_price_items(items)
                     log.info("прайс загружен из %s: %s позиций", candidate.name, count)
                     return count
@@ -101,7 +120,7 @@ class Pipeline:
         return count
 
     def reload_price_list(self, path: Path) -> int:
-        items = load_price_items(path)
+        items = load_price_items(path, prices_include_vat=self.cfg.prices_include_vat)
         return self.store.replace_price_items(items)
 
     # ---------- приём письма ----------
@@ -150,6 +169,7 @@ class Pipeline:
         lines = self._apply_learned(lines, index)
         lines = self._drop_subsets_of_matched(lines)
         lines = self._dedupe_by_sku(lines)
+        lines = self._cap_quantities(lines)
         quote = price_quote(
             lines,
             {item.sku: item for item in index.items},
@@ -240,23 +260,33 @@ class Pipeline:
     def _promote_known_items(
         self, skipped: list[str], index, *, start: int
     ) -> list[RfqLine]:
-        """Строки без количества, но с узнаваемой позицией прайса — человеку, не в мусор."""
+        """Строки без единицы, но с узнаваемой позицией прайса — человеку, не в мусор.
+
+        Если клиент написал количество, но забыл единицу («Подрозетник 68 мм — 20»),
+        строку не выбрасываем: количество сохраняем, единицу подставит прайс,
+        а статус останется «нужно подтверждение».
+        """
         promoted: list[RfqLine] = []
         for segment in skipped[:50]:
             item, score = index.best(segment)
             if item is None or score < 0.55:
                 continue
+            qty = trailing_quantity(segment)
             promoted.append(
                 RfqLine(
                     idx=start + len(promoted),
                     raw_text=segment[:300],
-                    qty=None,
+                    qty=qty,
                     unit=None,
                     matched_sku=item.sku,
                     matched_name=item.name,
                     match_score=score,
                     status=LineStatus.INVALID,
-                    note="не указано количество или единица измерения",
+                    note=(
+                        "единица не указана — подставлена из прайса, нужно подтверждение"
+                        if qty is not None
+                        else "не указано количество или единица измерения"
+                    ),
                 )
             )
         return promoted
@@ -435,6 +465,22 @@ class Pipeline:
             line.idx = position
         return result
 
+    def _cap_quantities(self, lines: list[RfqLine]) -> list[RfqLine]:
+        """Строка с невероятным количеством — человеку, а не отказ всему письму.
+
+        price_quote отвергает количество больше max_qty. Если не отсечь такую
+        строку заранее, исключение уносит всё письмо: заявка не сохраняется,
+        а через IMAP письмо уже помечено прочитанным — оно теряется целиком.
+        """
+        limit = self.cfg.max_qty
+        for line in lines:
+            if line.qty is not None and line.qty > limit:
+                line.status = LineStatus.INVALID
+                line.note = (
+                    f"количество {line.qty} больше допустимого ({limit}) — проверьте строку"
+                )
+        return lines
+
     def _looks_like_request(self, text: str, index) -> bool:
         """Заявка ли это вообще: ищем минимум две позиции прайса в тексте.
 
@@ -537,7 +583,6 @@ class Pipeline:
     def _render_documents(
         self, rfq_id: str, parsed: ParsedEmail, lines: list, quote: Quote
     ) -> dict[str, object]:
-        global _pdf_works
         company = self.company()
         client = {"sender": parsed.sender, "subject": parsed.subject}
         rfq_meta = {"id": rfq_id, "received_at": parsed.received_at}
@@ -580,9 +625,11 @@ class Pipeline:
 
         pdf_path = self.cfg.out_dir / f"{rfq_id}.pdf"
         ok, reason = False, "PDF отключён настройкой"
-        if self.cfg.pdf_enabled and _pdf_works is not False:
+        if self.cfg.pdf_enabled and self._pdf_allowed():
             ok, reason = html_to_pdf(html_path, pdf_path)
-            _pdf_works = ok
+            # Сбой PDF — не приговор до перезапуска: раньше один неудачный вызов
+            # (Chrome не успел стартовать) отключал PDF до рестарта сервиса.
+            _pdf_remember(ok)
         if ok:
             self.store.add_artifact(rfq_id, "kp_pdf", pdf_path, sha256_bytes(pdf_path.read_bytes()))
             result["pdf"] = pdf_path
@@ -672,6 +719,14 @@ def _money_text(value: object) -> str:
     return f"{amount:,.2f}".replace(",", " ").replace(".", ",")
 
 
+def _money_value(value: object) -> Decimal:
+    """Деньги из строки базы: битое значение считается нулём, письмо не падает."""
+    try:
+        return Decimal(str(value or "0"))
+    except (InvalidOperation, ValueError):
+        return Decimal("0")
+
+
 def _validity_phrase(days: int) -> str:
     """«7 календарных дней», «1 календарный день», «2 календарных дня»."""
     days = max(1, int(days or 1))
@@ -706,6 +761,12 @@ def build_reply_text(
     head += [
         f"Сумма без НДС: {_money_text(quote.subtotal)} ₽",
         f"НДС: {_money_text(quote.vat)} ₽",
+    ]
+    if quote.delivery:
+        # Без этой строки «Итого» в письме не сходится с суммой строк:
+        # клиент видит 345 + 75,90 = 420,90, а в итоге 920,90.
+        head.append(f"Доставка: {_money_text(quote.delivery)} ₽")
+    head += [
         f"Итого: {_money_text(quote.total)} ₽",
         "",
         f"Предложение действительно {_validity_phrase(valid_days)}.",
@@ -752,6 +813,10 @@ def build_reply_text_from_store(
     head += [
         f"Сумма без НДС: {_money_text(quote.get('subtotal'))} ₽",
         f"НДС: {_money_text(quote.get('vat'))} ₽",
+    ]
+    if _money_value(quote.get("delivery")) > 0:
+        head.append(f"Доставка: {_money_text(quote.get('delivery'))} ₽")
+    head += [
         f"Итого: {_money_text(quote.get('total'))} ₽",
         "",
         f"Предложение действительно {_validity_phrase(valid_days)}.",

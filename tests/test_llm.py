@@ -105,6 +105,56 @@ class LlmParsingTest(unittest.TestCase):
         self.assertIn("KPBOT_LLM_API_KEY", str(ctx.exception))
 
 
+class LlmQuantityGroundingTest(unittest.TestCase):
+    """Количество из ответа модели должно стоять в письме (аудит, дефект 15)."""
+
+    def test_invented_quantity_goes_to_human(self) -> None:
+        client = make_client(
+            lambda request: answer({"lines": [{"name": "уголок 50х50", "qty": 1000, "unit": "шт"}]})
+        )
+        lines = LlmExtractor(client).extract("уголок 50х50 — 10 шт")
+        self.assertEqual(len(lines), 1, "строка не отбрасывается — человек должен её увидеть")
+        self.assertIsNone(lines[0].qty, "выдуманное количество не должно попасть в расчёт")
+
+    def test_real_quantity_is_kept(self) -> None:
+        client = make_client(
+            lambda request: answer({"lines": [{"name": "уголок 50х50", "qty": 10, "unit": "шт"}]})
+        )
+        lines = LlmExtractor(client).extract("уголок 50х50 — 10 шт")
+        self.assertEqual(lines[0].qty, Decimal("10.000"))
+
+    def test_size_in_name_is_not_a_quantity(self) -> None:
+        # модель перепутала размер 12.5 мм и количество 20 листов
+        client = make_client(
+            lambda request: answer({"lines": [{"name": "гипсокартон 12.5 мм", "qty": 12.5, "unit": "лист"}]})
+        )
+        lines = LlmExtractor(client).extract("гипсокартон 12.5 мм — 20 листов")
+        self.assertIsNone(lines[0].qty)
+
+    def test_thousands_are_matched_in_text(self) -> None:
+        client = make_client(
+            lambda request: answer({"lines": [{"name": "уголок 50х50", "qty": 10000, "unit": "шт"}]})
+        )
+        lines = LlmExtractor(client).extract("уголок 50х50 — 10.000 шт")
+        self.assertEqual(lines[0].qty, Decimal("10000.000"))
+
+    def test_thousands_unit_multiplier_is_applied(self) -> None:
+        client = make_client(
+            lambda request: answer({"lines": [{"name": "провод ПуГВ 1х4", "qty": 10, "unit": "тыс. шт"}]})
+        )
+        lines = LlmExtractor(client).extract("провод ПуГВ 1х4 — 10 тыс. шт")
+        self.assertEqual(lines[0].qty, Decimal("10000.000"))
+        self.assertEqual(lines[0].unit, "шт")
+
+    def test_word_quantity_is_not_grounded_away(self) -> None:
+        # «полторы упаковки» — числа в письме нет, перевод слов в число разрешён
+        client = make_client(
+            lambda request: answer({"lines": [{"name": "саморезы 4.2х75", "qty": 1.5, "unit": "уп"}]})
+        )
+        lines = LlmExtractor(client).extract("полторы упаковки саморезов 4.2х75")
+        self.assertEqual(lines[0].qty, Decimal("1.500"))
+
+
 class RedactionTest(unittest.TestCase):
     def test_keys_are_removed_from_text(self) -> None:
         text = "Authorization: Bearer sk-test-abcdefgh12345678 и GOCSPX-abcdefgh"

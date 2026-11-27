@@ -439,6 +439,14 @@ def _poll_mailbox(pipeline: Pipeline, mailbox: ImapMailbox, args: argparse.Names
             skipped.append({"uid": uid, "sender": "", "subject": "", "reason": str(exc)})
             print(f"  uid {uid}: пропущено — {exc}")
             continue
+        except Exception as exc:  # noqa: BLE001 - одно письмо не должно ронять весь опрос
+            # Раньше неожиданная ошибка обрывала разбор ящика: это письмо падало
+            # каждые 10 минут, а все следующие оставались необработанными.
+            skipped.append(
+                {"uid": uid, "sender": "", "subject": "", "reason": f"сбой разбора: {exc}"}
+            )
+            print(f"  uid {uid}: сбой разбора — {exc}")
+            continue
         processed.append(uid)
         print(f"  uid {uid}: заявка {result.rfq_id[:8]} · {result.status} · "
               f"строк {result.lines} · в расчёте {result.matched} · итого {result.total} ₽")
@@ -699,7 +707,7 @@ def cmd_demo_stand(args: argparse.Namespace) -> int:
 
     if args.price:
         path = Path(args.price)
-        items = load_price_items(path)
+        items = load_price_items(path, prices_include_vat=settings.prices_include_vat)
         count = store.replace_price_items(items)
         print(f"прайс: {count} позиций из {path.name}")
     else:

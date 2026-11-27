@@ -90,6 +90,39 @@ class Mailer:
         self.security = (cfg.smtp_security or "starttls").lower()
         self.timeout = cfg.smtp_timeout_seconds
         self.enabled = cfg.smtp_enabled
+        self.auth = (getattr(cfg, "smtp_auth", "auto") or "auto").lower()
+        self.oauth_client_id = cfg.oauth_client_id
+        self.oauth_client_secret = cfg.oauth_client_secret
+        self.oauth_token_path = cfg.oauth_token_path
+
+    def auth_mode(self) -> str:
+        """«password» или «xoauth2».
+
+        Gmail без пароля приложения не принимает обычный пароль, а с OAuth-токеном
+        (тем же, что и для IMAP) отправка работает: XOAUTH2 поддерживает и SMTP.
+        """
+        if self.auth in ("xoauth2", "oauth"):
+            return "xoauth2"
+        if self.auth in ("password", "login"):
+            return "password"
+        return "password" if self.password else "xoauth2"
+
+    def _login(self, client) -> None:
+        if not self.user:
+            return
+        if self.auth_mode() == "password":
+            client.login(self.user, self.password)
+            return
+        from .oauth import TokenStore, auth_string, ensure_access_token
+
+        access = ensure_access_token(
+            TokenStore(self.oauth_token_path), self.oauth_client_id, self.oauth_client_secret
+        )
+        client.auth(
+            "XOAUTH2",
+            lambda _challenge=None: auth_string(self.user, access).decode(),
+            initial_response_ok=True,
+        )
 
     def check(self) -> None:
         if not self.enabled:
@@ -98,6 +131,8 @@ class Mailer:
             raise MailError("не задан KPBOT_SMTP_HOST")
         if not self.from_addr:
             raise MailError("не задан адрес отправителя KPBOT_SMTP_FROM")
+        if self.user and self.auth_mode() == "password" and not self.password:
+            raise MailError("нет пароля приложения: задайте KPBOT_SMTP_PASSWORD или KPBOT_SMTP_AUTH=xoauth2")
 
     def _connect(self, context) -> smtplib.SMTP:
         """465 — шифрование с первого байта (SSL), 587 — STARTTLS, none — только тесты."""
@@ -115,8 +150,7 @@ class Mailer:
                 if self.security == "starttls":
                     client.starttls(context=context)
                     client.ehlo()
-                if self.user:
-                    client.login(self.user, self.password)
+                self._login(client)
                 client.send_message(message, to_addrs=[to])
         except smtplib.SMTPAuthenticationError as exc:
             raise MailError(f"сервер не принял логин: {exc.smtp_code}") from exc
@@ -144,10 +178,13 @@ def check_connection(cfg: Settings) -> str:
             if mailer.security == "starttls":
                 client.starttls(context=context)
                 client.ehlo()
-            if mailer.user:
-                client.login(mailer.user, mailer.password)
+            mailer._login(client)
     except smtplib.SMTPAuthenticationError as exc:
         raise MailError(f"логин отклонён: {exc.smtp_code}") from exc
     except (smtplib.SMTPException, OSError) as exc:
         raise MailError(f"связи нет: {exc}") from exc
-    return f"связь есть, вход выполнен: {mailer.host}:{mailer.port} · отправитель {mailer.from_addr}"
+    mode = "OAuth (XOAUTH2)" if mailer.auth_mode() == "xoauth2" else "пароль приложения"
+    return (
+        f"связь есть, вход выполнен ({mode}): {mailer.host}:{mailer.port} · "
+        f"отправитель {mailer.from_addr}"
+    )

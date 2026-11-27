@@ -26,7 +26,7 @@ from .cabinet_store import (
     CabinetStore,
 )
 from .config import settings
-from .domain import LineStatus, PriceItem, RfqLine, price_quote
+from .domain import LineStatus, PriceItem, RfqLine, ValidationError, price_quote
 from .mailer import MailError, Mailer
 from .render import html_to_pdf, render_template
 from .security import (
@@ -632,6 +632,11 @@ def _validate_order(user: dict, company: dict) -> tuple[list[dict], Decimal, Dec
         if item is None:
             raise OrderError(f"позиция {sku} больше не в прайсе — удалите её из корзины")
         pack = int(packs.get(sku, 1) or 1)
+        if qty > settings.max_qty:
+            # иначе расчёт падает внутри, и клиент видит 500 вместо объяснения
+            raise OrderError(
+                f"{item.name}: количество больше допустимого ({settings.max_qty:g} {item.unit})"
+            )
         if qty <= 0 or qty % pack:
             raise OrderError(f"{item.name}: заказ кратен {pack} {item.unit}")
         if stock:
@@ -707,7 +712,13 @@ async def create_order(request: Request):
 
     cabinet = cabinet_store()
     number = cabinet.next_number()
-    rfq_id = _rfq_from_order(user, company, rows, number)
+    try:
+        rfq_id = _rfq_from_order(user, company, rows, number)
+    except ValidationError as exc:
+        # расчёт — последний рубеж: клиент должен увидеть причину, а не 500
+        return RedirectResponse(
+            f"/cabinet/cart?error={quote(str(exc))}", status_code=status.HTTP_303_SEE_OTHER
+        )
     order = cabinet.create_order(
         company_id=company["id"], created_by=user["id"], number=number,
         comment=comment, total=str(total),

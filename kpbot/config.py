@@ -138,6 +138,10 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_from: str = ""
     smtp_security: str = "starttls"  # starttls (587) | ssl (465) | none (только для тестов)
+    # Как входить в SMTP: password — пароль приложения, xoauth2 — по OAuth-токену
+    # (Gmail без пароля приложения логин по паролю не принимает), auto — пароль,
+    # если он задан, иначе OAuth.
+    smtp_auth: str = "auto"
     smtp_timeout_seconds: int = 30
     # Письмо клиенту при смене статуса его заказа (если SMTP настроен)
     cabinet_notify_email: bool = True

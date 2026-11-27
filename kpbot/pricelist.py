@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from .domain import PriceItem, ValidationError
+from .extract import canonical_unit
 
 # Локальные библиотеки (в песочнице нет доступа к PyPI).
 _VENDOR = Path(__file__).resolve().parent.parent / "vendor"
@@ -121,6 +122,30 @@ def write_xlsx(path: Path, items: list[PriceItem] | None = None) -> Path:
     return path
 
 
+def _pick_price_column(names: list[str]) -> int | None:
+    """Колонка с ценой: «Цена без НДС» приоритетнее «Цена с НДС».
+
+    В прайсах часто стоят обе колонки, и раньше бралась первая по порядку —
+    обычно «с НДС», после чего НДС начислялся на неё второй раз: документ
+    дороже реальности ровно на ставку.
+    """
+    candidates: list[tuple[int, str]] = []
+    for index, name in enumerate(names):
+        cleaned = name.replace(".", "").replace(" ", "")
+        if cleaned.startswith(("цена", "price", "стоимость")):
+            candidates.append((index, cleaned))
+    if not candidates:
+        return None
+    for index, cleaned in candidates:
+        if "безндс" in cleaned or "безналога" in cleaned:
+            return index
+    for index, cleaned in candidates:
+        if "сндс" not in cleaned and "сналогом" not in cleaned:
+            return index
+    # только колонки «с НДС»: цену без НДС взять неоткуда
+    return candidates[0][0]
+
+
 def _header_indexes(header: list[object]) -> dict[str, int] | None:
     """Распознаёт шапку выгрузки из 1С/Excel: колонки могут называться по-разному.
 
@@ -139,7 +164,11 @@ def _header_indexes(header: list[object]) -> dict[str, int] | None:
     sku = find(("sku", "артикул", "код", "code", "номенклатуракод"))
     name = find(("наименование", "номенклатура", "name", "товар"))
     unit = find(("единица", "ед", "unit", "ед изм", "едизм"))
-    price = find(("цена", "price", "стоимость"))
+    price = _pick_price_column(names)
+    currency = find(("валюта", "currency", "вал"))
+    # «с НДС» в заголовке цены — отдельный признак, а не часть имени колонки
+    price_header = names[price].replace(".", "").replace(" ", "") if price is not None else ""
+    price_includes_vat = "сндс" in price_header and "безндс" not in price_header
 
     if name is None or price is None:
         return None
@@ -148,7 +177,18 @@ def _header_indexes(header: list[object]) -> dict[str, int] | None:
         "name": name,
         "unit": unit if unit is not None else -1,
         "price": price,
+        "currency": currency if currency is not None else -1,
+        "price_includes_vat": 1 if price_includes_vat else 0,
     }
+
+
+def normalize_unit_label(raw: str) -> str:
+    """Единица прайса в той же форме, что и в письме: «кв.м» → «м2».
+
+    Иначе строка «100 м2» и позиция с единицей «кв.м» не совпадут, и заявка
+    уйдёт человеку на проверку без причины.
+    """
+    return canonical_unit(raw) or "шт"
 
 
 def merge_prices(
@@ -177,7 +217,7 @@ def merge_prices(
             by_sku[sku] = PriceItem(
                 sku=sku,
                 name=str(row.get("name") or sku),
-                unit=str(row.get("unit") or "шт"),
+                unit=normalize_unit_label(str(row.get("unit") or "шт")),
                 price=price,
             )
             changed += 1
@@ -185,7 +225,7 @@ def merge_prices(
             by_sku[sku] = PriceItem(
                 sku=sku,
                 name=current.name or str(row.get("name") or sku),
-                unit=current.unit or str(row.get("unit") or "шт"),
+                unit=current.unit or normalize_unit_label(str(row.get("unit") or "шт")),
                 price=price,
                 currency=current.currency,
             )
@@ -193,11 +233,19 @@ def merge_prices(
     return sorted(by_sku.values(), key=lambda item: item.sku), changed
 
 
-def load_price_items(path: Path, *, max_rows: int = 100_000) -> list[PriceItem]:
+def load_price_items(
+    path: Path, *, max_rows: int = 100_000, prices_include_vat: bool = False
+) -> list[PriceItem]:
     """Читает прайс из CSV (; или ,) или XLSX.
 
     Понимает как наш шаблон (SKU/Наименование/Ед./Цена), так и выгрузку из 1С
     (Код/Номенклатура/Единица/Цена) — колонки ищутся по смыслу, а не по номеру.
+
+    Два молчаливых искажения суммы закрыты здесь же:
+
+    * колонка «Цена с НДС» при выключенном режиме «цены с НДС» — отказ с
+      объяснением, а не двойной НДС в документе;
+    * прайс в чужой валюте — отказ: рубли из долларов никто не пересчитывает.
     """
     if not path.exists():
         raise ValidationError(f"прайс-лист не найден: {path}")
@@ -212,22 +260,33 @@ def load_price_items(path: Path, *, max_rows: int = 100_000) -> list[PriceItem]:
     columns = _header_indexes(header) if header else None
     if columns is None:
         # шапки нет или она нестандартная: читаем позиционно, как раньше
-        columns = {"sku": 0, "name": 1, "unit": 2, "price": 3}
+        columns = {"sku": 0, "name": 1, "unit": 2, "price": 3, "currency": -1}
+    if columns.get("price_includes_vat") and not prices_include_vat:
+        raise ValidationError(
+            "в прайсе колонка «Цена с НДС», а расчёт считает цены без НДС: "
+            "НДС начислился бы второй раз. Включите KPBOT_PRICES_INCLUDE_VAT=1 "
+            "или выгрузите прайс с ценами без НДС"
+        )
 
     items: list[PriceItem] = []
+    foreign: set[str] = set()
     for row in rows:
         if len(row) <= max(columns["name"], columns["price"]):
             continue
 
         def cell(key: str) -> str:
-            index = columns[key]
+            index = columns.get(key, -1)
             if index < 0 or index >= len(row):
                 return ""
             return str(row[index] or "").strip()
 
         sku = cell("sku")
         name = cell("name")
-        unit = cell("unit") or "шт"
+        unit = normalize_unit_label(cell("unit") or "шт")
+        currency = _currency_code(cell("currency"))
+        if currency != "RUB":
+            foreign.add(currency)
+            continue
         raw_price = cell("price").replace(",", ".").replace(" ", "").replace("₽", "")
         if not name:
             continue
@@ -239,11 +298,31 @@ def load_price_items(path: Path, *, max_rows: int = 100_000) -> list[PriceItem]:
             continue
         if price < 0:
             continue
-        items.append(PriceItem(sku=sku, name=name, unit=unit, price=price))
+        items.append(PriceItem(sku=sku, name=name, unit=unit, price=price, currency=currency))
 
+    if foreign:
+        raise ValidationError(
+            f"прайс в валюте {', '.join(sorted(foreign))}: цены не пересчитываются "
+            "автоматически, выгрузите прайс в рублях"
+        )
     if not items:
         raise ValidationError("прайс-лист пуст или не распознан")
     return items
+
+
+_RUBLE_MARKS = {"", "rub", "rur", "руб", "руб.", "р", "₽", "643"}
+
+
+def _currency_code(raw: str) -> str:
+    """Валюта строки прайса: пусто и «руб.» — это рубли."""
+    text = (raw or "").strip().lower()
+    if text in _RUBLE_MARKS:
+        return "RUB"
+    if text in {"usd", "$", "долл", "доллар", "840"}:
+        return "USD"
+    if text in {"eur", "€", "евро", "978"}:
+        return "EUR"
+    return text.upper()[:8] or "RUB"
 
 
 def _read_csv_with_header(path: Path, *, max_rows: int) -> tuple[list[str], list[list[str]]]:

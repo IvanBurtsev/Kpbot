@@ -65,6 +65,21 @@ class SendFailureTest(unittest.TestCase):
         self.client = TestClient(app, follow_redirects=False)
         self.client.post("/ui/login", data={"password": settings.ui_password})
         self.rfq = pipeline.process_text("уголок 50х50 — 10 шт", sender="client@example.ru", subject="Заявка")
+        # отправка разрешена только после одобрения (см. README)
+        pipeline.approve(self.rfq.rfq_id, actor="test")
+
+    def test_send_without_approval_is_refused(self) -> None:
+        rfq = pipeline.process_text(
+            "уголок 50х50 — 10 шт", sender="second@example.ru", subject="Заявка"
+        )
+        token = csrf(self.client, f"/ui/rfq/{rfq.rfq_id}")
+        response = self.client.post(
+            f"/ui/rfq/{rfq.rfq_id}/send",
+            data={"csrf_token": token, "to": "client@example.ru", "body": "КП"},
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("одобрите", unquote(response.headers["location"]).lower())
+        self.assertEqual(store.get_rfq(rfq.rfq_id)["status"], "draft_ready")
 
     def test_failed_send_lands_in_outbox(self) -> None:
         original_enabled = settings.smtp_enabled

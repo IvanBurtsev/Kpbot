@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
 from .domain import RfqLine, quantity
@@ -93,17 +93,36 @@ def _dot_thousands(text: str) -> str:
     """«10.000 шт» → «10000 шт»: иначе заявка уменьшается в тысячу раз."""
     return _THOUSANDS_DOT.sub(lambda match: match.group(1).replace(".", ""), text)
 
-# Единицы: длинные варианты раньше коротких.
+# Единицы: длинные варианты раньше коротких, «м» — последним, иначе «мм» и «м2»
+# прочитались бы как метры. Вместо \b в конце стоит (?!\w): «м²», «куб.м» и
+# «м.п.» кончаются на не-слово, и граница слова после них не срабатывает вовсе —
+# строка с такой единицей молча пропадала из заявки.
 _UNIT_WORDS = (
-    r"штук[а-я]*|шт|упак[а-я]*|уп|комплект[а-я]*|компл|рулон[а-я]*|рул|пачк[а-я]*|пач|"
-    r"мешк[а-я]*|меш|канистр[а-я]*|лист[а-я]*|погонн[а-я]*|метр[а-я]*|пог\.?\s?м|м\.?\s?п|м|кг|л|т"
+    r"куб\.?\s*метр[а-я]*|куб\.?\s*м|м\.?\s*куб|м3|м³|"
+    r"кв\.?\s*метр[а-я]*|кв\.?\s*м|м\.?\s*кв|м2|м²|"
+    r"погонн[а-я]*\s*метр[а-я]*|пог\.?\s*метр[а-я]*|пог\.?\s*м|"
+    r"м\.?\s*п|п\.?\s*м|"
+    r"штук[а-я]*|шт|упак[а-я]*|уп|комплект[а-я]*|компл|"
+    r"рулон[а-я]*|рул|пачк[а-я]*|пач|мешк[а-я]*|меш|канистр[а-я]*|лист[а-я]*|"
+    r"килограмм[а-я]*|кг|литр[а-я]*|л|тонн[а-я]*|т|"
+    r"метр[а-я]*|пар[а-я]*|м"
 )
+# «10 тыс. шт» — десять тысяч штук: «тыс.» — множитель, а не единица.
+_THOUSAND = re.compile(r"^\s*тыс", re.IGNORECASE)
 _QTY_UNIT = re.compile(
-    rf"(?P<qty>\d{{1,7}}(?:[.,]\d{{1,3}})?)\s*(?P<unit>{_UNIT_WORDS})\b",
+    rf"(?P<qty>\d{{1,7}}(?:[.,]\d{{1,3}})?)\s*(?P<thousand>тыс\.?\s*)?"
+    rf"(?P<unit>{_UNIT_WORDS})(?!\w)",
     re.IGNORECASE,
 )
 
-_UNIT_MAP = (
+# Канонические формы. Порядок важен: сначала площадь и объём, потом всё
+# остальное, односимвольные — только точным совпадением (в _SINGLE_UNITS).
+_UNIT_ALIASES = (
+    (("кубм", "м3", "м³", "кубическ"), "м3"),
+    (("квм", "м2", "м²", "квадратн"), "м2"),
+    (("погонн", "погм", "пм", "мп", "пог", "метр"), "м"),
+    (("миллиметр",), "мм"),
+    (("сантиметр",), "см"),
     (("штук", "шт"), "шт"),
     (("упак", "уп"), "уп"),
     (("комплект", "компл"), "компл"),
@@ -112,22 +131,88 @@ _UNIT_MAP = (
     (("мешк", "меш"), "меш"),
     (("канистр",), "канистра"),
     (("лист",), "лист"),
-    (("погонн", "метр"), "м"),
-    (("пог", "м.п", "мп"), "м"),
-    (("кг",), "кг"),
-    (("л",), "л"),
-    (("т",), "т"),
-    (("м",), "м"),
+    (("килограмм",), "кг"),
+    (("литр",), "л"),
+    (("тонн",), "т"),
+    (("пар",), "пар"),
 )
+
+_SINGLE_UNITS = {
+    "м": "м", "мм": "мм", "см": "см", "кг": "кг", "л": "л", "т": "т", "г": "г",
+    "м2": "м2", "м²": "м2", "м3": "м3", "м³": "м3", "шт": "шт", "уп": "уп",
+}
 
 
 class LineExtractor(Protocol):
     def extract(self, text: str, *, max_lines: int = MAX_LINES) -> list[RfqLine]: ...
 
 
+_TRAILING_QTY = re.compile(
+    r"(?:(?P<dash>[—–]|\s-\s)\s*(?P<dash_qty>\d{1,7}(?:[.,]\d{1,3})?)"
+    r"|\s(?P<plain_qty>\d{1,7}))\s*[.,;]?$"
+)
+
+
+def trailing_quantity(text: str) -> Decimal | None:
+    """Количество без единицы: «Подрозетник 68 мм — 20» → 20.
+
+    Клиент иногда пишет число, но не пишет «шт»/«м». Терять из-за этого всю
+    строку нельзя: единицу подставит прайс, а подтвердит человек.
+
+    Дробное число без тире количеством не считаем: «труба 25.4» — это размер,
+    а не 25,4 метра. После тире («труба 25.4 — 1.5») дробь уже количество.
+    """
+    match = _TRAILING_QTY.search(text or "")
+    if not match:
+        return None
+    raw = match.group("dash_qty") or match.group("plain_qty")
+    try:
+        value = quantity(Decimal(raw.replace(",", ".")))
+    except (InvalidOperation, ValueError, AttributeError):
+        return None
+    return value if value > 0 else None
+
+
+def unit_multiplier(raw: str) -> int:
+    """«10 тыс. шт» — это десять тысяч штук, а не десять: множитель единицы."""
+    return 1000 if _THOUSAND.match(raw or "") else 1
+
+
+def quantities_in(text: str) -> list[Decimal]:
+    """Количества, которые в тексте стоят вместе с единицей: «200 шт», «10 тыс. шт».
+
+    Нужно для проверки ответа LLM: если модель назвала число, которого в письме
+    рядом с позицией нет, доверять ему нельзя.
+    """
+    found: list[Decimal] = []
+    # Те же правила тысяч, что и при разборе: «10.000 шт» — это 10 000, а не 10.
+    normalized = _dot_thousands(_glue_thousands(text or ""))
+    for match in _QTY_UNIT.finditer(normalized):
+        try:
+            value = Decimal(match.group("qty").replace(",", "."))
+        except (InvalidOperation, ValueError):
+            continue
+        found.append(quantity(value * (1000 if match.group("thousand") else 1)))
+    return found
+
+
 def canonical_unit(raw: str) -> str:
-    low = raw.lower().replace(".", "").replace(" ", "")
-    for variants, canonical in _UNIT_MAP:
+    """Приводит единицу к одной форме: «кв.м» и «м2» — это м2, а «мм» — не метры.
+
+    Раньше сравнение шло по началу строки, и «мм» превращался в «м»,
+    «тыс. шт» — в «т», а «м2» — в метры: количество молча менялось в 1000 раз
+    и строка уходила в КП с чужой ценой за единицу.
+    """
+    low = re.sub(r"[\s.\u00a0\u202f]+", "", (raw or "").lower())
+    if not low:
+        return ""
+    if low.startswith("тыс"):
+        rest = low[3:]
+        return canonical_unit(rest) if rest else "тыс"
+    exact = _SINGLE_UNITS.get(low)
+    if exact:
+        return exact
+    for variants, canonical in _UNIT_ALIASES:
         if any(low.startswith(variant) for variant in variants):
             return canonical
     return low
@@ -202,12 +287,13 @@ class RuleExtractor:
 
             raw_qty = match.group("qty").replace(",", ".")
             unit = canonical_unit(match.group("unit"))
-            qty = quantity(Decimal(raw_qty))
+            multiplier = 1000 if match.group("thousand") else 1
+            qty = quantity(Decimal(raw_qty) * multiplier)
             if qty <= 0:
                 # «0 шт» — не позиция: строку оставляем человеку, но не роняем письмо
                 self.skipped.append(segment[:200])
                 continue
-            key = (name.lower(), raw_qty, unit)
+            key = (name.lower(), str(qty), unit)
             if key in seen:
                 continue
             seen.add(key)
