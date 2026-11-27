@@ -27,8 +27,15 @@ class SetupWizardTest(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(app, follow_redirects=False)
         self.client.post("/ui/login", data={"password": settings.ui_password})
+        # Прайс общий на весь тестовый прогон: шаг визарда заменяет его целиком,
+        # поэтому после проверки возвращаем как было. Иначе следующие тесты
+        # получают чужой прайс из двух позиций и падают «на пустом месте».
+        self.saved_prices = store.price_items()
         with store._connect() as conn, conn:
             conn.execute("DELETE FROM app_settings")
+
+    def tearDown(self) -> None:
+        store.replace_price_items(self.saved_prices)
 
     def test_page_opens_and_shows_three_steps(self) -> None:
         page = self.client.get("/ui/setup")

@@ -8,6 +8,7 @@
   <p class="muted small">Придумайте новый пароль. После сохранения все старые сеансы завершатся.</p>
   <form method="post" action="/cabinet/reset" class="stack">
     <input type="hidden" name="token" value="{{ token }}">
+    <input type="hidden" name="tenant" value="{{ tenant_code or '' }}">
     <label>Новый пароль (не короче 8 символов)
       <input type="password" name="new" autocomplete="new-password" minlength="8" required autofocus>
     </label>

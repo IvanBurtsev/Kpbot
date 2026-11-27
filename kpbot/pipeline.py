@@ -401,24 +401,47 @@ class Pipeline:
         return lines
 
     def _learn_from_edits(self, before: dict[int, RfqLine], after: list[RfqLine]) -> None:
-        """Учится на том, что человек подтвердил, заменил или удалил."""
-        kept = set()
+        """Учится на том, что человек подтвердил, заменил или удалил.
+
+        Сравниваем по содержимому строки (ключ обучения + артикул), а не по
+        номеру: после удаления строки из середины номера сдвигаются, и прежняя
+        сверка «по idx» записывала подтверждение одному артикулу, а «промах» —
+        другому, который на самом деле никто не трогал. Выученные пары от этого
+        портились, и через несколько правок сервис уверенно подставлял не то.
+        """
+        before_pairs: set[tuple[str, str]] = set()
+        before_status: dict[tuple[str, str], set[str]] = {}
+        for line in before.values():
+            if not line.matched_sku:
+                continue
+            key = self.learn_key(line.raw_text)
+            if key:
+                pair = (key, line.matched_sku)
+                before_pairs.add(pair)
+                before_status.setdefault(pair, set()).add(line.status.value)
+
+        after_pairs: set[tuple[str, str]] = set()
         for line in after:
             key = self.learn_key(line.raw_text)
-            previous = before.get(line.idx)
-            if line.matched_sku and key:
-                # подтверждение или замена: запоминаем новое соответствие
-                if previous is None or previous.matched_sku != line.matched_sku:
-                    self.store.learn_match(key, line.matched_sku)
-                kept.add(line.idx)
-            if previous is not None and previous.matched_sku and previous.matched_sku != line.matched_sku:
-                # старое совпадение человек отменил
-                self.store.learn_miss(self.learn_key(previous.raw_text), previous.matched_sku)
+            if not key or not line.matched_sku:
+                continue
+            pair = (key, line.matched_sku)
+            after_pairs.add(pair)
+            # Новое соответствие — и подтверждение уже предложенного: человек
+            # нажал «подтвердить» у похожей строки, и это такое же обучение.
+            # Иначе пара «подтверждена дважды» не набиралась бы никогда: статус
+            # после первого подтверждения уже ok, и второй правки не требуется.
+            confirmed = (
+                line.status is LineStatus.OK
+                and LineStatus.AMBIGUOUS.value in before_status.get(pair, set())
+            )
+            if pair not in before_pairs or confirmed:
+                self.store.learn_match(*pair)
 
-        for idx, previous in before.items():
-            if idx not in kept and previous.matched_sku:
-                # строку удалили — значит предложенное не подходило
-                self.store.learn_miss(self.learn_key(previous.raw_text), previous.matched_sku)
+        # Соответствие исчезло из заявки (строку удалили, заменили или сняли
+        # совпадение) — это возражение против пары, а не против всей строки.
+        for key, sku in sorted(before_pairs - after_pairs):
+            self.store.learn_miss(key, sku)
 
     def _drop_subsets_of_matched(self, lines: list[RfqLine]) -> list[RfqLine]:
         """Выкидывает обрубки: строка без совпадения, чьи слова целиком входят
@@ -653,7 +676,7 @@ class Pipeline:
 
         pdf_path = self.out_dir() / f"{rfq_id}.pdf"
         ok, reason = False, "PDF отключён настройкой"
-        if self.cfg.pdf_enabled and self._pdf_allowed():
+        if self.cfg.pdf_enabled and _pdf_allowed():
             ok, reason = html_to_pdf(html_path, pdf_path)
             # Сбой PDF — не приговор до перезапуска: раньше один неудачный вызов
             # (Chrome не успел стартовать) отключал PDF до рестарта сервиса.
@@ -676,10 +699,21 @@ class Pipeline:
         current = RfqStatus(rfq["status"])
         if current in (RfqStatus.APPROVED, RfqStatus.SENT):
             # Повторное одобрение — это второй черновик и риск второго письма.
+            log.warning("одобрение %s отклонено: статус уже %s", rfq_id, current.value)
             raise ValidationError(
                 f"нельзя перевести заявку в «одобрена»: текущий статус — «{current.value}»"
             )
         quote = self.store.get_quote(rfq_id) or {}
+        if not quote.get("lines"):
+            # Пустое КП отправлять нечего: либо строки не найдены, либо всё
+            # исключено. Одобрение такого расчёта создавало письмо без позиций.
+            log.warning(
+                "одобрение %s отклонено: в расчёте нет позиций (статус %s, unmatched=%s)",
+                rfq_id, current.value, quote.get("unmatched"),
+            )
+            raise ValidationError(
+                "в расчёте нет ни одной позиции — добавьте строки или отклоните заявку"
+            )
         self.store.log(rfq_id, "approved", actor, comment)
 
         reply = build_reply_text_from_store(

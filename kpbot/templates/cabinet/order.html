@@ -34,6 +34,12 @@
     </tbody>
   </table>
   <div class="cabinet-totals">
+    {% if totals and totals.vat %}
+    <div class="muted small">В том числе НДС: {{ "%.2f"|format(totals.vat|float) }} ₽</div>
+    {% endif %}
+    {% if totals and totals.delivery %}
+    <div class="muted small">В том числе доставка: {{ "%.2f"|format(totals.delivery|float) }} ₽</div>
+    {% endif %}
     <div class="total"><span>Итого с НДС</span> <b>{{ "%.2f"|format(order.total|float) }} ₽</b></div>
   </div>
 </section>

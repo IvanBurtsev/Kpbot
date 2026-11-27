@@ -17,6 +17,6 @@
     </label>
     <button class="primary" type="submit">Войти</button>
   </form>
-  <p class="muted small">Пароль выдаёт поставщик. <a href="/cabinet/forgot">Забыли пароль?</a></p>
+  <p class="muted small">Пароль выдаёт поставщик. <a href="/cabinet/forgot{% if tenant_code %}?t={{ tenant_code }}{% endif %}">Забыли пароль?</a></p>
 </section>
 {% endblock %}

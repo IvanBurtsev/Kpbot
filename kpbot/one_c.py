@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -86,10 +87,23 @@ class StockRow:
 
 
 def _pick(record: dict, *needles: str) -> object | None:
-    """Ищет значение по фрагменту имени поля: имена в разных конфигурациях разные."""
-    lowered = {str(key).lower(): key for key in record}
+    """Ищет значение по фрагменту имени поля: имена в разных конфигурациях разные.
+
+    Представление важнее ключа: в ответе 1С рядом лежат «Номенклатура» (текст)
+    и «Номенклатура_Key» (GUID). Раньше бралось первое попавшееся поле, и
+    остаток мог оказаться привязан к GUID — тогда склад/артикул не находились.
+    """
+    fields = [(str(key).lower(), key) for key in record]
     for needle in needles:
-        for low, original in lowered.items():
+        for low, original in fields:
+            if low == needle and not low.endswith("_key"):
+                return record[original]
+    for needle in needles:
+        for low, original in fields:
+            if needle in low and not low.endswith("_key"):
+                return record[original]
+    for needle in needles:
+        for low, original in fields:
             if needle in low:
                 return record[original]
     return None
@@ -109,10 +123,23 @@ def _text(value: object | None) -> str:
 def _number(value: object | None) -> Decimal | None:
     if value is None or isinstance(value, bool):
         return None
+    if isinstance(value, Decimal):
+        return value if value.is_finite() else None
+    text = str(value).strip()
+    for space in ("\u00a0", "\u202f", "\u2009", "\u2007", " "):
+        text = text.replace(space, "")
+    if "," in text and "." in text:
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "," in text:
+        text = text.replace(",", ".")
     try:
-        return Decimal(str(value).replace(",", "."))
+        number = Decimal(text)
     except (InvalidOperation, ValueError):
         return None
+    return number if number.is_finite() else None
 
 
 def parse_balance(payload: dict) -> list[tuple[str, str, str, str]]:
@@ -134,6 +161,45 @@ def parse_balance(payload: dict) -> list[tuple[str, str, str, str]]:
             continue
         result.append((key, str(qty), unit, warehouse))
     return result
+
+
+_GUID = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def merge_stock_rows(
+    rows: list[tuple[str, str, str, str]],
+) -> list[tuple[str, str, str, str]]:
+    """Складывает остатки одного артикула по складам.
+
+    Регистр «Товары на складах» всегда многомерен по складу: одна номенклатура
+    на двух складах — это две строки ответа. В таблице остатков артикул —
+    первичный ключ, поэтому такие строки роняли импорт (UNIQUE constraint),
+    а без импорта «остатки из 1С» не работали вовсе. Для вопроса «сколько есть»
+    правильный ответ — сумма по складам.
+    """
+    totals: dict[str, Decimal] = {}
+    units: dict[str, str] = {}
+    warehouses: dict[str, list[str]] = {}
+    for key, qty_text, unit, warehouse in rows:
+        qty = _number(qty_text)
+        if qty is None:
+            continue
+        totals[key] = totals.get(key, Decimal("0")) + qty
+        if unit:
+            units.setdefault(key, unit)
+        if warehouse:
+            warehouses.setdefault(key, []).append(warehouse)
+    return [
+        (
+            key,
+            format(qty.normalize(), "f"),
+            units.get(key, ""),
+            ", ".join(dict.fromkeys(warehouses.get(key, [])))[:120],
+        )
+        for key, qty in totals.items()
+    ]
 
 
 def _exact(record: dict, *names: str) -> object | None:
@@ -168,6 +234,17 @@ STOCK_REGISTERS = (
 )
 # «Заказ клиента» есть в УТ/ERP, но не в Бухгалтерии.
 CUSTOMER_ORDER_DOCUMENTS = ("Document_ЗаказКлиента", "Document_ЗаказПокупателя")
+
+
+_NEXT_LINK_KEYS = ("odata.nextLink", "@odata.nextLink", "nextLink")
+
+
+def _next_link(payload: dict) -> str:
+    for key in _NEXT_LINK_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 class OneCClient:
@@ -210,6 +287,16 @@ class OneCClient:
     ) -> httpx.Response:
         """Один сетевой вызов с понятными ошибками и текстом от 1С."""
         url = f"{self.base_url}{ODATA}{path}"
+        return self._request_url(method, url, params=params, body=body)
+
+    def _request_url(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: dict | None = None,
+        body: dict | None = None,
+    ) -> httpx.Response:
         try:
             response = self._http.request(
                 method, url, headers=self._headers(), params=params, json=body
@@ -280,7 +367,7 @@ class OneCClient:
         tried: list[str] = []
         for register in STOCK_REGISTERS:
             try:
-                payload = self._json(
+                records = self._json_all(
                     f"/{register}/Balance", {"$format": "json", "$top": limit}
                 )
             except OneCResponseError as exc:
@@ -288,9 +375,11 @@ class OneCClient:
                     tried.append(register)
                     continue
                 raise
-            rows = parse_balance(payload)
+            rows = parse_balance({"value": records})
             if rows:
-                return rows
+                # Склады складываются, GUID-ы превращаются в артикулы: иначе
+                # импорт остатков падал на дублях, а остаток не находился по SKU.
+                return merge_stock_rows(self._resolve_stock_skus(rows))
             tried.append(register)
         raise OneCError(
             "регистр остатков не найден или в нём нет остатков; пробовали: "
@@ -298,18 +387,39 @@ class OneCClient:
             + ". Для Бухгалтерии остатки считаются по документам: --source documents"
         )
 
+    def _resolve_stock_skus(
+        self, rows: list[tuple[str, str, str, str]]
+    ) -> list[tuple[str, str, str, str]]:
+        """GUID номенклатуры → артикул: в регистре часто нет поля «Артикул».
+
+        Ключ остатка обязан совпадать с артикулом прайса, иначе `stock_map()`
+        не найдёт позицию и кабинет покажет «нет на складе» по всему каталогу.
+        """
+        if not any(_GUID.match(key) for key, *_ in rows):
+            return rows
+        try:
+            names = self.nomenclature()
+        except OneCError:
+            log.warning("не удалось прочитать номенклатуру: остатки останутся по GUID")
+            return rows
+        resolved: list[tuple[str, str, str, str]] = []
+        for key, qty, unit, warehouse in rows:
+            sku, _name, unit_from_catalog = names.get(key, ("", "", ""))
+            resolved.append((sku or key, qty, unit or unit_from_catalog, warehouse))
+        return resolved
+
     # ---------- справочники ----------
 
     def units(self, limit: int = 1000) -> dict[str, str]:
         """Единицы измерения: Ref_Key → «шт», «кг». Нет справочника — пусто."""
         try:
-            payload = self._json(
+            records = self._json_all(
                 "/Catalog_КлассификаторЕдиницИзмерения", {"$format": "json", "$top": limit}
             )
         except OneCError:
             return {}
         result: dict[str, str] = {}
-        for record in payload.get("value") or []:
+        for record in records:
             if not isinstance(record, dict):
                 continue
             ref = _text(_exact(record, "ref_key", "ref"))
@@ -337,16 +447,47 @@ class OneCClient:
         except ValueError as exc:
             raise OneCError("1С вернула не JSON (вероятно, открылась веб-страница)") from exc
 
+    def _json_absolute(self, url: str) -> dict:
+        """Читает абсолютный адрес (odata.nextLink) с теми же ошибками, что и _json."""
+        response = self._request_url("GET", url)
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise OneCError("1С вернула не JSON на странице nextLink") from exc
+
+    def _json_all(
+        self, path: str, params: dict | None = None, *, max_pages: int = 20
+    ) -> list[dict]:
+        """Все записи, а не первая страница.
+
+        1С ограничивает размер страницы и отдаёт следующую ссылку в
+        `odata.nextLink`. Раньше ссылка игнорировалась: на большом справочнике
+        или регистре остатков часть позиций молча исчезала, и заявка получала
+        «нет в наличии» по ходовым артикулам.
+        """
+        payload = self._json(path, params=params)
+        items = [item for item in payload.get("value") or [] if isinstance(item, dict)]
+        link = _next_link(payload)
+        pages = 1
+        while link and pages < max_pages:
+            payload = self._json_absolute(link)
+            items.extend(item for item in payload.get("value") or [] if isinstance(item, dict))
+            link = _next_link(payload)
+            pages += 1
+        if link:
+            log.warning("1С вернула больше %s страниц — остаток не дочитан", max_pages)
+        return items
+
     def nomenclature(self, limit: int = 5000) -> dict[str, tuple[str, str, str]]:
         """Справочник номенклатуры: Ref_Key → (артикул, наименование, единица).
 
         Единица в справочнике хранится ссылкой, поэтому её название берём
         из классификатора единиц измерения. Папки пропускаем.
         """
-        payload = self._json("/Catalog_Номенклатура", {"$format": "json", "$top": limit})
+        records = self._json_all("/Catalog_Номенклатура", {"$format": "json", "$top": limit})
         units = self.units()
         result: dict[str, tuple[str, str, str]] = {}
-        for record in payload.get("value") or []:
+        for record in records:
             if not isinstance(record, dict) or record.get("IsFolder") or record.get("DeletionMark"):
                 continue
             ref = _text(_exact(record, "ref_key", "ref"))
@@ -362,11 +503,11 @@ class OneCClient:
     def warehouses(self, limit: int = 1000) -> dict[str, str]:
         """Склады: Ref_Key → название. Нет справочника — пустая карта."""
         try:
-            payload = self._json("/Catalog_Склады", {"$format": "json", "$top": limit})
+            records = self._json_all("/Catalog_Склады", {"$format": "json", "$top": limit})
         except OneCError:
             return {}
         result: dict[str, str] = {}
-        for record in payload.get("value") or []:
+        for record in records:
             if not isinstance(record, dict):
                 continue
             ref = _text(_exact(record, "ref_key", "ref"))
@@ -377,10 +518,9 @@ class OneCClient:
     def documents(self, entity: str, limit: int = 1000) -> list[dict]:
         """Документы указанного вида. Нет такого вида в конфигурации — пусто."""
         try:
-            payload = self._json(f"/{entity}", {"$format": "json", "$top": limit})
+            return self._json_all(f"/{entity}", {"$format": "json", "$top": limit})
         except OneCError:
             return []
-        return [item for item in payload.get("value") or [] if isinstance(item, dict)]
 
     def stock_from_documents(self, limit: int = 1000) -> list[tuple[str, str, str, str]]:
         """Остатки как «приход − расход» по документам.
@@ -458,10 +598,9 @@ class OneCClient:
 
         Берём последнюю запись по каждой номенклатуре: регистр периодический.
         """
-        payload = self._json(
+        rows = self._json_all(
             "/InformationRegister_ЦеныНоменклатуры", {"$format": "json", "$top": limit}
         )
-        rows = payload.get("value") or []
         latest: dict[str, tuple[str, str]] = {}
         for row in rows:
             if not isinstance(row, dict):

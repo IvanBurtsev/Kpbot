@@ -70,7 +70,12 @@ class TenantCabinetTest(unittest.TestCase):
             data={"email": self.user["email"], "password": self.password, "tenant": self.tenant["id"]},
         )
         self.assertIn(CLIENT_TENANT_COOKIE, self.client.cookies)
-        response = self.client.post("/cabinet/logout")
+        # Выход теперь проверяет CSRF, как и остальные формы кабинета.
+        from kpbot.cabinet import CLIENT_COOKIE
+        from kpbot.security import csrf_for
+
+        token = csrf_for(settings.session_secret, self.client.cookies.get(CLIENT_COOKIE))
+        response = self.client.post("/cabinet/logout", data={"csrf_token": token})
         self.assertEqual(response.status_code, 303)
         self.assertNotIn(CLIENT_TENANT_COOKIE, self.client.cookies)
 

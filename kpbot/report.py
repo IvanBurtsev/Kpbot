@@ -21,9 +21,11 @@ def _money(value: object) -> str:
     return f"{amount:,.2f}".replace(",", " ").replace(".", ",")
 
 
-def build_pilot_report(store, *, days: int = 30, company: str = "", period_note: str = "") -> str:
+def build_pilot_report(
+    store, *, days: int = 30, company: str = "", period_note: str = "", assignee: str | None = None
+) -> str:
     data = store.report(days)
-    unmatched = store.unmatched_report(days)
+    unmatched = store.unmatched_report(days, assignee=assignee)
 
     quotes = int(data.get("quotes") or 0)
     median = data.get("median_seconds")

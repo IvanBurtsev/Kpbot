@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS cabinet_orders(
     comment    TEXT NOT NULL DEFAULT '',
     total      TEXT NOT NULL DEFAULT '0',
     rfq_id     TEXT,
+    quote_id   TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY(company_id) REFERENCES cabinet_companies(id)
@@ -157,6 +158,10 @@ class CabinetStore:
             # базы, созданные до появления поля, получают его мягкой миграцией
             try:
                 conn.execute("ALTER TABLE cabinet_users ADD COLUMN password_changed_at TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE cabinet_orders ADD COLUMN quote_id TEXT")
             except sqlite3.OperationalError:
                 pass
 
@@ -442,12 +447,23 @@ class CabinetStore:
     # ---------- заказы ----------
 
     def next_number(self) -> str:
+        """Следующий номер «ЛК-ГГГГММДД-NNN».
+
+        Считаем по максимальному уже выданному, а не по COUNT(*): удаление
+        заказа не должно приводить к повторной выдаче его номера.
+        """
         day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        prefix = f"ЛК-{day}-"
         with closing(self._connect()) as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS c FROM cabinet_orders WHERE number LIKE ?", (f"ЛК-{day}-%",)
-            ).fetchone()
-        return f"ЛК-{day}-{int(row['c']) + 1:03d}"
+            rows = conn.execute(
+                "SELECT number FROM cabinet_orders WHERE number LIKE ?", (f"{prefix}%",)
+            ).fetchall()
+        last = 0
+        for row in rows:
+            suffix = str(row["number"])[len(prefix):]
+            if suffix.isdigit():
+                last = max(last, int(suffix))
+        return f"{prefix}{last + 1:03d}"
 
     def create_order(
         self,
@@ -459,14 +475,16 @@ class CabinetStore:
         total: str,
         lines: list[dict],
         rfq_id: str = "",
+        quote_id: str = "",
     ) -> dict:
         order_id = uuid.uuid4().hex
         now = _utcnow()
         with closing(self._connect()) as conn, conn:
             conn.execute(
                 "INSERT INTO cabinet_orders(id, company_id, created_by, number, status, comment,"
-                " total, rfq_id, created_at, updated_at) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
-                (order_id, company_id, created_by, number, comment, total, rfq_id, now, now),
+                " total, rfq_id, quote_id, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
+                (order_id, company_id, created_by, number, comment, total, rfq_id, quote_id, now, now),
             )
             conn.executemany(
                 "INSERT INTO cabinet_order_lines(order_id, sku, name, qty, price, amount)"
@@ -477,6 +495,24 @@ class CabinetStore:
                 ],
             )
         return self.order(order_id) or {}
+
+    def attach_rfq(self, order_id: str, *, rfq_id: str, quote_id: str) -> None:
+        """Связывает заказ с заявкой поставщика и снимком расчёта.
+
+        Нужно, чтобы документы клиента (счёт, УПД) брали итоги из того расчёта,
+        который был на момент заказа, а не из последней правки заявки.
+        """
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "UPDATE cabinet_orders SET rfq_id = ?, quote_id = ?, updated_at = ? WHERE id = ?",
+                (rfq_id, quote_id, _utcnow(), order_id),
+            )
+
+    def delete_order(self, order_id: str) -> None:
+        """Откат только что созданного заказа, если заявку создать не удалось."""
+        with closing(self._connect()) as conn, conn:
+            conn.execute("DELETE FROM cabinet_order_lines WHERE order_id = ?", (order_id,))
+            conn.execute("DELETE FROM cabinet_orders WHERE id = ?", (order_id,))
 
     def order(self, order_id: str) -> dict | None:
         with closing(self._connect()) as conn:
@@ -519,6 +555,28 @@ class CabinetStore:
                 " FROM cabinet_orders o JOIN cabinet_companies c ON c.id = o.company_id"
                 " ORDER BY o.created_at DESC LIMIT ?",
                 (max(1, min(int(limit), 500)),),
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["status_label"] = ORDER_STATUS_LABELS.get(item["status"], item["status"])
+            result.append(item)
+        return result
+
+    def orders_between(
+        self, company_id: str, start: str, end: str, *, limit: int = 20_000
+    ) -> list[dict]:
+        """Заказы компании за период — без «последних 500».
+
+        Акт сверки считался по списку из 500 последних заказов, и у активного
+        клиента «Оборот за период» молча занижался. Здесь период выбирает SQL.
+        """
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT * FROM cabinet_orders"
+                " WHERE company_id = ? AND substr(created_at, 1, 10) BETWEEN ? AND ?"
+                " ORDER BY created_at LIMIT ?",
+                (company_id, start[:10], end[:10], max(1, min(int(limit), 100_000))),
             ).fetchall()
         result = []
         for row in rows:

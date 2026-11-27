@@ -40,6 +40,12 @@ def register_settings_secrets(settings) -> None:
         "api_key",
         "ui_password",
         "session_secret",
+        # не только «секрет приложения», но и пароли интеграций: они тоже
+        # попадают в тексты исключений (SMTP, OData, ключ HTTP-сервиса 1С)
+        "smtp_password",
+        "one_c_password",
+        "one_c_service_token",
+        "secret_key",
     ):
         register_secret(str(getattr(settings, name, "") or ""))
 

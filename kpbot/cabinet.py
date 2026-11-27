@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+import sqlite3
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -19,6 +20,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from starlette.concurrency import run_in_threadpool
 from urllib.parse import quote
 
 from .cabinet_store import (
@@ -111,6 +113,12 @@ def _user(request: Request) -> dict | None:
     user = cabinet_store().user_by_id(user_id)
     if user is None:
         return None
+    # Компания могла быть заблокирована после входа. Сессия живёт 8 часов, а
+    # «отключить клиента» должно действовать сразу: иначе уволенный сотрудник
+    # или должник продолжает видеть персональные цены, заказы и документы.
+    company = cabinet_store().company(user["company_id"])
+    if company is None or company["status"] != "active":
+        return None
     changed = _changed_ts(user.get("password_changed_at"))
     if changed:
         issued = session_issued_at(settings.session_secret, token, settings.session_ttl_seconds)
@@ -191,6 +199,41 @@ def _resolve_tenant(code: str) -> dict | None:
         return None
     path = Path(tenant["db_path"])
     return tenant if path.exists() else None
+
+
+def _cabinet_db_for_code(code: str) -> tuple[Path, str]:
+    """База кабинета: по коду поставщика из ссылки или текущая по куке."""
+    tenant = _resolve_tenant(code)
+    if tenant is not None:
+        return Path(tenant["db_path"]), tenant["id"]
+    return current_client_db(settings.db_path), ""
+
+
+def _find_cabinet_user(email: str, code: str = "") -> tuple[Path, str, dict | None]:
+    """Ищет пользователя кабинета: указанный поставщик, текущий, затем все клиенты.
+
+    Письмо со сбросом пароля открывают на телефоне или в другом браузере, где
+    куки кабинета нет. Раньше в этом случае токен искали в основной базе и
+    отвечали «ссылка недействительна» — восстановление доступа у клиентов
+    поставщика (то есть в обычной мультитенантной установке) не работало.
+    """
+    path, tenant_code = _cabinet_db_for_code(code)
+    user = CabinetStore(path).user_by_email(email) if email else None
+    if user is not None or code:
+        return path, tenant_code, user
+    for tenant in get_registry(settings).list():
+        if tenant.get("status") != "active":
+            continue
+        candidate = Path(tenant["db_path"])
+        if not candidate.exists() or candidate == path:
+            continue
+        try:
+            found = CabinetStore(candidate).user_by_email(email)
+        except Exception:  # noqa: BLE001 - битая база клиента не должна ронять запрос
+            continue
+        if found is not None:
+            return candidate, tenant["id"], found
+    return path, tenant_code, None
 
 
 @router.get("/login", response_class=HTMLResponse)
@@ -282,7 +325,10 @@ async def login(request: Request):
 
 
 @router.post("/logout")
-def logout(request: Request):
+async def logout(request: Request):
+    form = await request.form()
+    if not _check_csrf(request, form):
+        return PlainTextResponse("csrf failed", status_code=403)
     response = RedirectResponse("/cabinet/login", status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie(CLIENT_COOKIE, path="/")
     response.delete_cookie(CLIENT_TENANT_COOKIE, path="/")
@@ -316,10 +362,13 @@ def _send_reset_email(address: str, link: str) -> bool:
 
 
 @router.get("/forgot", response_class=HTMLResponse)
-def forgot_form(request: Request, flash: str = "", error: str = ""):
+def forgot_form(request: Request, flash: str = "", error: str = "", t: str = ""):
+    tenant = _resolve_tenant(t) if t else None
     return _page(
         request, "cabinet/forgot.html", user=None, company=None,
         flash=flash[:200], error=error[:200],
+        tenant_code=tenant["id"] if tenant else (t.strip() if t else ""),
+        tenant_name=tenant["name"] if tenant else "",
     )
 
 
@@ -339,57 +388,89 @@ async def forgot(request: Request):
         )
     form = await request.form()
     email = str(form.get("email", "")).strip().lower()[:200]
-    user = cabinet_store().user_by_email(email) if email else None
+    code = str(form.get("tenant", "")).strip()[:64]
+    path, tenant_code, user = _find_cabinet_user(email, code)
     if user:
-        token = cabinet_store().create_password_reset(user["id"])
+        token = CabinetStore(path).create_password_reset(user["id"])
         link = f"{settings.public_base_url.rstrip('/')}/cabinet/reset?t={token}"
-        _send_reset_email(user["email"], link)
+        if tenant_code:
+            # Код поставщика в ссылке: иначе письмо, открытое без куки, ищет
+            # токен не в той базе и отвечает «ссылка недействительна».
+            link += f"&c={quote(tenant_code)}"
+        # SMTP — блокирующий вызов: в async-обработчике он останавливает весь
+        # сервер на время ответа почтового сервера.
+        await run_in_threadpool(_send_reset_email, user["email"], link)
     return _page(
         request, "cabinet/forgot.html", user=None, company=None,
+        tenant_code=tenant_code or code,
         flash="Если такой адрес есть в системе, письмо со ссылкой отправлено. Проверьте почту.",
     )
 
 
 @router.get("/reset", response_class=HTMLResponse)
-def reset_form(request: Request, t: str = "", error: str = ""):
+def reset_form(request: Request, t: str = "", c: str = "", error: str = ""):
     token = t[:200]
-    if token and not cabinet_store().password_reset_valid(token):
+    path, tenant_code = _cabinet_db_for_code(c)
+    store = CabinetStore(path)
+    store.init_schema()
+    if token and not store.password_reset_valid(token):
         return _page(
             request, "cabinet/reset.html", code=400, user=None, company=None,
-            token="", error="ссылка недействительна или истекла — запросите новую",
+            token="", tenant_code=c[:64],
+            error="ссылка недействительна или истекла — запросите новую",
         )
-    return _page(
+    response = _page(
         request, "cabinet/reset.html", user=None, company=None,
-        token=token, error=error[:200],
+        token=token, tenant_code=tenant_code or c[:64], error=error[:200],
     )
+    if tenant_code:
+        # Фиксируем кабинет в куке: после смены пароля вход и сброс должны
+        # остаться у того же поставщика, даже если ссылку открыли без куки.
+        response.set_cookie(
+            CLIENT_TENANT_COOKIE,
+            make_user_session(settings.session_secret, tenant_code, 86400 * 30),
+            httponly=True,
+            samesite="lax",
+            secure=settings.public_base_url.lower().startswith("https"),
+            max_age=86400 * 30,
+            path="/",
+        )
+    return response
 
 
 @router.post("/reset")
 async def reset_password(request: Request):
     form = await request.form()
     token = str(form.get("token", ""))[:200]
+    code = str(form.get("tenant", "")).strip()[:64]
+    path, tenant_code = _cabinet_db_for_code(code)
+    store = CabinetStore(path)
+    store.init_schema()
     new = str(form.get("new", ""))
     repeat = str(form.get("repeat", ""))
     if len(new) < 8:
         return _page(
             request, "cabinet/reset.html", code=400, user=None, company=None,
-            token=token, error="пароль короче 8 символов",
+            token=token, tenant_code=tenant_code or code, error="пароль короче 8 символов",
         )
     if new != repeat:
         return _page(
             request, "cabinet/reset.html", code=400, user=None, company=None,
-            token=token, error="пароли не совпадают",
+            token=token, tenant_code=tenant_code or code, error="пароли не совпадают",
         )
-    user_id = cabinet_store().consume_password_reset(token)
+    user_id = store.consume_password_reset(token)
     if not user_id:
         return _page(
             request, "cabinet/reset.html", code=400, user=None, company=None,
-            token="", error="ссылка недействительна или истекла — запросите новую",
+            token="", tenant_code=tenant_code or code,
+            error="ссылка недействительна или истекла — запросите новую",
         )
-    cabinet_store().set_password(user_id, new)
+    store.set_password(user_id, new)
+    params = [f"flash={quote('пароль изменён — войдите с новым')}"]
+    if tenant_code:
+        params.insert(0, f"t={quote(tenant_code)}")
     return RedirectResponse(
-        f"/cabinet/login?flash={quote('пароль изменён — войдите с новым')}",
-        status_code=status.HTTP_303_SEE_OTHER,
+        "/cabinet/login?" + "&".join(params), status_code=status.HTTP_303_SEE_OTHER
     )
 
 
@@ -535,6 +616,29 @@ def catalog(request: Request, q: str = "", page: int = 1, flash: str = ""):
 # ---------- корзина ----------
 
 
+def _max_qty_int() -> int:
+    """Верхняя граница количества из настроек (Decimal → int, не меньше 1)."""
+    try:
+        value = int(settings.max_qty)
+    except (TypeError, ValueError, OverflowError):
+        value = 1_000_000
+    return max(1, value)
+
+
+def _qty_int(raw: object, default: int = 0) -> int:
+    """Количество из формы: только целое в допустимом диапазоне.
+
+    Раньше в корзину можно было положить 2 000 000 (или 10^19): страница
+    корзины падала с ValidationError/OverflowError, и клиент «ломал» себе
+    корзину, не понимая причины.
+    """
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    return max(0, min(value, _max_qty_int()))
+
+
 def _cart_context(request: Request, user: dict, company: dict) -> dict:
     supplier = supplier_store()
     cabinet = cabinet_store()
@@ -549,6 +653,14 @@ def _cart_context(request: Request, user: dict, company: dict) -> dict:
             cabinet.set_cart_qty(user["id"], entry["sku"], 0)
             continue
         qty = int(entry["qty"])
+        if qty > _max_qty_int():
+            # Старая корзина могла сохранить невероятное количество: лечим
+            # строку, а не показываем 500 на каждом открытии.
+            qty = _max_qty_int()
+            cabinet.set_cart_qty(user["id"], entry["sku"], qty)
+        if qty <= 0:
+            cabinet.set_cart_qty(user["id"], entry["sku"], 0)
+            continue
         price = _fmt(personal.get(item.sku, item.price))
         amount = price * qty
         stock_row = stock.get(item.sku) or {}
@@ -608,14 +720,15 @@ async def cart_add(request: Request):
     if not _check_csrf(request, form):
         return PlainTextResponse("csrf failed", status_code=403)
     sku = str(form.get("sku", ""))
-    try:
-        qty = int(str(form.get("qty", "1")))
-    except ValueError:
-        qty = 0
+    qty = _qty_int(form.get("qty", "1"), default=0)
     cabinet = cabinet_store()
-    pack = cabinet.pack_map().get(sku, 1)
+    pack = int(cabinet.pack_map().get(sku, 1) or 1)
+    if qty <= 0:
+        qty = pack
     qty = max(pack, ((qty + pack - 1) // pack) * pack)
-    cabinet.set_cart_qty(user["id"], sku, cabinet.cart_qty(user["id"], sku) + qty)
+    qty = min(qty, _max_qty_int())
+    current = cabinet.cart_qty(user["id"], sku)
+    cabinet.set_cart_qty(user["id"], sku, min(current + qty, _max_qty_int()))
     return RedirectResponse(f"/cabinet/catalog?flash={quote('добавлено в корзину')}",
                             status_code=status.HTTP_303_SEE_OTHER)
 
@@ -629,10 +742,7 @@ async def cart_qty(request: Request):
     if not _check_csrf(request, form):
         return PlainTextResponse("csrf failed", status_code=403)
     sku = str(form.get("sku", ""))
-    try:
-        qty = int(str(form.get("qty", "0")))
-    except ValueError:
-        qty = 0
+    qty = _qty_int(form.get("qty", "0"), default=0)
     cabinet_store().set_cart_qty(user["id"], sku, qty)
     return RedirectResponse("/cabinet/cart", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -716,9 +826,18 @@ def _validate_order(user: dict, company: dict) -> tuple[list[dict], Quote]:
 
 
 def _rfq_from_order(
-    user: dict, company: dict, rows: list[dict], order_number: str, quote: Quote
-) -> str:
-    """Заказ ЛК → обычная заявка поставщика с готовым расчётом."""
+    user: dict,
+    company: dict,
+    rows: list[dict],
+    order_number: str,
+    quote: Quote,
+    comment: str = "",
+) -> tuple[str, str]:
+    """Заказ ЛК → обычная заявка поставщика с готовым расчётом.
+
+    Возвращает (id заявки, id снимка расчёта): снимок закрепляется за заказом,
+    чтобы документы клиента не менялись, если поставщик потом правит заявку.
+    """
     store = supplier_store()
     rfq_id = uuid.uuid4().hex
     lines = [
@@ -730,6 +849,11 @@ def _rfq_from_order(
         )
         for index, row in enumerate(rows, start=1)
     ]
+    raw_text = "\n".join(line.raw_text for line in lines)
+    if comment:
+        # Комментарий клиента («нужна доставка до 12:00») — часть заказа, а не
+        # примечание в кабинете: поставщик должен видеть его в карточке заявки.
+        raw_text = f"{raw_text}\n\nКомментарий клиента: {comment}"
     store.save_rfq(
         rfq_id=rfq_id,
         message_id=f"cabinet:{uuid.uuid4().hex}",
@@ -737,12 +861,13 @@ def _rfq_from_order(
         subject=f"Заказ из ЛК {order_number}",
         received_at=datetime.now(timezone.utc).isoformat(),
         status="draft_ready",
-        raw_text="\n".join(line.raw_text for line in lines),
+        raw_text=raw_text,
         lines=lines,
     )
-    store.save_quote(uuid.uuid4().hex, rfq_id, quote)
+    quote_id = uuid.uuid4().hex
+    store.save_quote(quote_id, rfq_id, quote)
     store.log(rfq_id, "cabinet_order", f"client:{user['id']}", order_number)
-    return rfq_id
+    return rfq_id, quote_id
 
 
 @router.post("/orders")
@@ -765,23 +890,51 @@ async def create_order(request: Request):
                                 status_code=status.HTTP_303_SEE_OTHER)
 
     cabinet = cabinet_store()
-    number = cabinet.next_number()
+    # Номер «ЛК-…» выдаётся по максимуму существующих, но два одновременных
+    # заказа всё равно могут получить один номер. Тогда INSERT отбивается
+    # UNIQUE-индексом: пробуем следующий номер, а не отдаём клиенту 500.
+    order: dict = {}
+    for _attempt in range(3):
+        number = cabinet.next_number()
+        try:
+            # Заказ создаём первым, а заявку — после: если заявка не создастся,
+            # откатываем заказ. Обратный порядок оставлял «сиротскую» заявку
+            # в очереди поставщика, о которой клиент ничего не знал.
+            order = cabinet.create_order(
+                company_id=company["id"], created_by=user["id"], number=number,
+                comment=comment, total=str(order_quote.total),
+                lines=[
+                    {**row, "qty": str(row["qty"]), "price": str(row["price"]), "amount": str(row["amount"])}
+                    for row in rows
+                ],
+            )
+            break
+        except sqlite3.IntegrityError:
+            log.warning("номер заказа %s уже занят — пробую следующий", number)
+            continue
+    if not order:
+        return RedirectResponse(
+            f"/cabinet/cart?error={quote('не удалось оформить заказ, попробуйте ещё раз')}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     try:
-        rfq_id = _rfq_from_order(user, company, rows, number, order_quote)
+        rfq_id, quote_id = _rfq_from_order(
+            user, company, rows, number, order_quote, comment=comment
+        )
     except ValidationError as exc:
         # расчёт — последний рубеж: клиент должен увидеть причину, а не 500
+        cabinet.delete_order(order["id"])
         return RedirectResponse(
             f"/cabinet/cart?error={quote(str(exc))}", status_code=status.HTTP_303_SEE_OTHER
         )
-    order = cabinet.create_order(
-        company_id=company["id"], created_by=user["id"], number=number,
-        comment=comment, total=str(order_quote.total),
-        lines=[
-            {**row, "qty": str(row["qty"]), "price": str(row["price"]), "amount": str(row["amount"])}
-            for row in rows
-        ],
-        rfq_id=rfq_id,
-    )
+    except Exception as exc:  # noqa: BLE001 - база поставщика может быть недоступна
+        cabinet.delete_order(order["id"])
+        log.warning("заказ ЛК %s: заявка не создана: %s", number, exc)
+        return RedirectResponse(
+            f"/cabinet/cart?error={quote('не удалось передать заявку поставщику, попробуйте ещё раз')}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    cabinet.attach_rfq(order["id"], rfq_id=rfq_id, quote_id=quote_id)
     cabinet.clear_cart(user["id"])
     return RedirectResponse(f"/cabinet/orders/{order['id']}?flash={quote('заявка отправлена поставщику')}",
                             status_code=status.HTTP_303_SEE_OTHER)
@@ -811,6 +964,65 @@ RFQ_STATUS_LABELS = {
     "rejected": "отклонена поставщиком",
 }
 
+# Допустимые переходы статуса заказа. «Отгружен» и «отменён» — терминальные:
+# вернуть отгруженный заказ в «ожидает» нельзя, иначе документы (счёт, УПД)
+# и история начинают противоречить друг другу. Пока статус приходил из 1С
+# без проверки, отменённый заказ можно было «отгрузить» задним числом.
+ORDER_TRANSITIONS: dict[str, frozenset[str]] = {
+    "pending": frozenset({"processing", "shipped", "cancelled"}),
+    "processing": frozenset({"shipped", "cancelled"}),
+    "shipped": frozenset(),
+    "cancelled": frozenset(),
+}
+
+
+def order_transition_error(current: str, new: str) -> str:
+    """Пустая строка — переход допустим; иначе текст для человека."""
+    allowed = ORDER_TRANSITIONS.get(current)
+    if allowed is None:
+        return f"неизвестный текущий статус заказа: {current}"
+    if new not in allowed:
+        return (
+            f"нельзя перевести заказ из «{ORDER_STATUS_LABELS.get(current, current)}» "
+            f"в «{ORDER_STATUS_LABELS.get(new, new)}»"
+        )
+    return ""
+
+
+def _send_order_status_email(cabinet: CabinetStore, order: dict, new_status: str, *, store) -> int:
+    """Письмо клиенту о смене статуса. Сбой не ломает смену статуса."""
+    mailer = Mailer(settings)
+    if not (settings.cabinet_notify_email and mailer.enabled and mailer.host):
+        return 0
+    recipients = [user["email"] for user in cabinet.list_users(order["company_id"])]
+    if not recipients:
+        return 0
+    label = ORDER_STATUS_LABELS.get(new_status, new_status)
+    link = f"{settings.public_base_url.rstrip('/')}/cabinet/orders/{order['id']}"
+    message = (
+        f"Здравствуйте!\n\n"
+        f"Статус вашего заказа {order['number']} изменился: {label}.\n"
+        f"Открыть заказ: {link}\n\n"
+        f"— {_seller().get('company_name')}"
+    )
+    sent = 0
+    for address in recipients:
+        from email.message import EmailMessage
+
+        mail = EmailMessage()
+        mail["From"] = mailer.from_addr or settings.smtp_user or "no-reply@localhost"
+        mail["To"] = address
+        mail["Subject"] = f"Заказ {order['number']}: {label}"
+        mail.set_content(message)
+        try:
+            mailer.send(mail, to=address)
+            sent += 1
+        except MailError as exc:
+            log.warning("письмо о статусе заказа %s не ушло на %s: %s", order["number"], address, exc)
+    if sent:
+        store.log_event("client_order_notified", "1c", f"{order['number']}: писем {sent}")
+    return sent
+
 
 @router.get("/orders/{order_id}", response_class=HTMLResponse)
 def order_page(request: Request, order_id: str, flash: str = ""):
@@ -826,11 +1038,23 @@ def order_page(request: Request, order_id: str, flash: str = ""):
     # Статус заказа в ЛК и статус заявки у поставщика живут отдельно: клиенту
     # важно видеть оба, иначе «Ожидает» висит даже после отправки КП.
     rfq = None
+    quote = None
     if order.get("rfq_id"):
         rfq = supplier_store().get_rfq(order["rfq_id"])
+        quote = supplier_store().get_quote_by_id(order.get("quote_id") or "")
+        if quote is None:
+            quote = supplier_store().get_quote(order["rfq_id"])
     rfq_status = (rfq or {}).get("status", "")
+    # «Итого» включает доставку и НДС: показываем их отдельными строками,
+    # иначе таблица позиций не складывается в итог и выглядит как переплата.
+    totals = {
+        "vat": _fmt((quote or {}).get("vat")),
+        "delivery": _fmt((quote or {}).get("delivery")),
+        "include_vat": bool(int((quote or {}).get("prices_include_vat") or 0)),
+    }
     return _page(request, "cabinet/order.html", user=user, company=company,
                  order=order, flash=flash[:200], seller=_seller(),
+                 totals=totals,
                  rfq_status=rfq_status,
                  rfq_status_label=RFQ_STATUS_LABELS.get(rfq_status, ""))
 
@@ -840,6 +1064,35 @@ DOC_TITLES = {
     "kp": "Коммерческое предложение",
     "upd": "Универсальный передаточный документ",
 }
+
+
+def _doc_pdf_fresh(pdf_path: Path, order: dict) -> bool:
+    """PDF уже собран из этого снимка заказа и текущего шаблона.
+
+    Печать headless-браузером на каждый просмотр документа — это процесс на
+    десятки мегабайт и до 45 секунд; авторизованный клиент мог дергать свой
+    счёт сколько угодно и загрузить сервер. Снимок заказа и шаблон неизменны —
+    можно отдать готовый файл. Изменение заказа (updated_at) или шаблона
+    делает кэш недействительным.
+    """
+    try:
+        pdf_stat = pdf_path.stat()
+    except OSError:
+        return False
+    if pdf_stat.st_size <= 1024:
+        return False
+    template = Path(settings.templates_dir) / "cabinet" / "doc.html"
+    try:
+        template_ts = template.stat().st_mtime
+    except OSError:
+        template_ts = 0.0
+    try:
+        updated_ts = datetime.fromisoformat(
+            str(order.get("updated_at") or "").replace("Z", "+00:00")
+        ).timestamp()
+    except ValueError:
+        updated_ts = 0.0
+    return pdf_stat.st_mtime >= max(template_ts, updated_ts)
 
 
 @router.get("/orders/{order_id}/doc/{kind}")
@@ -854,7 +1107,11 @@ def order_doc(request: Request, order_id: str, kind: str):
     kind = kind if kind in DOC_TITLES else "invoice"
     seller = _seller()
     supplier = supplier_store()
-    quote = supplier.get_quote(order["rfq_id"]) if order.get("rfq_id") else None
+    # Снимок расчёта, закреплённый за заказом. У заказов, созданных до появления
+    # поля, берём последний — иначе документ остался бы без итогов вовсе.
+    quote = supplier.get_quote_by_id(order.get("quote_id") or "")
+    if quote is None and order.get("rfq_id"):
+        quote = supplier.get_quote(order["rfq_id"])
     rate = calc_settings(supplier, settings).vat_rate
     lines = order["lines"]
     if quote:
@@ -909,8 +1166,11 @@ def order_doc(request: Request, order_id: str, kind: str):
     )
     html_path = tenant_out_dir(settings, supplier_store().db_path) / f"cabinet-{order_id}-{kind}.html"
     html_path.parent.mkdir(parents=True, exist_ok=True)
-    html_path.write_text(body, encoding="utf-8")
     pdf_path = html_path.with_suffix(".pdf")
+    if _doc_pdf_fresh(pdf_path, order):
+        return Response(content=pdf_path.read_bytes(), media_type="application/pdf",
+                        headers={"Content-Disposition": f'attachment; filename="{kind}-{order_id[:8]}.pdf"'})
+    html_path.write_text(body, encoding="utf-8")
     ok, _reason = html_to_pdf(html_path, pdf_path) if settings.pdf_enabled else (False, "off")
     if ok and pdf_path.exists():
         return Response(content=pdf_path.read_bytes(), media_type="application/pdf",
@@ -930,14 +1190,10 @@ def reconciliation_act(request: Request, start: str = "", end: str = ""):
     today = date.today()
     period_start = (start or f"{today.year}-01-01")[:10]
     period_end = (end or today.isoformat())[:10]
-    all_orders = cabinet_store().list_orders(company["id"], limit=500)
+    all_orders = cabinet_store().orders_between(company["id"], period_start, period_end)
     # Отменённые заказы в сверку не идут: это не оборот, а отмена.
     cancelled = [order for order in all_orders if order["status"] == "cancelled"]
-    orders = [
-        order
-        for order in all_orders
-        if order["status"] != "cancelled" and period_start <= (order["created_at"] or "")[:10] <= period_end
-    ]
+    orders = [order for order in all_orders if order["status"] != "cancelled"]
     turnover = sum((_fmt(order["total"]) for order in orders), Decimal(0))
     body = render_template(
         "cabinet/act.html",
@@ -1070,8 +1326,23 @@ async def api_order_status(request: Request, order_id: str):
         return PlainTextResponse("tenant not found", status_code=404)
     cabinet = CabinetStore(path)
     cabinet.init_schema()
+    order = cabinet.order(order_id)
+    if order is None:
+        return JSONResponse({"ok": False, "error": "заказ не найден"}, status_code=404)
+    error = order_transition_error(order["status"], new_status)
+    if error:
+        return JSONResponse({"ok": False, "error": error}, status_code=409)
     cabinet.update_status(order_id, new_status)
-    return JSONResponse({"ok": True, "status": new_status})
+    cabinet.log_order_event(order_id, order["company_id"], new_status)
+    # Клиент должен узнать об отгрузке так же, как при смене статуса в админке.
+    sent = 0
+    try:
+        sent = await run_in_threadpool(
+            _send_order_status_email, cabinet, order, new_status, store=Store(path)
+        )
+    except Exception as exc:  # noqa: BLE001 - уведомление не должно ломать статус
+        log.warning("уведомление о статусе заказа %s не отправлено: %s", order_id, exc)
+    return JSONResponse({"ok": True, "status": new_status, "notified": sent})
 
 
 @router.post("/api/1c/settlements")

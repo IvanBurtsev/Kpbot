@@ -505,6 +505,24 @@ class Store:
             ).fetchall()
         return {**dict(head), "lines": [dict(row) for row in lines]}
 
+    def get_quote_by_id(self, quote_id: str) -> dict | None:
+        """Конкретный снимок КП.
+
+        Нужен кабинету: заказ помнит свой расчёт, и документы клиента (счёт,
+        УПД) не должны пересчитываться по последней правке заявки поставщиком —
+        иначе строки в документе относятся к одной сумме, а «Итого» к другой.
+        """
+        if not quote_id:
+            return None
+        with closing(self._connect()) as conn:
+            head = conn.execute("SELECT * FROM quotes WHERE id = ?", (quote_id,)).fetchone()
+            if head is None:
+                return None
+            lines = conn.execute(
+                "SELECT * FROM quote_lines WHERE quote_id = ? ORDER BY idx", (quote_id,)
+            ).fetchall()
+        return {**dict(head), "lines": [dict(row) for row in lines]}
+
     # ---------- артефакты и журнал ----------
 
     def add_artifact(self, rfq_id: str, kind: str, path: Path, sha256: str) -> None:
@@ -670,20 +688,32 @@ class Store:
             "median_wait_seconds": timing.get("median_wait_seconds"),
         }
 
-    def unmatched_report(self, days: int = 30, limit: int = 10) -> list[dict]:
-        """Что чаще всего не сопоставилось: подсказка клиенту, чего нет в прайсе."""
+    def unmatched_report(
+        self, days: int = 30, limit: int = 10, *, assignee: str | None = None
+    ) -> list[dict]:
+        """Что чаще всего не сопоставилось: подсказка клиенту, чего нет в прайсе.
+
+        assignee ограничивает отчёт заявками одного менеджера: текст строк — это
+        содержимое писем, и менеджер не должен видеть переписку коллег.
+        """
         since = (datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))).isoformat()
+        scope = "AND r.assignee = ?" if assignee else ""
+        params: list[object] = [since]
+        if assignee:
+            params.append(assignee)
+        params.append(max(1, min(int(limit), 50)))
         with closing(self._connect()) as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT l.raw_text AS text, COUNT(*) AS n
                 FROM rfq_lines l JOIN rfqs r ON r.id = l.rfq_id
                 WHERE r.created_at >= ? AND l.status IN ('no_match', 'ambiguous', 'invalid')
+                {scope}
                 GROUP BY lower(l.raw_text)
                 ORDER BY n DESC, l.raw_text
                 LIMIT ?
                 """,
-                (since, max(1, min(int(limit), 50))),
+                params,
             ).fetchall()
         return [{"text": row["text"], "count": int(row["n"])} for row in rows]
 

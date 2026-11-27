@@ -31,7 +31,7 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 from pydantic import BaseModel, Field, field_validator
 
 from . import __version__
-from .cabinet import router as cabinet_router
+from .cabinet import order_transition_error, router as cabinet_router
 from .cabinet_store import ORDER_STATUS_LABELS, ORDER_STATUSES, CabinetStore
 from .config import settings
 from .domain import LineStatus, RfqLine, RfqStatus, ValidationError, quantity
@@ -121,14 +121,20 @@ async def hardening(request: Request, call_next):
         and client_tenant_db_from_request(request) is None
     )
     login_path = request.url.path in ("/ui/login", "/cabinet/login")
-    if (stale_tenant or stale_client) and not login_path:
-        log.warning("кука клиента не разрешилась (%s) — сбрасываю", request.url.path)
-        if stale_tenant:
-            response = RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)
-            response.delete_cookie(TENANT_COOKIE, path="/")
-        else:
-            response = RedirectResponse("/cabinet/login", status_code=status.HTTP_303_SEE_OTHER)
-            response.delete_cookie(CLIENT_TENANT_COOKIE, path="/")
+    admin_surface = request.url.path.startswith("/ui")
+    cabinet_surface = request.url.path.startswith("/cabinet")
+    # Испорченная кука другой поверхности не должна выкидывать из этой:
+    # «протухшая» кука кабинета на /ui раньше отправляла владельца на вход
+    # кабинета и удаляла клиентскую куку.
+    if not login_path and stale_tenant and admin_surface:
+        log.warning("кука поставщика не разрешилась (%s) — на вход", request.url.path)
+        response = RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)
+        response.delete_cookie(TENANT_COOKIE, path="/")
+        return response
+    if not login_path and stale_client and cabinet_surface:
+        log.warning("кука кабинета не разрешилась (%s) — на вход", request.url.path)
+        response = RedirectResponse("/cabinet/login", status_code=status.HTTP_303_SEE_OTHER)
+        response.delete_cookie(CLIENT_TENANT_COOKIE, path="/")
         return response
 
     tenant_token = supplier_db.set(request_tenant_path(request))
@@ -144,7 +150,9 @@ async def hardening(request: Request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("Content-Security-Policy", CSP)
-    if login_path and request.method == "GET":
+    if login_path and request.method == "GET" or (admin_surface and stale_client) or (
+        cabinet_surface and stale_tenant
+    ):
         # на странице входа забываем испорченную куку; при успешном входе новая
         # кука выставляется обработчиком, и затирать её нельзя
         if stale_tenant:
@@ -154,6 +162,11 @@ async def hardening(request: Request, call_next):
     if settings.public_base_url.lower().startswith("https"):
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     response.headers.setdefault("X-Request-ID", request_id)
+    if request.url.path.startswith(("/ui", "/cabinet")):
+        # В интерфейсе и кабинете бывают пароли API-ключи, ПДн и суммы:
+        # браузерный кэш и BFCache не должны их хранить.
+        response.headers.setdefault("Cache-Control", "no-store")
+        response.headers.setdefault("Pragma", "no-cache")
     duration_ms = (time.perf_counter() - started) * 1000
     log.info(
         "req id=%s %s %s -> %s %.0fms",
@@ -307,18 +320,23 @@ def _api_key_ok(request: Request) -> bool:
 
 
 def request_tenant_path(request: Request) -> Path | None:
-    """База для запроса: кука админки, затем X-Tenant с ключом этого клиента."""
-    cookie_path = tenant_db_from_request(request)
-    if cookie_path is not None:
-        return cookie_path
+    """База для запроса: заголовок X-Tenant важнее куки.
+
+    Раньше кука проверялась первой, поэтому ключ клиента B вместе с кукой
+    клиента A исполнял запрос в базе A: проверка «ключ подходит к X-Tenant»
+    становилась бесполезной. Для API клиента базу определяет ключ, а кука —
+    это вход сотрудника в интерфейс, где X-Tenant не передаётся.
+    """
     code = (request.headers.get("x-tenant") or "").strip()
-    if not code or not _api_key_ok(request):
-        return None
-    tenant = registry.get(code)
-    if not tenant or tenant["status"] != "active":
-        return None
-    path = Path(tenant["db_path"])
-    return path if path.exists() else None
+    if code:
+        if not _api_key_ok(request):
+            return None
+        tenant = registry.get(code)
+        if not tenant or tenant["status"] != "active":
+            return None
+        path = Path(tenant["db_path"])
+        return path if path.exists() else None
+    return tenant_db_from_request(request)
 
 
 def client_ip(request: Request) -> str:
@@ -457,6 +475,17 @@ def login_redirect(request: Request) -> RedirectResponse:
 @app.get("/", include_in_schema=False)
 async def root() -> RedirectResponse:
     return RedirectResponse("/ui")
+
+
+def _upload_temp(suffix: str, prefix: str) -> Path:
+    """Свой временный файл на каждый запрос.
+
+    Раньше все клиенты писали в общий `price_upload.xlsx`: две одновременные
+    загрузки разных поставщиков могли подменить файл друг друга — и прайс
+    одного применялся в базе другого. Плюс файл оставался на диске навсегда.
+    """
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    return settings.data_dir / f"{prefix}-{uuid.uuid4().hex}{suffix}"
 
 
 def _with_sender_names(rfqs: list[dict]) -> list[dict]:
@@ -706,7 +735,13 @@ def ui_pilot_report(request: Request, days: str = "30"):
         return login_redirect(request)
     period = safe_int(days, 30, 1, 365)
     company = store.get_settings().get("company_name") or settings.company_name
-    return HTMLResponse(build_pilot_report(store, days=period, company=company))
+    user = current_user(request)
+    # Менеджер видит отчёт только по своим заявкам: в таблице «что не нашли»
+    # выводятся строки из писем, а это переписка клиентов.
+    assignee = None if (user is None or user.is_admin) else user.id
+    return HTMLResponse(
+        build_pilot_report(store, days=period, company=company, assignee=assignee)
+    )
 
 
 @app.get("/ui/prices", response_class=HTMLResponse)
@@ -768,7 +803,7 @@ async def ui_prices_upload(request: Request):
         )
 
     suffix = ".xlsx" if filename.endswith(".xlsx") else ".csv"
-    temp_path = settings.data_dir / f"price_upload{suffix}"
+    temp_path = _upload_temp(suffix, "price")
     temp_path.write_bytes(raw)
     try:
         items = load_price_items(temp_path, prices_include_vat=settings.prices_include_vat)
@@ -783,6 +818,7 @@ async def ui_prices_upload(request: Request):
         )
 
     count = store.replace_price_items(items)
+    temp_path.unlink(missing_ok=True)
     store.log_event("price_upload", actor_of(request), f"позиций {count}, файл {filename}")
     flash = f"прайс обновлён: {count} позиций"
     return RedirectResponse(f"/ui/prices?flash={quote(flash)}", status_code=status.HTTP_303_SEE_OTHER)
@@ -884,7 +920,7 @@ async def ui_setup_price(request: Request):
             f"/ui/setup?flash={quote('файл больше 2 МБ')}", status_code=status.HTTP_303_SEE_OTHER
         )
     suffix = ".xlsx" if filename.endswith(".xlsx") else ".csv"
-    temp_path = settings.data_dir / f"price_upload{suffix}"
+    temp_path = _upload_temp(suffix, "price")
     temp_path.write_bytes(raw)
     try:
         items = load_price_items(temp_path, prices_include_vat=settings.prices_include_vat)
@@ -898,6 +934,7 @@ async def ui_setup_price(request: Request):
             f"/ui/setup?flash={quote('файл не разобран: ' + str(exc)[:120])}", status_code=status.HTTP_303_SEE_OTHER
         )
     count = store.replace_price_items(items)
+    temp_path.unlink(missing_ok=True)
     store.log_event("setup_price", actor_of(request), f"позиций {count}, файл {filename}")
     return RedirectResponse(
         f"/ui/setup?flash={quote(f'шаг 2 готов: прайс {count} позиций')}", status_code=status.HTTP_303_SEE_OTHER
@@ -1347,6 +1384,12 @@ async def ui_admin_order_status(request: Request, order_id: str):
             f"/ui/admin?tab=orders&flash={quote('заказ не найден')}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
+    transition_error = order_transition_error(order["status"], new_status)
+    if transition_error:
+        return RedirectResponse(
+            f"/ui/admin?tab=orders&flash={quote(transition_error)}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     cabinet.update_status(order_id, new_status)
     cabinet.log_order_event(order_id, order["company_id"], new_status)
     store.log_event("client_order_status", actor_of(request), f"{order_id}: {new_status}")
@@ -1448,7 +1491,7 @@ async def ui_prices_stock(request: Request):
         )
 
     suffix = ".xlsx" if filename.endswith(".xlsx") else ".csv"
-    temp_path = settings.data_dir / f"stock_upload{suffix}"
+    temp_path = _upload_temp(suffix, "stock")
     temp_path.write_bytes(raw)
     try:
         items = load_stock_items(temp_path)
@@ -1457,6 +1500,7 @@ async def ui_prices_stock(request: Request):
         return RedirectResponse(f"/ui/prices?flash={quote(str(exc))}", status_code=status.HTTP_303_SEE_OTHER)
 
     count = store.replace_stock(items)
+    temp_path.unlink(missing_ok=True)
     store.log_event("stock_upload", actor_of(request), f"позиций {count}, файл {filename}")
     return RedirectResponse(
         f"/ui/prices?flash={quote(f'остатки обновлены: {count} позиций')}", status_code=status.HTTP_303_SEE_OTHER
@@ -1863,6 +1907,10 @@ async def ui_rfq_send(request: Request, rfq_id: str):
         rfq, quote, rfq_id, pipeline.company(), valid_days=settings.quote_valid_days
     )
     attachments = load_attachments(pipeline.out_dir(), rfq_id, short=rfq_id[:8])
+    if not attachments:
+        # Письмо говорит «КП во вложении»: без файла клиент получит пустое
+        # письмо. Лучше честно остановиться и попросить пересобрать документы.
+        return back_to(rfq_id, "к письму нечего приложить: КП не собралось — обновите карточку")
     message = build_kp_message(
         sender=to,
         from_addr=mailer.from_addr or settings.smtp_user or "no-reply@localhost",
@@ -1919,6 +1967,12 @@ async def ui_rfq_assign(request: Request, rfq_id: str):
         return back_to(rfq_id, "не выбран исполнитель")
     if user is None or (not user.is_admin and rfq.get("assignee") not in (None, "", user.id)):
         return back_to(rfq_id, "эту заявку ведёт другой менеджер")
+    if not user.is_admin and target != user.id:
+        # Роль «менеджер берёт себе, админ назначает любому» раньше не держалась:
+        # можно было передать заявку произвольной строке, и она «пропадала».
+        return back_to(rfq_id, "менеджер может взять заявку только себе")
+    if store.user_by_id(target) is None:
+        return back_to(rfq_id, "такого сотрудника нет")
 
     store.set_assignee(rfq_id, target)
     store.log(rfq_id, "assigned", actor_of(request), f"исполнитель {target[:8]}")

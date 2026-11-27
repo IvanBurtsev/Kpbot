@@ -22,6 +22,10 @@ MAX_TEXT_CHARS = 200_000
 MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 MAX_ATTACHMENT_UNCOMPRESSED = 20 * 1024 * 1024
 MAX_ATTACHMENT_TEXT = 60_000
+# Вложение может быть и «письмом на 50 000 строк». Раньше текст собирался
+# целиком в память и обрезался уже после: один xlsx на 20 МБ распаковки
+# съедал память процесса и время воркера. Теперь читаем до бюджета.
+MAX_ATTACHMENT_ROWS = 5000
 MAX_ATTACHMENTS = 10
 _WHITESPACE = re.compile(r"[ \t\u00a0]+")
 
@@ -136,12 +140,17 @@ def _xlsx_text(data: bytes) -> str:
 
     book = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     lines: list[str] = []
+    used = 0
     try:
         for sheet in book.worksheets:
-            for row in sheet.iter_rows(values_only=True):
+            for index, row in enumerate(sheet.iter_rows(values_only=True)):
+                if index >= MAX_ATTACHMENT_ROWS or used >= MAX_ATTACHMENT_TEXT:
+                    return "\n".join(lines)
                 cells = [str(cell).strip() for cell in row if cell not in (None, "")]
                 if cells:
-                    lines.append(" ".join(cells))
+                    line = " ".join(cells)
+                    lines.append(line)
+                    used += len(line) + 1
     finally:
         book.close()
     return "\n".join(lines)
@@ -151,12 +160,27 @@ def _docx_text(data: bytes) -> str:
     from docx import Document
 
     document = Document(io.BytesIO(data))
-    lines = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+    lines: list[str] = []
+    used = 0
+
+    def add(text: str) -> bool:
+        """Добавляет строку, пока не исчерпан бюджет. False — пора остановиться."""
+        nonlocal used
+        text = text.strip()
+        if not text:
+            return True
+        lines.append(text)
+        used += len(text) + 1
+        return used < MAX_ATTACHMENT_TEXT and len(lines) < MAX_ATTACHMENT_ROWS
+
+    for paragraph in document.paragraphs:
+        if not add(paragraph.text):
+            return "\n".join(lines)
     for table in document.tables:
         for row in table.rows:
             cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-            if cells:
-                lines.append(" ".join(cells))
+            if cells and not add(" ".join(cells)):
+                return "\n".join(lines)
     return "\n".join(lines)
 
 
@@ -167,7 +191,15 @@ def _pdf_text(data: bytes) -> str:
         return ""
     try:
         reader = PdfReader(io.BytesIO(data))
-        return "\n".join((page.extract_text() or "") for page in reader.pages[:30])
+        parts: list[str] = []
+        used = 0
+        for page in reader.pages[:30]:
+            text = page.extract_text() or ""
+            parts.append(text)
+            used += len(text)
+            if used >= MAX_ATTACHMENT_TEXT:
+                break
+        return "\n".join(parts)
     except Exception:  # noqa: BLE001 - битый PDF не должен ронять разбор письма
         return ""
 

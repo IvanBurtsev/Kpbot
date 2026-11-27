@@ -3,12 +3,61 @@
 from __future__ import annotations
 
 import csv
+import io
+import logging
 import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from .domain import PriceItem, ValidationError
 from .extract import canonical_unit
+
+log = logging.getLogger("kpbot.pricelist")
+
+_THOUSANDS_SPACES = ("\u00a0", "\u202f", "\u2009", "\u2007", " ")
+
+
+def decimal_from_text(raw: object) -> Decimal:
+    """Число из ячейки прайса: «1 234,56», «1.234,56», «1,234.56», «1 234,56 ₽».
+
+    Раньше строка с неразрывным пробелом между разрядами («1 234,50» — так
+    сохраняет Excel и выгружает 1С) молча выпадала из прайса: позиция исчезала,
+    и заявка по ней уходила в «не найдено». Пробелы-разделители разрядов,
+    знак рубля и оба варианта десятичного разделителя понимаются явно.
+
+    Ошибка — ValidationError: вызывающий код решает, пропустить строку или
+    отказать файлу целиком, но не «молча потерять цену».
+    """
+    if isinstance(raw, Decimal):
+        value = raw
+    elif isinstance(raw, bool) or raw is None:
+        raise ValidationError("пустое число")
+    elif isinstance(raw, (int, float)):
+        value = Decimal(str(raw))
+    else:
+        text = str(raw).strip()
+        for space in _THOUSANDS_SPACES:
+            text = text.replace(space, "")
+        for marker in ("₽", "руб.", "руб", "р."):
+            text = text.replace(marker, "")
+        text = text.strip()
+        if not text:
+            raise ValidationError("пустое число")
+        if "," in text and "." in text:
+            # последний разделитель — десятичный, другой — разделитель разрядов
+            if text.rfind(",") > text.rfind("."):
+                text = text.replace(".", "").replace(",", ".")
+            else:
+                text = text.replace(",", "")
+        elif "," in text:
+            text = text.replace(",", ".")
+        try:
+            value = Decimal(text)
+        except InvalidOperation as exc:
+            raise ValidationError(f"не число: {raw!r}") from exc
+    if not value.is_finite():
+        raise ValidationError(f"не число: {raw!r}")
+    return value
 
 # Локальные библиотеки (в песочнице нет доступа к PyPI).
 _VENDOR = Path(__file__).resolve().parent.parent / "vendor"
@@ -122,6 +171,36 @@ def write_xlsx(path: Path, items: list[PriceItem] | None = None) -> Path:
     return path
 
 
+_VAT_INCLUDED_MARKERS = (
+    "сндс",
+    "сналогом",
+    "сучетомндс",
+    "сучетомналога",
+    "втчндс",
+    "включаяндс",
+    "gross",
+    "incl",
+)
+_VAT_EXCLUDED_MARKERS = ("безндс", "безналога", "безналога", "net", "excl")
+
+
+def _header_text(name: object) -> str:
+    """Заголовок колонки в сравнимом виде: «Цена с учётом НДС» → «ценасучетомндс»."""
+    return str(name or "").strip().lower().replace("ё", "е").replace(".", "").replace(" ", "")
+
+
+def _header_means_inclusive(cleaned: str) -> bool:
+    """«Цена с НДС», «цена с учётом НДС», «цена, в т.ч. НДС» — цена уже с налогом.
+
+    Раньше признаком были только литералы «сндс»/«сналогом», поэтому обычные
+    формулировки «с учётом НДС» и «в т.ч. НДС» принимались за цену без НДС,
+    и налог начислялся второй раз — КП дороже реальности ровно на ставку.
+    """
+    if any(marker in cleaned for marker in _VAT_EXCLUDED_MARKERS):
+        return False
+    return any(marker in cleaned for marker in _VAT_INCLUDED_MARKERS)
+
+
 def _pick_price_column(names: list[str]) -> int | None:
     """Колонка с ценой: «Цена без НДС» приоритетнее «Цена с НДС».
 
@@ -131,16 +210,16 @@ def _pick_price_column(names: list[str]) -> int | None:
     """
     candidates: list[tuple[int, str]] = []
     for index, name in enumerate(names):
-        cleaned = name.replace(".", "").replace(" ", "")
+        cleaned = _header_text(name)
         if cleaned.startswith(("цена", "price", "стоимость")):
             candidates.append((index, cleaned))
     if not candidates:
         return None
     for index, cleaned in candidates:
-        if "безндс" in cleaned or "безналога" in cleaned:
+        if any(marker in cleaned for marker in _VAT_EXCLUDED_MARKERS):
             return index
     for index, cleaned in candidates:
-        if "сндс" not in cleaned and "сналогом" not in cleaned:
+        if not _header_means_inclusive(cleaned):
             return index
     # только колонки «с НДС»: цену без НДС взять неоткуда
     return candidates[0][0]
@@ -155,7 +234,7 @@ def _header_indexes(header: list[object]) -> dict[str, int] | None:
 
     def find(aliases: tuple[str, ...]) -> int | None:
         for index, name in enumerate(names):
-            cleaned = name.replace(".", "").replace(" ", "")
+            cleaned = _header_text(name)
             for alias in aliases:
                 if cleaned == alias or cleaned.startswith(alias):
                     return index
@@ -163,12 +242,12 @@ def _header_indexes(header: list[object]) -> dict[str, int] | None:
 
     sku = find(("sku", "артикул", "код", "code", "номенклатуракод"))
     name = find(("наименование", "номенклатура", "name", "товар"))
-    unit = find(("единица", "ед", "unit", "ед изм", "едизм"))
+    unit = find(("единица", "ед", "unit", "едизм"))
     price = _pick_price_column(names)
     currency = find(("валюта", "currency", "вал"))
     # «с НДС» в заголовке цены — отдельный признак, а не часть имени колонки
-    price_header = names[price].replace(".", "").replace(" ", "") if price is not None else ""
-    price_includes_vat = "сндс" in price_header and "безндс" not in price_header
+    price_header = _header_text(names[price]) if price is not None else ""
+    price_includes_vat = bool(price_header) and _header_means_inclusive(price_header)
 
     if name is None or price is None:
         return None
@@ -233,6 +312,26 @@ def merge_prices(
     return sorted(by_sku.values(), key=lambda item: item.sku), changed
 
 
+_HEADER_HINTS = (
+    "наименование", "номенклатура", "артикул", "sku", "цена", "price",
+    "стоимость", "единица", "едизм", "количество", "колво", "товар", "код",
+)
+
+
+def _looks_like_header(row: list[object] | None) -> bool:
+    """Похожа ли первая строка на шапку (а не на данные).
+
+    Нужна, чтобы отличить «файл без шапки» (тогда позиционный разбор — это
+    единственный вариант) от «шапка есть, но мы её не поняли» (тогда разбор
+    по номерам колонок перепутает поля и молча испортит прайс).
+    """
+    if not row:
+        return False
+    text = "".join(_header_text(cell) for cell in row)
+    hits = sum(1 for hint in _HEADER_HINTS if hint in text)
+    return hits >= 2
+
+
 def load_price_items(
     path: Path, *, max_rows: int = 100_000, prices_include_vat: bool = False
 ) -> list[PriceItem]:
@@ -259,7 +358,18 @@ def load_price_items(
 
     columns = _header_indexes(header) if header else None
     if columns is None:
-        # шапки нет или она нестандартная: читаем позиционно, как раньше
+        if _looks_like_header(header):
+            # Шапка есть, но не распознана: позиционный разбор перепутал бы
+            # артикул с наименованием, а цену — с единицей, и импорт «успешно»
+            # испортил бы весь прайс. Лучше отказать с понятным текстом.
+            raise ValidationError(
+                "шапка прайса не распознана: нужны колонки с наименованием и ценой "
+                "(подойдут «Артикул/Код», «Наименование/Номенклатура», «Ед.», «Цена»)"
+            )
+        # шапки нет вовсе (голая выгрузка) — читаем позиционно, как раньше.
+        # Первую строку reader отдал как «шапку», но это данные — возвращаем её.
+        if header and any(str(cell or "").strip() for cell in header):
+            rows = [header, *rows]
         columns = {"sku": 0, "name": 1, "unit": 2, "price": 3, "currency": -1}
     if columns.get("price_includes_vat") and not prices_include_vat:
         raise ValidationError(
@@ -269,6 +379,9 @@ def load_price_items(
         )
 
     items: list[PriceItem] = []
+    by_sku: dict[str, PriceItem] = {}
+    duplicates = 0
+    skipped_prices = 0
     foreign: set[str] = set()
     for row in rows:
         if len(row) <= max(columns["name"], columns["price"]):
@@ -287,19 +400,36 @@ def load_price_items(
         if currency != "RUB":
             foreign.add(currency)
             continue
-        raw_price = cell("price").replace(",", ".").replace(" ", "").replace("₽", "")
         if not name:
             continue
         if not sku:
-            sku = f"AUTO-{len(items) + 1:05d}"
+            # Артикул не задан: генерируем свободный, а не занятый в этом файле.
+            auto_index = len(items) + 1
+            sku = f"AUTO-{auto_index:05d}"
+            while sku in by_sku:
+                auto_index += 1
+                sku = f"AUTO-{auto_index:05d}"
         try:
-            price = Decimal(raw_price)
-        except Exception:
+            price = decimal_from_text(cell("price"))
+        except ValidationError:
+            # Битая цена — не повод молча выкинуть позицию: считаем и говорим.
+            skipped_prices += 1
             continue
         if price < 0:
+            skipped_prices += 1
             continue
-        items.append(PriceItem(sku=sku, name=name, unit=unit, price=price, currency=currency))
+        item = PriceItem(sku=sku, name=name, unit=unit, price=price, currency=currency)
+        if sku in by_sku:
+            # Дубль артикула — обычная ошибка выгрузки. Раньше он ронял загрузку
+            # всего прайса (UNIQUE constraint), теперь побеждает последняя строка.
+            duplicates += 1
+        by_sku[sku] = item
+        items.append(item)
 
+    if duplicates:
+        log.warning("в прайсе %s строк с повторяющимся артикулом — оставлена последняя", duplicates)
+    if skipped_prices:
+        log.warning("в прайсе %s строк с нечитаемой или отрицательной ценой — пропущены", skipped_prices)
     if foreign:
         raise ValidationError(
             f"прайс в валюте {', '.join(sorted(foreign))}: цены не пересчитываются "
@@ -307,7 +437,8 @@ def load_price_items(
         )
     if not items:
         raise ValidationError("прайс-лист пуст или не распознан")
-    return items
+    # Порядок строк прайса не важен, но стабильный порядок упрощает тесты и diff.
+    return list(by_sku.values())
 
 
 _RUBLE_MARKS = {"", "rub", "rur", "руб", "руб.", "р", "₽", "643"}
@@ -325,13 +456,33 @@ def _currency_code(raw: str) -> str:
     return text.upper()[:8] or "RUB"
 
 
+def _read_text_file(path: Path) -> str:
+    """Текст выгрузки: UTF-8 с BOM, UTF-16 с BOM или windows-1251.
+
+    «Сохранить как CSV» в русской Windows даёт cp1251, а 1С умеет выгружать
+    UTF-16 — раньше такой файл падал с UnicodeDecodeError вместо импорта.
+    """
+    raw = path.read_bytes()
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        try:
+            return raw.decode("utf-16")
+        except UnicodeDecodeError:
+            pass
+    for encoding in ("utf-8-sig", "cp1251"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", "replace")
+
+
 def _read_csv_with_header(path: Path, *, max_rows: int) -> tuple[list[str], list[list[str]]]:
-    with path.open("r", encoding="utf-8-sig", newline="") as fh:
-        sample = fh.read(4096)
-        fh.seek(0)
-        delimiter = ";" if sample.count(";") >= sample.count(",") else ","
-        reader = csv.reader(fh, delimiter=delimiter, strict=True)
-        all_rows = [row for _, row in zip(range(max_rows + 1), reader)]
+    text = _read_text_file(path)
+    sample = text[:4096]
+    delimiter = ";" if sample.count(";") >= sample.count(",") else ","
+    # strict=False: неровные кавычки в выгрузке 1С/Excel — не повод отказать файлу
+    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
+    all_rows = [row for _, row in zip(range(max_rows + 1), reader)]
     if not all_rows:
         return [], []
     return list(all_rows[0]), all_rows[1:]
@@ -375,7 +526,7 @@ def load_stock_items(path: Path) -> list[tuple[str, str, str, str]]:
 
     def find(*aliases: str) -> int | None:
         for index, name in enumerate(names):
-            cleaned = name.replace(".", "").replace(" ", "")
+            cleaned = _header_text(name)
             for alias in aliases:
                 if cleaned == alias or cleaned.startswith(alias):
                     return index
@@ -389,16 +540,18 @@ def load_stock_items(path: Path) -> list[tuple[str, str, str, str]]:
     if qty_index is None:
         raise ValidationError("в файле не найдена колонка с остатком или количеством")
 
-    result: list[tuple[str, str, str, str]] = []
+    # Один артикул может стоять в нескольких складах: в таблице остатков
+    # sku — первичный ключ, поэтому дубли роняли импорт (UNIQUE constraint).
+    # Для «сколько всего есть» количества складываются.
+    totals: dict[str, Decimal] = {}
+    units: dict[str, str] = {}
+    warehouses: dict[str, list[str]] = {}
     for row in rows:
         if qty_index >= len(row):
             continue
-        raw_qty = str(row[qty_index] or "").replace(" ", "").replace(",", ".").strip()
-        if not raw_qty:
-            continue
         try:
-            qty = Decimal(raw_qty)
-        except Exception:
+            qty = decimal_from_text(row[qty_index])
+        except ValidationError:
             continue
         sku = ""
         if sku_index is not None and sku_index < len(row):
@@ -413,8 +566,19 @@ def load_stock_items(path: Path) -> list[tuple[str, str, str, str]]:
             continue
         unit = str(row[unit_index] or "").strip() if unit_index is not None and unit_index < len(row) else ""
         warehouse = str(row[warehouse_index] or "").strip() if warehouse_index is not None and warehouse_index < len(row) else ""
-        result.append((key, str(qty), unit, warehouse))
+        totals[key] = totals.get(key, Decimal("0")) + qty
+        units.setdefault(key, unit)
+        if warehouse:
+            warehouses.setdefault(key, []).append(warehouse)
 
-    if not result:
+    if not totals:
         raise ValidationError("остатки не распознаны: нет строк с количеством")
-    return result
+    return [
+        (
+            key,
+            format(qty.normalize(), "f"),
+            units.get(key, ""),
+            ", ".join(dict.fromkeys(warehouses.get(key, [])))[:120],
+        )
+        for key, qty in totals.items()
+    ]

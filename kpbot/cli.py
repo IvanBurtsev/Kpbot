@@ -427,6 +427,7 @@ def _poll_mailbox(pipeline: Pipeline, mailbox: ImapMailbox, args: argparse.Names
 
     processed: list[str] = []
     skipped: list[dict[str, str]] = []
+    failed: list[dict[str, str]] = []
     for uid, raw in messages:
         try:
             result = pipeline.process_eml_bytes(raw, actor="imap")
@@ -440,12 +441,15 @@ def _poll_mailbox(pipeline: Pipeline, mailbox: ImapMailbox, args: argparse.Names
             print(f"  uid {uid}: пропущено — {exc}")
             continue
         except Exception as exc:  # noqa: BLE001 - одно письмо не должно ронять весь опрос
-            # Раньше неожиданная ошибка обрывала разбор ящика: это письмо падало
-            # каждые 10 минут, а все следующие оставались необработанными.
-            skipped.append(
-                {"uid": uid, "sender": "", "subject": "", "reason": f"сбой разбора: {exc}"}
+            # Неожиданный сбой — не «не заявка». Раньше такие письма попадали
+            # в skipped и помечались прочитанными, и заявка терялась навсегда.
+            # README обещает обратное: «если что-то упало — письмо останется
+            # непрочитанным». Держим письмо непрочитанным и пишем failed.jsonl,
+            # чтобы сбой был виден и повторился в следующем опросе.
+            failed.append(
+                {"uid": uid, "sender": "", "subject": "", "reason": f"сбой обработки: {exc}"}
             )
-            print(f"  uid {uid}: сбой разбора — {exc}")
+            print(f"  uid {uid}: сбой обработки — {exc} (письмо осталось непрочитанным)")
             continue
         processed.append(uid)
         print(f"  uid {uid}: заявка {result.rfq_id[:8]} · {result.status} · "
@@ -461,7 +465,16 @@ def _poll_mailbox(pipeline: Pipeline, mailbox: ImapMailbox, args: argparse.Names
         if settings.imap_mark_seen and settings.imap_mark_skipped:
             mailbox.mark_seen([item["uid"] for item in skipped])
             print("не заявки помечены прочитанными, чтобы не разбирать их повторно")
-    return 0
+
+    status = 0
+    if failed:
+        _log_skipped(failed, pipeline.out_dir(), name="failed.jsonl")
+        print(
+            f"сбоев обработки: {len(failed)} — письма НЕ помечены прочитанными, "
+            f"подробности в {pipeline.out_dir() / 'failed.jsonl'}"
+        )
+        status = 1
+    return status
 
 def _peek_subject(raw: bytes) -> tuple[str, str]:
     try:
@@ -471,11 +484,13 @@ def _peek_subject(raw: bytes) -> tuple[str, str]:
     return parsed.subject[:200], parsed.sender[:200]
 
 
-def _log_skipped(items: list[dict[str, str]], out_dir: Path | None = None) -> None:
+def _log_skipped(
+    items: list[dict[str, str]], out_dir: Path | None = None, *, name: str = "skipped.jsonl"
+) -> None:
     import json
 
     # Пропущенные письма содержат отправителя и тему (ПДн): пишем в папку клиента.
-    path = (out_dir or settings.out_dir) / "skipped.jsonl"
+    path = (out_dir or settings.out_dir) / name
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         for item in items:
