@@ -227,6 +227,12 @@ class PasswordResetTest(CabinetBase):
         self.assertEqual(reused.status_code, 400)
         self.assertIn("недействительна", reused.text)
 
+    def test_broken_link_shows_error_not_form(self) -> None:
+        page = self.client.get("/cabinet/reset?t=broken-token")
+        self.assertEqual(page.status_code, 400)
+        self.assertIn("недействительна", page.text)
+        self.assertNotIn("Сохранить пароль", page.text)
+
     def test_forgot_answers_same_for_unknown_email(self) -> None:
         known = self.client.post("/cabinet/forgot", data={"email": self.user["email"]})
         unknown = self.client.post("/cabinet/forgot", data={"email": "nobody@example.ru"})

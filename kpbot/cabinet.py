@@ -332,9 +332,15 @@ async def forgot(request: Request):
 
 @router.get("/reset", response_class=HTMLResponse)
 def reset_form(request: Request, t: str = "", error: str = ""):
+    token = t[:200]
+    if token and not cabinet_store().password_reset_valid(token):
+        return _page(
+            request, "cabinet/reset.html", code=400, user=None, company=None,
+            token="", error="ссылка недействительна или истекла — запросите новую",
+        )
     return _page(
         request, "cabinet/reset.html", user=None, company=None,
-        token=t[:200], error=error[:200],
+        token=token, error=error[:200],
     )
 
 

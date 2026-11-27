@@ -300,6 +300,20 @@ class CabinetStore:
             )
         return token
 
+    def password_reset_valid(self, token: str) -> bool:
+        """Ссылка ещё жива? Нужно, чтобы не показывать форму по битой ссылке."""
+        if not token:
+            return False
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        self.init_schema()
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM cabinet_password_resets"
+                " WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?",
+                (digest, _utcnow()),
+            ).fetchone()
+        return row is not None
+
     def consume_password_reset(self, token: str) -> str | None:
         """Проверяет токен и гасит его. Возвращает id пользователя или None."""
         if not token:
