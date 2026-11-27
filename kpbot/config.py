@@ -139,6 +139,8 @@ class Settings(BaseSettings):
     smtp_from: str = ""
     smtp_security: str = "starttls"  # starttls (587) | ssl (465) | none (только для тестов)
     smtp_timeout_seconds: int = 30
+    # Письмо клиенту при смене статуса его заказа (если SMTP настроен)
+    cabinet_notify_email: bool = True
 
     # --- уведомления (Telegram) ---
     telegram_enabled: bool = False

@@ -241,6 +241,22 @@ class AdminAndDocsTest(CabinetBase):
         page = self.client.get(f"/cabinet/orders/{order_id}")
         self.assertIn("Отгружен", page.text)
 
+    def test_status_change_is_logged_for_client(self) -> None:
+        order_id = self._order()
+        admin = self._supplier()
+        token = csrf_from(admin.get("/ui/admin?tab=orders").text)
+        changed = admin.post(
+            f"/ui/admin/orders/{order_id}/status",
+            data={"csrf_token": token, "status": "shipped"},
+        )
+        self.assertEqual(changed.status_code, 303)
+        events = self.cabinet.recent_order_events(self.company["id"])
+        self.assertTrue(events)
+        self.assertEqual(events[0]["status"], "shipped")
+        dashboard = self.client.get("/cabinet")
+        self.assertIn("Что происходит с заказами", dashboard.text)
+        self.assertIn("Отгружен", dashboard.text)
+
     def test_supplier_resets_client_password(self) -> None:
         admin = self._supplier()
         page = admin.get("/ui/admin?tab=clients")

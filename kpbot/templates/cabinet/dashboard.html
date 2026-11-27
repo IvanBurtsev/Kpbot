@@ -65,4 +65,22 @@
   <p class="empty">Заказов пока нет. Начните с каталога.</p>
   {% endif %}
 </section>
+
+{% if events %}
+<section class="card">
+  <h2>Что происходит с заказами</h2>
+  <table class="cards-table">
+    <thead><tr><th>Когда</th><th>Заказ</th><th>Событие</th></tr></thead>
+    <tbody>
+      {% for event in events %}
+      <tr>
+        <td data-label="Когда" class="small muted">{{ event.created_at[:16].replace("T", " ") }}</td>
+        <td data-label="Заказ"><a href="/cabinet/orders/{{ event.order_id }}">{{ event.number }}</a></td>
+        <td data-label="Событие"><span class="badge order-{{ event.status }}">{{ event.status_label }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
 {% endblock %}

@@ -330,9 +330,11 @@ def dashboard(request: Request):
     if company is None:
         return _login_redirect(request)
     orders = cabinet_store().list_orders(company["id"], limit=3)
+    events = cabinet_store().recent_order_events(company["id"], 10)
     return _page(
         request, "cabinet/dashboard.html", user=user, company=company,
         orders=orders,
+        events=events,
         debt=_fmt(company["debt"]),
         balance=_fmt(company["balance"]),
         credit=_fmt(company["credit_limit"]),

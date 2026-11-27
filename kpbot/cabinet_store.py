@@ -70,6 +70,15 @@ CREATE TABLE IF NOT EXISTS cabinet_packs(
     pack_qty INTEGER NOT NULL DEFAULT 1
 );
 
+CREATE TABLE IF NOT EXISTS cabinet_order_events(
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id   TEXT NOT NULL,
+    company_id TEXT NOT NULL,
+    status     TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_order_events_company ON cabinet_order_events(company_id, id);
+
 CREATE TABLE IF NOT EXISTS cabinet_cart(
     user_id    TEXT NOT NULL,
     sku        TEXT NOT NULL,
@@ -449,3 +458,29 @@ class CabinetStore:
                 "UPDATE cabinet_orders SET status = ?, updated_at = ? WHERE id = ?",
                 (status, _utcnow(), order_id),
             )
+
+    def log_order_event(self, order_id: str, company_id: str, status: str) -> None:
+        """Событие для клиента: «заказ такой-то стал отгружен»."""
+        self.init_schema()
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "INSERT INTO cabinet_order_events(order_id, company_id, status, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (order_id, company_id, status, _utcnow()),
+            )
+
+    def recent_order_events(self, company_id: str, limit: int = 10) -> list[dict]:
+        self.init_schema()
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT e.*, o.number FROM cabinet_order_events e"
+                " JOIN cabinet_orders o ON o.id = e.order_id"
+                " WHERE e.company_id = ? ORDER BY e.id DESC LIMIT ?",
+                (company_id, max(1, min(int(limit), 50))),
+            ).fetchall()
+        result: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            item["status_label"] = ORDER_STATUS_LABELS.get(item["status"], item["status"])
+            result.append(item)
+        return result

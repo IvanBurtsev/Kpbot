@@ -867,6 +867,25 @@ def is_owner(request: Request) -> bool:
     return current is None or current == settings.db_path
 
 
+def _send_status_emails(recipients: list[str], subject: str, body: str) -> int:
+    """Письма клиенту о статусе заказа. Сбой одного адреса не мешает остальным."""
+    from email.message import EmailMessage
+
+    sent = 0
+    for address in recipients:
+        message = EmailMessage()
+        message["From"] = mailer.from_addr or settings.smtp_user or "no-reply@localhost"
+        message["To"] = address
+        message["Subject"] = subject
+        message.set_content(body)
+        try:
+            mailer.send(message, to=address)
+            sent += 1
+        except MailError:
+            log.warning("не удалось отправить уведомление клиенту %s", address)
+    return sent
+
+
 @app.get("/ui/ops", response_class=HTMLResponse)
 def ui_ops(request: Request, flash: str = ""):
     if not is_authenticated(request):
@@ -1191,13 +1210,38 @@ async def ui_admin_order_status(request: Request, order_id: str):
     form = await verified_form(request)
     new_status = str(form.get("status", "pending"))
     cabinet = CabinetStore(current_supplier_db(settings.db_path))
-    if cabinet.order(order_id) is None:
+    order = cabinet.order(order_id)
+    if order is None:
         return RedirectResponse(
             f"/ui/admin?tab=orders&flash={quote('заказ не найден')}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
     cabinet.update_status(order_id, new_status)
+    cabinet.log_order_event(order_id, order["company_id"], new_status)
     store.log_event("client_order_status", actor_of(request), f"{order_id}: {new_status}")
+
+    # Клиент не должен узнавать о смене статуса только зайдя в кабинет.
+    if settings.cabinet_notify_email and mailer.enabled and mailer.host:
+        recipients = [user["email"] for user in cabinet.list_users(order["company_id"])]
+        if recipients:
+            label = ORDER_STATUS_LABELS.get(new_status, new_status)
+            link = f"{settings.public_base_url.rstrip('/')}/cabinet/orders/{order_id}"
+            subject = f"Заказ {order['number']}: {label}"
+            body = (
+                f"Здравствуйте!\n\n"
+                f"Статус вашего заказа {order['number']} изменился: {label}.\n"
+                f"Открыть заказ: {link}\n\n"
+                f"— {pipeline.company().get('name') or settings.company_name}"
+            )
+            try:
+                sent = await run_in_threadpool(_send_status_emails, recipients, subject, body)
+                if sent:
+                    store.log_event(
+                        "client_order_notified", actor_of(request), f"{order['number']}: писем {sent}"
+                    )
+            except Exception as exc:  # noqa: BLE001 - уведомление не должно ломать действие
+                log.warning("уведомление клиента не отправлено: %s", exc)
+
     return RedirectResponse(
         f"/ui/admin?tab=orders&flash={quote('статус заказа обновлён')}",
         status_code=status.HTTP_303_SEE_OTHER,
