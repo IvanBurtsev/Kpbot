@@ -185,6 +185,22 @@ class AdminAndDocsTest(CabinetBase):
         page = self.client.get(f"/cabinet/orders/{order_id}")
         self.assertIn("Отгружен", page.text)
 
+    def test_order_shows_supplier_request_status(self) -> None:
+        order_id = self._order()
+        page = self.client.get(f"/cabinet/orders/{order_id}")
+        self.assertIn("Заявка поставщику", page.text)
+        self.assertIn("КП готово", page.text)
+
+    def test_repeat_order_requires_csrf(self) -> None:
+        order_id = self._order()
+        response = self.client.post(f"/cabinet/orders/{order_id}/repeat")
+        self.assertEqual(response.status_code, 403)
+
+    def test_catalog_reports_total_and_page(self) -> None:
+        page = self.client.get("/cabinet/catalog")
+        self.assertIn("Найдено:", page.text)
+        self.assertIn("показаны", page.text)
+
     def test_documents_and_act(self) -> None:
         order_id = self._order()
         doc = self.client.get(f"/cabinet/orders/{order_id}/doc/invoice")

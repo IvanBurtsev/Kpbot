@@ -8,6 +8,12 @@
     <span class="badge order-{{ order.status }}">{{ order.status_label }}</span>
     <span class="muted small">от {{ order.created_at[:16].replace("T", " ") }} · {{ company.name }}</span>
   </p>
+  {% if rfq_status_label %}
+  <p class="small">
+    Заявка поставщику:
+    <span class="badge {% if rfq_status in ('sent', 'approved') %}s-ok{% elif rfq_status == 'rejected' %}s-rejected{% elif rfq_status == 'human_review' %}s-human_review{% else %}s-draft_ready{% endif %}">{{ rfq_status_label }}</span>
+  </p>
+  {% endif %}
   {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
   {% if order.comment %}<p class="muted small">Комментарий: {{ order.comment }}</p>{% endif %}
 </section>

@@ -16,6 +16,7 @@
 
 <section class="card">
   {% if items %}
+  <p class="muted small">Найдено: {{ total }} · показаны {{ (page_number - 1) * 50 + 1 }}–{{ (page_number - 1) * 50 + items|length }}</p>
   <table class="cards-table cabinet-catalog">
     <thead>
       <tr>
@@ -55,6 +56,17 @@
       {% endfor %}
     </tbody>
   </table>
+  {% if page_number > 1 or has_next %}
+  <p class="pager small">
+    {% if page_number > 1 %}
+    <a href="/cabinet/catalog?{{ {'q': query, 'page': page_number - 1}|urlencode }}">← назад</a>
+    {% endif %}
+    <span class="muted">страница {{ page_number }}</span>
+    {% if has_next %}
+    <a href="/cabinet/catalog?{{ {'q': query, 'page': page_number + 1}|urlencode }}">вперёд →</a>
+    {% endif %}
+  </p>
+  {% endif %}
   {% else %}
   <p class="empty">Ничего не найдено. Попробуйте другой запрос.</p>
   {% endif %}

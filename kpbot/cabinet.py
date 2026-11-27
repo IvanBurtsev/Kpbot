@@ -302,17 +302,32 @@ def _catalog(company_id: str, query: str = "") -> list[dict]:
 
 
 @router.get("/catalog", response_class=HTMLResponse)
-def catalog(request: Request, q: str = "", flash: str = ""):
+def catalog(request: Request, q: str = "", page: int = 1, flash: str = ""):
     user = _user(request)
     if user is None:
         return _login_redirect(request)
     company = _company(request, user)
-    items = _catalog(company["id"], q)
+    found = _catalog(company["id"], q)
+    per_page = 50
+    try:
+        page_number = max(1, min(int(page or 1), 1000))
+    except (TypeError, ValueError):
+        page_number = 1
+    start = (page_number - 1) * per_page
+    items = found[start : start + per_page]
     cart_count = sum(item["qty"] for item in cabinet_store().cart_items(user["id"]))
     return _page(
-        request, "cabinet/catalog.html", user=user, company=company,
-        items=items, query=q.strip(), flash=flash[:200],
+        request,
+        "cabinet/catalog.html",
+        user=user,
+        company=company,
+        items=items,
+        query=q.strip(),
+        flash=flash[:200],
         cart_count=cart_count,
+        total=len(found),
+        page_number=page_number,
+        has_next=start + per_page < len(found),
     )
 
 
@@ -537,6 +552,18 @@ def orders(request: Request):
                  orders=cabinet_store().list_orders(company["id"]))
 
 
+RFQ_STATUS_LABELS = {
+    "received": "получена",
+    "parsed": "разобрана",
+    "priced": "рассчитана",
+    "draft_ready": "КП готово",
+    "human_review": "на проверке у поставщика",
+    "approved": "КП одобрено",
+    "sent": "КП отправлено",
+    "rejected": "отклонена поставщиком",
+}
+
+
 @router.get("/orders/{order_id}", response_class=HTMLResponse)
 def order_page(request: Request, order_id: str, flash: str = ""):
     user = _user(request)
@@ -548,8 +575,16 @@ def order_page(request: Request, order_id: str, flash: str = ""):
         return _page(request, "cabinet/orders.html", code=404, user=user, company=company,
                      orders=cabinet_store().list_orders(company["id"]), error="заказ не найден",
                      flash="")
+    # Статус заказа в ЛК и статус заявки у поставщика живут отдельно: клиенту
+    # важно видеть оба, иначе «Ожидает» висит даже после отправки КП.
+    rfq = None
+    if order.get("rfq_id"):
+        rfq = supplier_store().get_rfq(order["rfq_id"])
+    rfq_status = (rfq or {}).get("status", "")
     return _page(request, "cabinet/order.html", user=user, company=company,
-                 order=order, flash=flash[:200], seller=_seller())
+                 order=order, flash=flash[:200], seller=_seller(),
+                 rfq_status=rfq_status,
+                 rfq_status_label=RFQ_STATUS_LABELS.get(rfq_status, ""))
 
 
 DOC_TITLES = {
@@ -641,11 +676,14 @@ def reconciliation_act(request: Request, start: str = "", end: str = ""):
 
 
 @router.post("/orders/{order_id}/repeat")
-def repeat_order(request: Request, order_id: str):
+async def repeat_order(request: Request, order_id: str):
     """Повторить заказ: позиции возвращаются в корзину."""
     user = _user(request)
     if user is None:
         return _login_redirect(request)
+    form = await request.form()
+    if not _check_csrf(request, form):
+        return PlainTextResponse("csrf failed", status_code=403)
     company = _company(request, user)
     order = cabinet_store().order(order_id)
     if order is None or order["company_id"] != company["id"]:
