@@ -419,6 +419,39 @@ class TenantHeaderPrecedenceTest(unittest.TestCase):
         )
 
 
+class SendKpStatusTest(unittest.TestCase):
+    """CLI send-kp: после фактической отправки заявка должна стать «отправлена»."""
+
+    def test_cli_send_marks_rfq_sent(self) -> None:
+        import argparse
+        from unittest.mock import patch
+
+        from kpbot import cli
+
+        cfg = make_settings("send-kp", smtp_enabled=True, smtp_host="smtp.example",
+                            smtp_user="robot@example.ru", smtp_password="x")
+        store = Store(cfg.db_path)
+        pipeline = Pipeline(store, cfg)
+        result = pipeline.process_text("уголок 50х50 — 2 шт", sender="client@example.ru",
+                                       subject="Заявка")
+        pipeline.approve(result.rfq_id, actor="unittest")
+        # Вложение нужно, иначе отправка законно откажется.
+        pdf = cfg.out_dir / f"{result.rfq_id}.pdf"
+        pdf.parent.mkdir(parents=True, exist_ok=True)
+        pdf.write_bytes(b"%PDF-1.4\n" + b"0" * 2000)
+        with patch("kpbot.cli.settings", cfg), \
+                patch("kpbot.mailer.Mailer.send", return_value=None):
+            code = cli.cmd_send_kp(
+                argparse.Namespace(rfq_id=result.rfq_id, to="client@example.ru", body="")
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            store.get_rfq(result.rfq_id)["status"], "sent",
+            "после отправки статус остался «одобрено» — карточка врёт",
+        )
+        shutil.rmtree(cfg.data_dir, ignore_errors=True)
+
+
 class LogsRedactionTest(unittest.TestCase):
     def test_integration_passwords_are_masked(self) -> None:
         settings = make_settings(

@@ -680,8 +680,16 @@ def cmd_send_kp(args: argparse.Namespace) -> int:
         print("нужен корректный адрес получателя")
         return 2
 
+    if rfq["status"] not in ("approved", "sent"):
+        # То же правило, что в интерфейсе: без проверки человеком не отправляем.
+        print("сначала одобрите КП — без проверки человеком не отправляем")
+        return 2
+
     mailer = Mailer(settings)
     attachments = load_attachments(settings.out_dir, rfq["id"], short=rfq["id"][:8])
+    if not attachments:
+        print("к письму нечего приложить: КП не собралось — обновите карточку")
+        return 2
     message = build_kp_message(
         sender=to,
         from_addr=mailer.from_addr or settings.smtp_user or "no-reply@localhost",
@@ -697,6 +705,9 @@ def cmd_send_kp(args: argparse.Namespace) -> int:
         print(f"не отправлено: {exc}")
         return 1
     store.log(rfq["id"], "sent", "cli", f"кому {to}, вложений {len(attachments)}")
+    # «Отправлено» ставит только фактическая отправка: раньше CLI писал в журнал
+    # sent, а статус заявки оставался approved, и карточка врала о состоянии.
+    store.set_status(rfq["id"], "sent", force=True)
     print(f"отправлено: {to} · вложений {len(attachments)}")
     return 0
 
