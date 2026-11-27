@@ -292,6 +292,14 @@ class Settings(BaseSettings):
             )
         if self.llm_enabled and not self.llm_api_key:
             problems.append("KPBOT_LLM_ENABLED=true, но KPBOT_LLM_API_KEY не задан")
+        if self.vat_rate == Decimal("0.20"):
+            # 20% — ставка до 01.01.2026. С 2026 года основная ставка в РФ 22%
+            # (ст. 164 НК РФ). Выпускать счета с 20% в проде нельзя: это не
+            # «настройка клиента», а неверный документ и недоплата налога.
+            problems.append(
+                "KPBOT_VAT_RATE=0.20 — ставка до 01.01.2026; с 2026 года основная ставка "
+                "НДС в РФ 22%. Задайте 0.22 (или законную ставку для товара: 0.10, 0.05, 0.07, 0)"
+            )
         return problems
 
 

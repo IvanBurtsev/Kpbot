@@ -4,6 +4,7 @@ import support  # общий стенд: изолированные данные
 
 import os
 import unittest
+from decimal import Decimal
 from pathlib import Path
 
 _TMP = support.subdir("prod")
@@ -24,6 +25,42 @@ class ProductionGuardTest(unittest.TestCase):
         problems = settings.production_problems()
         self.assertGreaterEqual(len(problems), 3)
         self.assertTrue(any("KPBOT_UI_PASSWORD" in text for text in problems))
+
+    def test_vat_20_is_rejected_in_production(self) -> None:
+        """С 01.01.2026 ставка 20% незаконна: сервис не должен стартовать с ней."""
+        settings = Settings(
+            env="prod",
+            api_key="a" * 32,
+            ui_password="StrongPass!2026",
+            session_secret="s" * 48,
+            oauth_client_id="x.apps.googleusercontent.com",
+            oauth_client_secret="GOCSPX-secret",
+            imap_user="a@b.ru",
+            public_base_url="https://kp.example.ru:8443",
+            vat_rate=Decimal("0.20"),
+            data_dir=_TMP,
+        )
+        problems = settings.production_problems()
+        self.assertTrue(
+            any("0.20" in text and "22" in text for text in problems),
+            f"ставка 20% не заблокирована в проде: {problems}",
+        )
+
+    def test_vat_22_and_reduced_rates_pass(self) -> None:
+        for rate in (Decimal("0.22"), Decimal("0.10"), Decimal("0.05"), Decimal("0.07"), Decimal("0")):
+            settings = Settings(
+                env="prod",
+                api_key="a" * 32,
+                ui_password="StrongPass!2026",
+                session_secret="s" * 48,
+                oauth_client_id="x.apps.googleusercontent.com",
+                oauth_client_secret="GOCSPX-secret",
+                imap_user="a@b.ru",
+                public_base_url="https://kp.example.ru:8443",
+                vat_rate=rate,
+                data_dir=_TMP,
+            )
+            self.assertEqual(settings.production_problems(), [], f"ставка {rate} не должна блокироваться")
 
     def test_strong_config_passes(self) -> None:
         settings = Settings(

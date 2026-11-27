@@ -1286,7 +1286,8 @@ def cmd_one_c_invoice(args: argparse.Namespace) -> int:
 
     lines = [(line["sku"], line["qty"], line["price"]) for line in quote["lines"]]
     client = _one_c_client()
-    # Ставка — клиента, а не сервиса: у одного поставщика 22%, у другого 20%.
+    # Ставка — клиента, а не сервиса: у одного 22%, у другого 10%.
+    # 20% — только чтение старых документов: с 2026 года это недействующая ставка.
     from .pipeline import calc_settings
 
     vat_rate = calc_settings(store, settings).vat_rate
