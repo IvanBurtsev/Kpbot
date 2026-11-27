@@ -10,6 +10,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import secrets
 import sqlite3
 import uuid
 from contextlib import closing
@@ -25,6 +28,15 @@ CREATE TABLE IF NOT EXISTS tenants(
     db_path    TEXT NOT NULL,
     status     TEXT NOT NULL DEFAULT 'active',
     created_at TEXT NOT NULL
+);
+
+-- Свой ключ API у каждого клиента: утечка одного ключа открывает одну базу,
+-- а не все. Хранится только хеш — сам ключ показывается один раз при выпуске.
+CREATE TABLE IF NOT EXISTS tenant_keys(
+    tenant_id  TEXT PRIMARY KEY,
+    key_hash   TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
 );
 """
 
@@ -149,3 +161,37 @@ class TenantRegistry:
             if row:
                 found.append(tenant)
         return found
+
+    # ---------- ключи API на клиента ----------
+
+    def issue_key(self, tenant_id: str) -> str:
+        """Выпускает новый ключ клиента и возвращает его один раз (в базе — хеш)."""
+        key = "kpb_" + secrets.token_urlsafe(24)
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "INSERT INTO tenant_keys(tenant_id, key_hash, created_at) VALUES (?, ?, ?)"
+                " ON CONFLICT(tenant_id) DO UPDATE SET key_hash = excluded.key_hash,"
+                " created_at = excluded.created_at",
+                (tenant_id, digest, _utcnow()),
+            )
+        return key
+
+    def verify_key(self, tenant_id: str, key: str) -> bool:
+        """Подходит ли ключ этому клиенту. Пустой/чужой ключ — False."""
+        if not key:
+            return False
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT key_hash FROM tenant_keys WHERE tenant_id = ?", (tenant_id,)
+            ).fetchone()
+        if row is None:
+            return False
+        return hmac.compare_digest(hashlib.sha256(key.encode("utf-8")).hexdigest(), row["key_hash"])
+
+    def has_key(self, tenant_id: str) -> bool:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM tenant_keys WHERE tenant_id = ? LIMIT 1", (tenant_id,)
+            ).fetchone()
+        return row is not None

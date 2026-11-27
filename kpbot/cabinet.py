@@ -667,8 +667,16 @@ def repeat_order(request: Request, order_id: str):
 
 
 def _api_allowed(request: Request) -> bool:
+    """Ключ владельца или ключ конкретного клиента (вместе с X-Tenant)."""
     key = request.headers.get("X-API-Key", "")
-    return bool(key) and constant_time_equal(key, settings.api_key)
+    if not key:
+        return False
+    code = (request.headers.get("X-Tenant") or "").strip()
+    if code:
+        tenant = _resolve_tenant(code)
+        if tenant and get_registry(settings).verify_key(tenant["id"], key):
+            return True
+    return constant_time_equal(key, settings.api_key)
 
 
 def _api_tenant_path(request: Request) -> Path | None:

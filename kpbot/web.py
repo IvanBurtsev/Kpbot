@@ -107,7 +107,7 @@ async def hardening(request: Request, call_next):
     length = request.headers.get("content-length")
     if length and length.isdigit() and int(length) > settings.max_upload_bytes + 128 * 1024:
         return PlainTextResponse("payload too large", status_code=413)
-    tenant_token = supplier_db.set(tenant_db_from_request(request))
+    tenant_token = supplier_db.set(request_tenant_path(request))
     client_token = client_db.set(client_tenant_db_from_request(request))
     request_token = _CURRENT_REQUEST.set(request)
     try:
@@ -236,6 +236,34 @@ def tenant_db_from_request(request: Request) -> Path | None:
 def client_tenant_db_from_request(request: Request) -> Path | None:
     """База поставщика, в кабинет которого вошёл покупатель; None — основная."""
     return _tenant_path_from_token(request.cookies.get(CLIENT_TENANT_COOKIE), 86400 * 30)
+
+
+def _api_key_ok(request: Request) -> bool:
+    """Ключ API: свой у клиента (вместе с X-Tenant) или общий ключ владельца."""
+    provided = request.headers.get("x-api-key") or ""
+    if not provided:
+        return False
+    code = (request.headers.get("x-tenant") or "").strip()
+    if code:
+        tenant = registry.get(code)
+        if tenant and tenant["status"] == "active" and registry.verify_key(tenant["id"], provided):
+            return True
+    return constant_time_equal(provided, settings.api_key)
+
+
+def request_tenant_path(request: Request) -> Path | None:
+    """База для запроса: кука админки, затем X-Tenant с ключом этого клиента."""
+    cookie_path = tenant_db_from_request(request)
+    if cookie_path is not None:
+        return cookie_path
+    code = (request.headers.get("x-tenant") or "").strip()
+    if not code or not _api_key_ok(request):
+        return None
+    tenant = registry.get(code)
+    if not tenant or tenant["status"] != "active":
+        return None
+    path = Path(tenant["db_path"])
+    return path if path.exists() else None
 
 
 def client_ip(request: Request) -> str:
@@ -845,7 +873,16 @@ def ui_ops(request: Request, flash: str = ""):
         return login_redirect(request)
     if not is_owner(request):
         raise HTTPException(status_code=403, detail="раздел владельца сервиса")
-    return page("ops.html", request, active_page="ops", tenants=registry.list(), flash=flash[:300])
+    tenants = registry.list()
+    keyed = {tenant["id"]: registry.has_key(tenant["id"]) for tenant in tenants}
+    return page(
+        "ops.html",
+        request,
+        active_page="ops",
+        tenants=tenants,
+        keyed=keyed,
+        flash=flash[:300],
+    )
 
 
 @app.post("/ui/ops/create")
@@ -920,6 +957,31 @@ async def ui_ops_status(request: Request):
     registry.set_status(tenant_id, status_value)
     store.log_event("tenant_status", actor_of(request), f"{tenant_id} → {status_value}")
     return RedirectResponse(f"/ui/ops?flash={quote('статус обновлён')}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/ui/ops/key")
+async def ui_ops_key(request: Request):
+    """Выпуск нового ключа API клиенту. Ключ показывается один раз."""
+    if not is_owner(request):
+        raise HTTPException(status_code=403, detail="раздел владельца сервиса")
+    form = await verified_form(request)
+    tenant_id = str(form.get("tenant_id", "")).strip()
+    tenant = registry.get(tenant_id)
+    if tenant is None:
+        return RedirectResponse(f"/ui/ops?flash={quote('клиент не найден')}", status_code=status.HTTP_303_SEE_OTHER)
+    key = registry.issue_key(tenant["id"])
+    store.log_event("tenant_key", actor_of(request), tenant["id"])
+    tenants = registry.list()
+    keyed = {item["id"]: registry.has_key(item["id"]) for item in tenants}
+    return page(
+        "ops.html",
+        request,
+        active_page="ops",
+        tenants=tenants,
+        keyed=keyed,
+        flash=f"Ключ API для «{tenant['name']}»: {key} — сохраните, больше не покажется",
+        new_key=key,
+    )
 
 
 @app.get("/ui/admin", response_class=HTMLResponse)
@@ -1688,8 +1750,8 @@ class RfqIn(BaseModel):
         return value
 
 
-def api_auth(x_api_key: str | None = Header(default=None)) -> None:
-    if not x_api_key or not constant_time_equal(x_api_key, settings.api_key):
+def api_auth(request: Request) -> None:
+    if not _api_key_ok(request):
         raise HTTPException(status_code=401, detail="invalid api key")
 
 
