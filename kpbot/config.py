@@ -32,14 +32,7 @@ def _resolve_env_file() -> str | None:
 _ENV_FILE = _resolve_env_file()
 
 DEFAULT_SECRETS = frozenset(
-    {
-        "dev-api-key-change-me",
-        "dev-password",
-        "dev-session-secret-change-me",
-        "12345678",
-        "change-me",
-        "",
-    }
+    {"dev-api-key-change-me", "dev-password", "dev-session-secret-change-me", "change-me", ""}
 )
 
 
