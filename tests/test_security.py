@@ -163,6 +163,11 @@ class SameOriginTest(unittest.TestCase):
         request = self._request("http://45.152.202.114", host="45.152.202.114", scheme="http")
         self.assertTrue(same_origin(request, "https://debtcrm.duckdns.org:8443"))
 
+    def test_port_mismatch_in_host_header_is_allowed(self) -> None:
+        # nginx передаёт Host без порта, а браузер шлёт Origin с портом
+        request = self._request("https://45.152.202.114:8443", host="45.152.202.114", scheme="https")
+        self.assertTrue(same_origin(request, "https://debtcrm.duckdns.org:8443"))
+
     def test_foreign_site_is_rejected(self) -> None:
         request = self._request("https://evil.example")
         self.assertFalse(same_origin(request, "https://debtcrm.duckdns.org:8443"))

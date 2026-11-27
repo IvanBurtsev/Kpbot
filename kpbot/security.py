@@ -39,28 +39,35 @@ def client_ip(request: Any, trusted_proxies: set[str]) -> str:
     return peer
 
 
+def _host_of(url: str) -> str:
+    """Имя хоста из адреса: «https://a.b:8443/x» → «a.b». Порт и схему не учитываем."""
+    text = (url or "").strip().lower()
+    if not text:
+        return ""
+    host = text.split("://", 1)[-1].split("/", 1)[0]
+    if host.startswith("["):  # IPv6 в скобках
+        return host.split("]", 1)[0] + "]"
+    return host.rsplit(":", 1)[0] if ":" in host else host
+
+
 def same_origin(request: Any, public_base_url: str) -> bool:
     """Запрос пришёл со страницы того же сайта.
 
-    Браузер присылает Origin на POST. Если он есть и не совпадает с адресом, по
-    которому открыт сервис, — это login CSRF (чужой сайт авторизует жертву в своём
-    аккаунте). Отсутствие заголовка не блокируем: старые клиенты и curl его не шлют.
+    Браузер присылает Origin на POST. Если он есть и указывает на другой сайт —
+    это login CSRF (чужой сайт авторизует жертву в своём аккаунте). Отсутствие
+    заголовка не блокируем: старые клиенты и curl его не шлют.
 
-    Свой адрес — это и `public_base_url`, и тот хост, по которому пришёл запрос:
-    владелец может открыть сервис по IP или по второму домену, и раньше такой
-    вход отвечал 403 «запрос пришёл с другого сайта» — выглядело как «пароль
-    не подходит».
+    Сравниваются имена хостов, а не полные адреса: владелец может открыть сервис
+    по IP или по второму домену (прокси при этом передаёт Host без порта, а
+    браузер шлёт Origin с портом), и раньше такой вход отвечал 403 «запрос пришёл
+    с другого сайта» — со стороны это выглядело как «пароль не подходит».
     """
     origin = (request.headers.get("origin") or "").strip().rstrip("/")
     if not origin:
         return True
-    allowed = {(public_base_url or "").strip().rstrip("/")}
-    host = (request.headers.get("host") or "").strip()
-    if host:
-        scheme = (request.headers.get("x-forwarded-proto") or request.url.scheme or "http").strip()
-        allowed.add(f"{scheme}://{host}")
+    allowed = {_host_of(public_base_url), _host_of(request.headers.get("host") or "")}
     allowed.discard("")
-    return origin in allowed
+    return _host_of(origin) in allowed
 
 
 def _hmac(secret: str, payload: str) -> str:
