@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS cabinet_users(
     password_hash TEXT NOT NULL,
     created_at    TEXT NOT NULL,
     deleted_at    TEXT,
+    password_changed_at TEXT,
     FOREIGN KEY(company_id) REFERENCES cabinet_companies(id)
 );
 
@@ -132,6 +133,11 @@ class CabinetStore:
     def init_schema(self) -> None:
         with closing(self._connect()) as conn, conn:
             conn.executescript(SCHEMA)
+            # базы, созданные до появления поля, получают его мягкой миграцией
+            try:
+                conn.execute("ALTER TABLE cabinet_users ADD COLUMN password_changed_at TEXT")
+            except sqlite3.OperationalError:
+                pass
 
     # ---------- компании ----------
 
@@ -241,6 +247,19 @@ class CabinetStore:
         user.pop("salt", None)
         user.pop("password_hash", None)
         return user
+
+    def set_password(self, user_id: str, password: str) -> None:
+        """Меняет пароль и обрывает ранее выданные cookie (password_changed_at)."""
+        if len(password or "") < 8:
+            raise ValueError("пароль короче 8 символов")
+        salt, digest = hash_password(password)
+        self.init_schema()
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "UPDATE cabinet_users SET salt = ?, password_hash = ?, password_changed_at = ?"
+                " WHERE id = ?",
+                (salt, digest, _utcnow(), user_id),
+            )
 
     def user_by_id(self, user_id: str) -> dict | None:
         self.init_schema()

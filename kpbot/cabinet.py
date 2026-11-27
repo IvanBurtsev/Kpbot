@@ -34,6 +34,7 @@ from .security import (
     csrf_for,
     make_user_session,
     same_origin,
+    session_issued_at,
     user_from_session,
     verify_csrf,
 )
@@ -71,11 +72,31 @@ def _session(request: Request) -> str | None:
     return request.cookies.get(CLIENT_COOKIE)
 
 
+def _changed_ts(value: object) -> float:
+    """ISO-время смены пароля → epoch; пустое/битое — 0."""
+    text = str(value or "")
+    if not text:
+        return 0.0
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
 def _user(request: Request) -> dict | None:
-    user_id = user_from_session(settings.session_secret, _session(request), settings.session_ttl_seconds)
+    token = _session(request)
+    user_id = user_from_session(settings.session_secret, token, settings.session_ttl_seconds)
     if not user_id:
         return None
-    return cabinet_store().user_by_id(user_id)
+    user = cabinet_store().user_by_id(user_id)
+    if user is None:
+        return None
+    changed = _changed_ts(user.get("password_changed_at"))
+    if changed:
+        issued = session_issued_at(settings.session_secret, token, settings.session_ttl_seconds)
+        if issued is None or issued + 1 < changed:
+            return None
+    return user
 
 
 def _company(request: Request, user: dict) -> dict | None:
@@ -241,6 +262,58 @@ def logout(request: Request):
     response = RedirectResponse("/cabinet/login", status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie(CLIENT_COOKIE, path="/")
     response.delete_cookie(CLIENT_TENANT_COOKIE, path="/")
+    return response
+
+
+@router.get("/password", response_class=HTMLResponse)
+def password_form(request: Request, flash: str = "", error: str = ""):
+    user = _user(request)
+    if user is None:
+        return _login_redirect(request)
+    return _page(
+        request,
+        "cabinet/password.html",
+        user=user,
+        company=_company(request, user),
+        flash=flash[:200],
+        error=error[:300],
+    )
+
+
+@router.post("/password")
+async def password_change(request: Request):
+    """Смена своего пароля. После неё старая сессия недействительна."""
+    user = _user(request)
+    if user is None:
+        return _login_redirect(request)
+    form = await request.form()
+    if not _check_csrf(request, form):
+        return PlainTextResponse("csrf failed", status_code=403)
+    company = _company(request, user)
+    current = str(form.get("current", ""))
+    new = str(form.get("new", ""))
+    repeat = str(form.get("repeat", ""))
+    if new != repeat:
+        return _page(
+            request, "cabinet/password.html", code=400, user=user, company=company,
+            error="новые пароли не совпадают",
+        )
+    if cabinet_store().authenticate(user["email"], current) is None:
+        return _page(
+            request, "cabinet/password.html", code=400, user=user, company=company,
+            error="текущий пароль неверен",
+        )
+    try:
+        cabinet_store().set_password(user["id"], new)
+    except ValueError as exc:
+        return _page(
+            request, "cabinet/password.html", code=400, user=user, company=company, error=str(exc)
+        )
+    response = RedirectResponse(
+        f"/cabinet/login?flash={quote('пароль изменён — войдите заново')}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    response.delete_cookie(CLIENT_COOKIE, path="/")
     return response
 
 

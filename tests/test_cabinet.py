@@ -3,6 +3,7 @@
 import support  # общий стенд: изолированные данные, сеть запрещена
 
 import re
+import time
 import unittest
 import uuid
 from decimal import Decimal
@@ -137,6 +138,61 @@ class IsolationTest(CabinetBase):
         self.assertEqual(CabinetStore(settings.db_path).list_orders(other_user["company_id"]), [])
 
 
+class PasswordChangeTest(CabinetBase):
+    def test_password_change_revokes_sessions(self) -> None:
+        page = self.client.get("/cabinet/password")
+        self.assertEqual(page.status_code, 200)
+        # в токене время с точностью до секунды — ждём смену секунды
+        time.sleep(1.1)
+        changed = self.client.post(
+            "/cabinet/password",
+            data={
+                "csrf_token": self.csrf,
+                "current": self.password,
+                "new": "new-password-1",
+                "repeat": "new-password-1",
+            },
+        )
+        self.assertEqual(changed.status_code, 303)
+        self.assertEqual(self.client.get("/cabinet").status_code, 303)
+
+        fresh = TestClient(app, follow_redirects=False)
+        old = fresh.post(
+            "/cabinet/login", data={"email": self.user["email"], "password": self.password}
+        )
+        self.assertEqual(old.status_code, 401)
+        new = fresh.post(
+            "/cabinet/login", data={"email": self.user["email"], "password": "new-password-1"}
+        )
+        self.assertEqual(new.status_code, 303)
+
+    def test_wrong_current_password_is_rejected(self) -> None:
+        response = self.client.post(
+            "/cabinet/password",
+            data={
+                "csrf_token": self.csrf,
+                "current": "wrong-pass-1",
+                "new": "new-password-1",
+                "repeat": "new-password-1",
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("неверен", response.text)
+
+    def test_password_mismatch_is_rejected(self) -> None:
+        response = self.client.post(
+            "/cabinet/password",
+            data={
+                "csrf_token": self.csrf,
+                "current": self.password,
+                "new": "new-password-1",
+                "repeat": "other-password-1",
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("не совпадают", response.text)
+
+
 class AdminAndDocsTest(CabinetBase):
     def _order(self) -> str:
         self.client.post("/cabinet/cart/add",
@@ -184,6 +240,30 @@ class AdminAndDocsTest(CabinetBase):
         self.assertEqual(self.cabinet.order(order_id)["status"], "shipped")
         page = self.client.get(f"/cabinet/orders/{order_id}")
         self.assertIn("Отгружен", page.text)
+
+    def test_supplier_resets_client_password(self) -> None:
+        admin = self._supplier()
+        page = admin.get("/ui/admin?tab=clients")
+        token = csrf_from(page.text)
+        response = admin.post(
+            f"/ui/admin/clients/{self.company['id']}/users/{self.user['id']}/password",
+            data={"csrf_token": token},
+        )
+        self.assertEqual(response.status_code, 200)
+        found = re.search(r"новый пароль для [^:]+: (\S+)", response.text)
+        self.assertIsNotNone(found)
+        new_password = found.group(1)
+
+        fresh = TestClient(app, follow_redirects=False)
+        login = fresh.post(
+            "/cabinet/login", data={"email": self.user["email"], "password": new_password}
+        )
+        self.assertEqual(login.status_code, 303)
+        # старый пароль больше не работает
+        old = TestClient(app, follow_redirects=False).post(
+            "/cabinet/login", data={"email": self.user["email"], "password": self.password}
+        )
+        self.assertEqual(old.status_code, 401)
 
     def test_order_shows_supplier_request_status(self) -> None:
         order_id = self._order()

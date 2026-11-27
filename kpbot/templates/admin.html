@@ -153,7 +153,15 @@
           </span>
         </td>
         <td data-label="Пользователи" class="small">
-          {% for u in c.users %}{{ u.email }} · {{ u.role }}<br>{% else %}<span class="muted">нет</span>{% endfor %}
+          {% for u in c.users %}
+          <div style="margin-bottom:4px">
+            {{ u.email }} · {{ u.role }}
+            <form method="post" action="/ui/admin/clients/{{ c.id }}/users/{{ u.id }}/password" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="mini" type="submit">Сбросить пароль</button>
+            </form>
+          </div>
+          {% else %}<span class="muted">нет</span>{% endfor %}
         </td>
         <td data-label="Действия">
           <div class="form-actions">

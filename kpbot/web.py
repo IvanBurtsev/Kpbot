@@ -1162,6 +1162,27 @@ async def ui_admin_client_user(request: Request, company_id: str):
     return await render_admin(request, tab="clients", flash=message[:300])
 
 
+@app.post("/ui/admin/clients/{company_id}/users/{user_id}/password")
+async def ui_admin_client_user_password(request: Request, company_id: str, user_id: str):
+    """Сброс пароля клиентского пользователя: новый показывается один раз."""
+    denied = admin_only(request)
+    if denied is not None:
+        return denied
+    await verified_form(request)
+    cabinet = CabinetStore(current_supplier_db(settings.db_path))
+    user = cabinet.user_by_id(user_id)
+    if user is None or user["company_id"] != company_id:
+        return RedirectResponse(
+            f"/ui/admin?tab=clients&flash={quote('пользователь не найден')}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    password = secrets.token_urlsafe(9)
+    cabinet.set_password(user_id, password)
+    store.log_event("client_password_reset", actor_of(request), user["email"])
+    message = f"новый пароль для {user['email']}: {password} — покажите один раз"
+    return await render_admin(request, tab="clients", flash=message[:300])
+
+
 @app.post("/ui/admin/orders/{order_id}/status")
 async def ui_admin_order_status(request: Request, order_id: str):
     denied = admin_only(request)

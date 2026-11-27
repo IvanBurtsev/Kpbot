@@ -15,6 +15,7 @@
     <a href="/cabinet/catalog"{% if active == "catalog" %} class="active"{% endif %}>Каталог</a>
     <a href="/cabinet/cart"{% if active == "cart" %} class="active"{% endif %}>Корзина</a>
     <a href="/cabinet/orders"{% if active == "orders" %} class="active"{% endif %}>Заказы</a>
+    <a href="/cabinet/password"{% if active == "password" %} class="active"{% endif %}>Пароль</a>
     <span class="badge">{{ company.name }}</span>
     <span class="muted small">{{ "администратор" if is_admin else "менеджер" }}</span>
     <form method="post" action="/cabinet/logout" class="inline">
