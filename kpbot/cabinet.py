@@ -27,7 +27,7 @@ from .cabinet_store import (
 )
 from .config import settings
 from .domain import LineStatus, PriceItem, RfqLine, ValidationError, price_quote
-from .pipeline import calc_settings
+from .pipeline import calc_settings, tenant_out_dir
 from .mailer import MailError, Mailer
 from .render import html_to_pdf, render_template
 from .security import (
@@ -77,6 +77,16 @@ def _session(request: Request) -> str | None:
     return request.cookies.get(CLIENT_COOKIE)
 
 
+def _client_tenant_id(request: Request) -> str:
+    """Код поставщика, в чей кабинет вошёл покупатель (для привязки сессии)."""
+    code = user_from_session(
+        settings.session_secret, request.cookies.get(CLIENT_TENANT_COOKIE), 86400 * 30
+    )
+    if code and _resolve_tenant(code):
+        return code
+    return "default"
+
+
 def _changed_ts(value: object) -> float:
     """ISO-время смены пароля → epoch; пустое/битое — 0."""
     text = str(value or "")
@@ -90,8 +100,13 @@ def _changed_ts(value: object) -> float:
 
 def _user(request: Request) -> dict | None:
     token = _session(request)
-    user_id = user_from_session(settings.session_secret, token, settings.session_ttl_seconds)
-    if not user_id:
+    sub = user_from_session(settings.session_secret, token, settings.session_ttl_seconds)
+    if not sub:
+        return None
+    # Вход покупателя привязан к поставщику: сессия одного кабинета не действует
+    # в базе другого, даже если подменить куку клиента.
+    tenant_id, _, user_id = sub.partition(":")
+    if not user_id or tenant_id != _client_tenant_id(request):
         return None
     user = cabinet_store().user_by_id(user_id)
     if user is None:
@@ -240,7 +255,11 @@ async def login(request: Request):
                      error="доступ компании приостановлен, обратитесь к поставщику",
                      user=None, company=None,
                      tenant_code=tenant["id"] if tenant else "", tenant_name=tenant["name"] if tenant else "")
-    token = make_user_session(settings.session_secret, user["id"], settings.session_ttl_seconds)
+    token = make_user_session(
+        settings.session_secret,
+        f"{tenant['id'] if tenant else _client_tenant_id(request)}:{user['id']}",
+        settings.session_ttl_seconds,
+    )
     response = RedirectResponse("/cabinet", status_code=status.HTTP_303_SEE_OTHER)
     if tenant is not None:
         response.set_cookie(
@@ -822,7 +841,7 @@ def order_doc(request: Request, order_id: str, kind: str):
         vat_rate=calc_settings(supplier_store(), settings).vat_rate,
         valid_until=valid_until,
     )
-    html_path = settings.out_dir / f"cabinet-{order_id}-{kind}.html"
+    html_path = tenant_out_dir(settings, supplier_store().db_path) / f"cabinet-{order_id}-{kind}.html"
     html_path.parent.mkdir(parents=True, exist_ok=True)
     html_path.write_text(body, encoding="utf-8")
     pdf_path = html_path.with_suffix(".pdf")

@@ -6,6 +6,7 @@ import logging
 import re
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -79,22 +80,44 @@ class IngestResult:
 
 
 class Pipeline:
+    # Сколько индексов прайса держим в памяти. Сервис обслуживает десятки клиентов:
+    # без ограничения память растёт вместе с их числом, а пересборка индекса на
+    # 10 000 позиций — это чтение базы и токенизация, около секунды.
+    MAX_CACHED_INDEXES = 8
+
     def __init__(self, store: Store, cfg: Settings | None = None) -> None:
         self.store = store
         self.cfg = cfg or default_settings
         self.extractor = build_extractor(self.cfg)
         self.notifier = Notifier.from_settings(self.cfg)
-        self._index: PriceIndex | None = None
-        self._index_key: tuple[int, str] | None = None
+        # Кэш индекса — строго на клиента. Общий кэш на всех означал бы, что один
+        # поставщик считает по прайсу другого: одинаковые (число позиций, время
+        # обновления) у копии базы давали один и тот же ключ.
+        self._indexes: OrderedDict[str, tuple[tuple[int, str], PriceIndex]] = OrderedDict()
+
+    def tenant_key(self) -> str:
+        """Кто это: путь базы клиента. Ключ для всего, что живёт в памяти и файлах."""
+        return str(getattr(self.store, "db_path", "") or "default")
+
+    def out_dir(self) -> Path:
+        """Папка файлов клиента: у каждого своя, чтобы документы не пересекались."""
+        return tenant_out_dir(self.cfg, self.tenant_key())
 
     def price_index(self) -> PriceIndex:
-        """Индекс прайса кэшируется и пересобирается только при изменении прайса."""
+        """Индекс прайса кэшируется по клиенту и пересобирается при изменении прайса."""
+        tenant = self.tenant_key()
         key = (self.store.price_count(), self.store.price_updated_at())
-        if self._index is None or self._index_key != key:
-            self._index = PriceIndex(self.store.price_items())
-            self._index_key = key
-            log.info("индекс прайса собран: %s позиций", len(self._index))
-        return self._index
+        cached = self._indexes.get(tenant)
+        if cached is not None and cached[0] == key:
+            self._indexes.move_to_end(tenant)
+            return cached[1]
+        index = PriceIndex(self.store.price_items())
+        self._indexes[tenant] = (key, index)
+        self._indexes.move_to_end(tenant)
+        while len(self._indexes) > self.MAX_CACHED_INDEXES:
+            self._indexes.popitem(last=False)
+        log.info("индекс прайса собран: %s позиций (%s)", len(index), Path(tenant).name)
+        return index
 
     def calc(self) -> CalcSettings:
         """Ставка НДС, режим цен и доставка этого клиента.
@@ -608,13 +631,13 @@ class Pipeline:
             self.store.log(rfq_id, "render_error", "system", str(exc)[:500])
             return result
 
-        html_path = write_html(self.cfg.out_dir / f"{rfq_id}.html", html)
+        html_path = write_html(self.out_dir() / f"{rfq_id}.html", html)
         self.store.add_artifact(rfq_id, "kp_html", html_path, sha256_bytes(html_path.read_bytes()))
         result["html"] = html_path
 
         try:
             docx_path = render_quote_docx(
-                self.cfg.out_dir / f"{rfq_id}.docx",
+                self.out_dir() / f"{rfq_id}.docx",
                 company=company,
                 client=client,
                 rfq=rfq_meta,
@@ -627,7 +650,7 @@ class Pipeline:
             log.warning("DOCX не создан: %s", exc)
             self.store.log(rfq_id, "docx_skipped", "system", str(exc)[:300])
 
-        pdf_path = self.cfg.out_dir / f"{rfq_id}.pdf"
+        pdf_path = self.out_dir() / f"{rfq_id}.pdf"
         ok, reason = False, "PDF отключён настройкой"
         if self.cfg.pdf_enabled and self._pdf_allowed():
             ok, reason = html_to_pdf(html_path, pdf_path)
@@ -690,9 +713,9 @@ class Pipeline:
             lines=len(rfq.get("lines", [])),
             matched=len(quote.get("lines", [])),
             total=str(quote.get("total", "0.00")),
-            html_path=str(self.cfg.out_dir / f"{rfq_id}.html"),
-            docx_path=str(self.cfg.out_dir / f"{rfq_id}.docx"),
-            pdf_path=str(self.cfg.out_dir / f"{rfq_id}.pdf"),
+            html_path=str(self.out_dir() / f"{rfq_id}.html"),
+            docx_path=str(self.out_dir() / f"{rfq_id}.docx"),
+            pdf_path=str(self.out_dir() / f"{rfq_id}.pdf"),
             reply_text=reply,
         )
 
@@ -712,7 +735,7 @@ class Pipeline:
             body=body,
             in_reply_to=rfq.get("message_id"),
         )
-        path = self.cfg.out_dir / "sent" / f"{rfq_id}.eml"
+        path = self.out_dir() / "sent" / f"{rfq_id}.eml"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(raw)
         return path
@@ -721,6 +744,27 @@ class Pipeline:
 def _money_text(value: object) -> str:
     amount = Decimal(str(value or "0"))
     return f"{amount:,.2f}".replace(",", " ").replace(".", ",")
+
+
+def tenant_out_dir(cfg, db_path: str | Path) -> Path:
+    """Папка документов клиента.
+
+    Основной клиент остаётся в прежней папке (совместимость с уже выпущенными КП),
+    остальные — в `<data>/clients/<имя базы>/out`. Физическое разделение нужно не
+    только для порядка: по нему видно, что один клиент не откроет документ другого,
+    даже зная идентификатор заявки.
+    """
+    text = str(db_path or "").strip()
+    if not text:
+        return cfg.out_dir
+    path = Path(text)
+    try:
+        if path.resolve() == Path(cfg.db_path).resolve():
+            return cfg.out_dir
+    except OSError:
+        pass
+    key = re.sub(r"[^A-Za-z0-9_.-]+", "_", path.stem)[:64] or "client"
+    return cfg.data_dir / "clients" / key / "out"
 
 
 def _money_value(value: object) -> Decimal:

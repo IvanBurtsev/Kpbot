@@ -110,6 +110,27 @@ async def hardening(request: Request, call_next):
     length = request.headers.get("content-length")
     if length and length.isdigit() and int(length) > settings.max_upload_bytes + 128 * 1024:
         return PlainTextResponse("payload too large", status_code=413)
+
+    # Кука клиента есть, а базы нет (удалена, переименована, клиент приостановлен):
+    # запрос нельзя молча переводить в основную базу — это показало бы одному
+    # поставщику данные другого. Но и страницу входа блокировать нельзя: со
+    # «зависшей» кукой человек не сможет войти вообще.
+    stale_tenant = bool(request.cookies.get(TENANT_COOKIE)) and tenant_db_from_request(request) is None
+    stale_client = (
+        bool(request.cookies.get(CLIENT_TENANT_COOKIE))
+        and client_tenant_db_from_request(request) is None
+    )
+    login_path = request.url.path in ("/ui/login", "/cabinet/login")
+    if (stale_tenant or stale_client) and not login_path:
+        log.warning("кука клиента не разрешилась (%s) — сбрасываю", request.url.path)
+        if stale_tenant:
+            response = RedirectResponse("/ui/login", status_code=status.HTTP_303_SEE_OTHER)
+            response.delete_cookie(TENANT_COOKIE, path="/")
+        else:
+            response = RedirectResponse("/cabinet/login", status_code=status.HTTP_303_SEE_OTHER)
+            response.delete_cookie(CLIENT_TENANT_COOKIE, path="/")
+        return response
+
     tenant_token = supplier_db.set(request_tenant_path(request))
     client_token = client_db.set(client_tenant_db_from_request(request))
     request_token = _CURRENT_REQUEST.set(request)
@@ -123,6 +144,13 @@ async def hardening(request: Request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("Content-Security-Policy", CSP)
+    if login_path and request.method == "GET":
+        # на странице входа забываем испорченную куку; при успешном входе новая
+        # кука выставляется обработчиком, и затирать её нельзя
+        if stale_tenant:
+            response.delete_cookie(TENANT_COOKIE, path="/")
+        if stale_client:
+            response.delete_cookie(CLIENT_TENANT_COOKIE, path="/")
     if settings.public_base_url.lower().startswith("https"):
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     response.headers.setdefault("X-Request-ID", request_id)
@@ -144,6 +172,7 @@ async def check_production_config() -> None:
     created = store.ensure_default_admin(settings.ui_password)
     if created is not None:
         log.info("создан администратор %s (пароль — из KPBOT_UI_PASSWORD)", created.email)
+    _audit_tenants()
     if not settings.is_production:
         return
     problems = settings.production_problems()
@@ -152,6 +181,25 @@ async def check_production_config() -> None:
             "нельзя запускаться в проде с такой конфигурацией:\n  - " + "\n  - ".join(problems)
         )
     log.info("конфигурация прода прошла проверку")
+
+
+def _audit_tenants() -> None:
+    """Кто обслуживается и всё ли на месте.
+
+    Клиент без файла базы — это не «пустой клиент», а отказ в обслуживании:
+    запросы к нему отклоняются, и владелец должен узнать об этом из журнала, а не
+    от клиента.
+    """
+    tenants = registry.list()
+    active = [t for t in tenants if t["status"] == "active"]
+    log.info("клиентов в реестре: %s (активных %s)", len(tenants), len(active))
+    for tenant in active:
+        if not Path(tenant["db_path"]).exists():
+            log.error(
+                "база клиента %s (%s) не найдена — его запросы будут отклонены",
+                tenant["id"],
+                tenant["db_path"],
+            )
 
 
 @app.get("/healthz", include_in_schema=False)
@@ -240,15 +288,21 @@ def client_tenant_db_from_request(request: Request) -> Path | None:
 
 
 def _api_key_ok(request: Request) -> bool:
-    """Ключ API: свой у клиента (вместе с X-Tenant) или общий ключ владельца."""
+    """Ключ API. Ключ клиента работает только со своим клиентом.
+
+    Общий ключ владельца адресует только основную базу: иначе утечка одного ключа
+    открывала бы заявки и финансы всех клиентов (аудит, дефект 23). Владельцу для
+    работы в чужой базе нужен ключ этого клиента — он выдаётся в `/ui/ops`.
+    """
     provided = request.headers.get("x-api-key") or ""
     if not provided:
         return False
     code = (request.headers.get("x-tenant") or "").strip()
     if code:
         tenant = registry.get(code)
-        if tenant and tenant["status"] == "active" and registry.verify_key(tenant["id"], provided):
-            return True
+        if not tenant or tenant["status"] != "active":
+            return False
+        return registry.verify_key(tenant["id"], provided)
     return constant_time_equal(provided, settings.api_key)
 
 
@@ -285,6 +339,28 @@ def _changed_at_timestamp(value: str) -> float:
         return 0.0
 
 
+def current_supplier_tenant(request: Request) -> str:
+    """Код клиента, в чьей базе работает этот запрос (для привязки сессии)."""
+    code = user_from_session(
+        settings.session_secret, request.cookies.get(TENANT_COOKIE), 86400 * 30
+    )
+    if code and registry.get(code):
+        return code
+    header = (request.headers.get("x-tenant") or "").strip()
+    if header and request_tenant_path(request) is not None and registry.get(header):
+        return header
+    return "default"
+
+
+def _session_sub(tenant_id: str, user_id: str) -> str:
+    """Кому выдан вход: клиент и человек.
+
+    Без клиента в сессии вход одного поставщика принимался бы в базе другого:
+    сессия — это просто подписанный id, и проверять его нужно в своём контексте.
+    """
+    return f"{tenant_id}:{user_id}"
+
+
 def current_user(request: Request) -> User | None:
     """Кто пришёл: из подписанной куки. None — не авторизован.
 
@@ -292,10 +368,22 @@ def current_user(request: Request) -> User | None:
     сотрудник или украденный ноутбук работал бы до истечения TTL.
     """
     token = session_of(request)
-    user_id = user_from_session(settings.session_secret, token, settings.session_ttl_seconds)
-    if not user_id:
+    sub = user_from_session(settings.session_secret, token, settings.session_ttl_seconds)
+    if not sub:
         return None
-    user = store.user_by_id(user_id)
+    tenant_id, _, user_id = sub.partition(":")
+    if not user_id:
+        # сессия старого формата (без клиента) — просим войти заново
+        return None
+    current = current_supplier_tenant(request)
+    if tenant_id == current:
+        user = store.user_by_id(user_id)
+    elif tenant_id == "default":
+        # Владелец сервиса: учётка в основной базе, он смотрит клиентов по /ui/ops.
+        owner = Store(settings.db_path).user_by_id(user_id)
+        user = owner if (owner is not None and owner.is_admin) else None
+    else:
+        user = None
     if user is None:
         return None
     changed = _changed_at_timestamp(user.password_changed_at)
@@ -440,7 +528,12 @@ async def ui_login(request: Request):
                 user, tenant_id = candidate, tenant["id"]
                 break
     if user is not None:
-        token = make_user_session(settings.session_secret, user.id, settings.session_ttl_seconds)
+        # Сессия помнит, чьей базы этот человек: вход одного поставщика не должен
+        # открывать админку другого даже при подменённой куке клиента.
+        home = tenant_id or current_supplier_tenant(request)
+        token = make_user_session(
+            settings.session_secret, _session_sub(home, user.id), settings.session_ttl_seconds
+        )
     elif not email and constant_time_equal(password, settings.ui_password):
         if not settings.shared_login_allowed:
             return page(
@@ -1528,7 +1621,7 @@ async def ui_kp_html(request: Request, rfq_id: str):
     if not is_authenticated(request):
         return login_redirect(request)
     ensure_rfq_id(rfq_id)
-    path = settings.out_dir / f"{rfq_id}.html"
+    path = pipeline.out_dir() / f"{rfq_id}.html"
     if not path.exists():
         raise HTTPException(status_code=404, detail="КП ещё не сформировано")
     return FileResponse(path, media_type="text/html", filename=f"kp-{rfq_id[:8]}.html")
@@ -1539,7 +1632,7 @@ async def ui_kp_pdf(request: Request, rfq_id: str):
     if not is_authenticated(request):
         return login_redirect(request)
     ensure_rfq_id(rfq_id)
-    path = settings.out_dir / f"{rfq_id}.pdf"
+    path = pipeline.out_dir() / f"{rfq_id}.pdf"
     if not path.exists():
         raise HTTPException(status_code=404, detail="PDF не сформирован — смотрите HTML или DOCX")
     return FileResponse(path, media_type="application/pdf", filename=f"kp-{rfq_id[:8]}.pdf")
@@ -1551,7 +1644,7 @@ async def ui_kp_docx(request: Request, rfq_id: str):
     if not is_authenticated(request):
         return login_redirect(request)
     ensure_rfq_id(rfq_id)
-    path = settings.out_dir / f"{rfq_id}.docx"
+    path = pipeline.out_dir() / f"{rfq_id}.docx"
     if not path.exists():
         raise HTTPException(status_code=404, detail="DOCX не сформирован")
     # без расширения в пути и с потоком байтов: CDN-ы придерживают офисные файлы
@@ -1753,7 +1846,7 @@ async def ui_rfq_send(request: Request, rfq_id: str):
     body = str(form.get("body", "")).strip() or build_reply_text_from_store(
         rfq, quote, rfq_id, pipeline.company(), valid_days=settings.quote_valid_days
     )
-    attachments = load_attachments(settings.out_dir, rfq_id, short=rfq_id[:8])
+    attachments = load_attachments(pipeline.out_dir(), rfq_id, short=rfq_id[:8])
     message = build_kp_message(
         sender=to,
         from_addr=mailer.from_addr or settings.smtp_user or "no-reply@localhost",
@@ -1858,6 +1951,10 @@ class RfqIn(BaseModel):
 def api_auth(request: Request) -> None:
     if not _api_key_ok(request):
         raise HTTPException(status_code=401, detail="invalid api key")
+    # X-Tenant с чужим (или общим) ключом не должен молча уехать в основную базу:
+    # клиент просил одну базу, а записал бы в другую — это потеря данных.
+    if (request.headers.get("x-tenant") or "").strip() and request_tenant_path(request) is None:
+        raise HTTPException(status_code=401, detail="ключ не подходит к этому клиенту")
 
 
 @app.get("/api/v1/health")

@@ -456,8 +456,8 @@ def _poll_mailbox(pipeline: Pipeline, mailbox: ImapMailbox, args: argparse.Names
         print(f"помечено прочитанными: {len(processed)}")
 
     if skipped:
-        _log_skipped(skipped)
-        print(f"не заявки: {len(skipped)} — записаны в {settings.out_dir / 'skipped.jsonl'}")
+        _log_skipped(skipped, pipeline.out_dir())
+        print(f"не заявки: {len(skipped)} — записаны в {pipeline.out_dir() / 'skipped.jsonl'}")
         if settings.imap_mark_seen and settings.imap_mark_skipped:
             mailbox.mark_seen([item["uid"] for item in skipped])
             print("не заявки помечены прочитанными, чтобы не разбирать их повторно")
@@ -471,10 +471,11 @@ def _peek_subject(raw: bytes) -> tuple[str, str]:
     return parsed.subject[:200], parsed.sender[:200]
 
 
-def _log_skipped(items: list[dict[str, str]]) -> None:
+def _log_skipped(items: list[dict[str, str]], out_dir: Path | None = None) -> None:
     import json
 
-    path = settings.out_dir / "skipped.jsonl"
+    # Пропущенные письма содержат отправителя и тему (ПДн): пишем в папку клиента.
+    path = (out_dir or settings.out_dir) / "skipped.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         for item in items:
