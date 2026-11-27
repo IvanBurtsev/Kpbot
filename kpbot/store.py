@@ -225,6 +225,11 @@ class Store:
                     conn.execute("ALTER TABLE users ADD COLUMN deleted_at TEXT")
                 except sqlite3.OperationalError:
                     pass
+                # версия сессии: после смены пароля старые cookie должны умереть
+                try:
+                    conn.execute("ALTER TABLE users ADD COLUMN password_changed_at TEXT")
+                except sqlite3.OperationalError:
+                    pass
             _INITIALIZED.add(key)
 
     # ---------- прайс ----------
@@ -901,8 +906,10 @@ class Store:
             raise ValueError("пароль короче 8 символов")
         salt, digest = hash_password(password)
         with closing(self._connect()) as conn, conn:
+            # Время смены пароля обрывает все выданные ранее cookie этого человека.
             conn.execute(
-                "UPDATE users SET salt = ?, password_hash = ? WHERE id = ?", (salt, digest, user_id)
+                "UPDATE users SET salt = ?, password_hash = ?, password_changed_at = ? WHERE id = ?",
+                (salt, digest, utcnow(), user_id),
             )
 
     def delete_user(self, user_id: str) -> None:
@@ -957,12 +964,19 @@ class Store:
     def user_by_id(self, user_id: str) -> User | None:
         with closing(self._connect()) as conn:
             row = conn.execute(
-                "SELECT id, email, role, name FROM users WHERE id = ? AND deleted_at IS NULL",
+                "SELECT id, email, role, name, password_changed_at FROM users"
+                " WHERE id = ? AND deleted_at IS NULL",
                 (user_id,),
             ).fetchone()
         if row is None:
             return None
-        return User(id=row["id"], email=row["email"], role=row["role"], name=row["name"])
+        return User(
+            id=row["id"],
+            email=row["email"],
+            role=row["role"],
+            name=row["name"],
+            password_changed_at=row["password_changed_at"] or "",
+        )
 
     def set_assignee(self, rfq_id: str, user_id: str | None) -> None:
         with closing(self._connect()) as conn, conn:

@@ -4,18 +4,26 @@
 <meta charset="utf-8">
 <title>{{ title }} {{ order.number }}</title>
 <style>
-  body { font: 14px/1.45 "Segoe UI", Arial, sans-serif; color:#111827; margin: 32px; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
+  body { font: 13px/1.45 "Segoe UI", Arial, sans-serif; color:#111827; margin: 28px; }
+  h1 { font-size: 19px; margin: 0 0 4px; }
+  h2 { font-size: 14px; margin: 18px 0 6px; }
   .muted { color:#6b7280; }
-  .row { display:flex; justify-content:space-between; gap:24px; }
-  table { width:100%; border-collapse:collapse; margin-top:16px; }
-  th, td { border-bottom:1px solid #e5e7eb; padding:8px 6px; text-align:left; }
-  th { background:#f3f4f6; font-weight:600; }
+  .small { font-size: 11px; }
+  .row { display:flex; justify-content:space-between; gap:24px; align-items:flex-start; }
+  .box { border:1px solid #e5e7eb; border-radius:8px; padding:10px 12px; }
+  .box b { display:block; margin-bottom:2px; }
+  table { width:100%; border-collapse:collapse; margin-top:14px; }
+  th, td { border:1px solid #d1d5db; padding:6px 6px; text-align:left; vertical-align:top; }
+  th { background:#f3f4f6; font-weight:600; font-size:11px; }
   td.num, th.num { text-align:right; white-space:nowrap; }
-  .total { font-size:16px; font-weight:700; text-align:right; margin-top:12px; }
-  .sign { margin-top:48px; display:flex; justify-content:space-between; gap:40px; }
-  .sign div { flex:1; border-top:1px solid #9ca3af; padding-top:6px; }
-  @media print { body { margin: 12mm; } }
+  tfoot td { font-weight:600; }
+  .total { font-size:16px; font-weight:700; text-align:right; margin-top:10px; }
+  .note { margin-top:12px; padding:8px 10px; border-left:3px solid #d99000; background:#fff7e6; font-size:11px; }
+  .note.bad { border-color:#b42318; background:#fef3f2; color:#7a271a; }
+  .sign { margin-top:36px; display:flex; justify-content:space-between; gap:32px; }
+  .sign > div { flex:1; }
+  .sign .line { display:block; border-bottom:1px solid #9ca3af; height:22px; margin-bottom:4px; }
+  @media print { body { margin: 10mm; } }
 </style>
 </head>
 <body>
@@ -23,42 +31,130 @@
     <div>
       <h1>{{ seller.get("company_name") or "Поставщик" }}</h1>
       <div class="muted">ИНН {{ seller.get("company_inn") or "—" }} · КПП {{ seller.get("company_kpp") or "—" }}</div>
-      <div class="muted">{{ seller.get("company_address") or "" }}</div>
-      <div class="muted">{{ seller.get("company_phone") or "" }} · {{ seller.get("company_email") or "" }}</div>
+      {% if seller.get("company_address") %}<div class="muted">{{ seller.get("company_address") }}</div>{% endif %}
+      <div class="muted">{{ seller.get("company_phone") or "" }}{% if seller.get("company_email") %} · {{ seller.get("company_email") }}{% endif %}</div>
     </div>
     <div style="text-align:right">
-      <h1>{{ title }}</h1>
+      <h1>{% if kind == "upd" %}Универсальный передаточный документ{% else %}{{ title }}{% endif %}</h1>
       <div>№ {{ order.number }}</div>
       <div class="muted">от {{ order.created_at[:10] }}</div>
+      {% if kind == "upd" %}<div class="small muted" style="margin-top:4px">Статус: 1 — счёт-фактура и передаточный документ</div>{% endif %}
     </div>
   </div>
 
-  <p style="margin-top:24px">
-    <b>Покупатель:</b> {{ company.name }}<br>
-    <span class="muted">ИНН {{ company.inn or "—" }} · КПП {{ company.kpp or "—" }}</span><br>
-    <span class="muted">Заказ: {{ order.number }} · статус: {{ order.status_label }}</span>
+  <div class="row" style="margin-top:18px">
+    <div class="box" style="flex:1">
+      <b>Поставщик</b>
+      {{ seller.get("company_name") or "—" }}<br>
+      <span class="muted">ИНН {{ seller.get("company_inn") or "—" }} · КПП {{ seller.get("company_kpp") or "—" }}</span><br>
+      <span class="muted">{{ seller.get("company_address") or "" }}</span>
+    </div>
+    <div class="box" style="flex:1">
+      <b>Покупатель</b>
+      {{ company.name }}<br>
+      <span class="muted">ИНН {{ company.inn or "—" }} · КПП {{ company.kpp or "—" }}</span><br>
+      <span class="muted">Заказ {{ order.number }} · {{ order.status_label }}</span>
+    </div>
+  </div>
+
+  <p class="muted small" style="margin-top:12px">
+    Основание: заказ покупателя {{ order.number }} от {{ order.created_at[:10] }}.
   </p>
 
+  {% if kind == "upd" %}
   <table>
-    <thead><tr><th>№</th><th>Товар</th><th class="num">Кол-во</th><th class="num">Цена, ₽</th><th class="num">Сумма, ₽</th></tr></thead>
+    <thead>
+      <tr>
+        <th>№</th><th>Наименование товара</th><th>Ед.</th><th class="num">Кол-во</th>
+        <th class="num">Цена, ₽</th><th class="num">Стоимость без НДС</th>
+        <th class="num">Ставка</th><th class="num">Сумма НДС</th><th class="num">С НДС</th>
+      </tr>
+    </thead>
     <tbody>
       {% for line in order.lines %}
       <tr>
         <td>{{ loop.index }}</td>
-        <td>{{ line.name }} <span class="muted">({{ line.sku }})</span></td>
+        <td>{{ line.name }} <span class="muted small">({{ line.sku }})</span></td>
+        <td>{{ line.unit }}</td>
         <td class="num">{{ line.qty|qty }}</td>
-        <td class="num">{{ "%.2f"|format(line.price|float) }}</td>
-        <td class="num">{{ "%.2f"|format(line.amount|float) }}</td>
+        <td class="num">{{ line.price|rub }}</td>
+        <td class="num">{{ line.amount|rub }}</td>
+        <td class="num">{{ (vat_rate * 100)|round(0, 'floor')|int }}%</td>
+        <td class="num">{{ (line.amount|float * vat_rate|float)|round(2) }}</td>
+        <td class="num">{{ (line.amount|float * (1 + vat_rate|float))|round(2) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="5">Всего</td>
+        <td class="num">{{ net_total|rub }}</td>
+        <td></td>
+        <td class="num">{{ vat_total|rub }}</td>
+        <td class="num">{{ total|rub }}</td>
+      </tr>
+    </tfoot>
+  </table>
+  <div class="total">Всего к оплате: {{ total|rub }} ₽</div>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>№</th><th>Товар</th><th>Ед.</th><th class="num">Кол-во</th>
+        <th class="num">Цена, ₽</th><th class="num">Сумма, ₽</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for line in order.lines %}
+      <tr>
+        <td>{{ loop.index }}</td>
+        <td>{{ line.name }} <span class="muted small">({{ line.sku }})</span></td>
+        <td>{{ line.unit }}</td>
+        <td class="num">{{ line.qty|qty }}</td>
+        <td class="num">{{ line.price|rub }}</td>
+        <td class="num">{{ line.amount|rub }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
-  <div class="total">Итого с НДС: {{ "%.2f"|format(order.total|float) }} ₽</div>
+
+  <table style="width:52%; margin-left:auto; margin-top:0">
+    <tbody>
+      <tr><td>Итого без НДС</td><td class="num">{{ net_total|rub }} ₽</td></tr>
+      <tr><td>НДС {{ (vat_rate * 100)|round(0, 'floor')|int }}%</td><td class="num">{{ vat_total|rub }} ₽</td></tr>
+      <tr><td><b>Всего к оплате</b></td><td class="num"><b>{{ total|rub }} ₽</b></td></tr>
+    </tbody>
+  </table>
+
+  {% if kind == "invoice" %}
+    {% if seller.get("company_account") and seller.get("company_bik") %}
+    <h2>Банковские реквизиты</h2>
+    <div class="box small">
+      Получатель: {{ seller.get("company_name") }} · ИНН {{ seller.get("company_inn") or "—" }} · КПП {{ seller.get("company_kpp") or "—" }}<br>
+      Р/с: <b>{{ seller.get("company_account") }}</b> в {{ seller.get("company_bank") or "банке" }}<br>
+      БИК: {{ seller.get("company_bik") }}{% if seller.get("company_corr_account") %} · К/с: {{ seller.get("company_corr_account") }}{% endif %}
+    </div>
+    {% else %}
+    <div class="note bad">
+      <b>Банковские реквизиты не заполнены.</b> Счёт нельзя оплатить по реквизитам —
+      поставщику нужно добавить расчётный счёт, банк и БИК в «Админка → Компания».
+    </div>
+    {% endif %}
+    <p style="margin-top:10px">Счёт действителен к оплате до <b>{{ valid_until }}</b>.</p>
+  {% endif %}
+  {% endif %}
+
   {% if order.comment %}<p class="muted">Комментарий: {{ order.comment }}</p>{% endif %}
 
   <div class="sign">
-    <div>Поставщик<br>{{ seller.get("company_signer") or "" }}</div>
-    <div>Покупатель<br>{{ company.name }}</div>
+    {% if kind == "upd" %}
+    <div><span class="line"></span>Руководитель<br><span class="muted small">{{ seller.get("company_signer") or "" }}</span></div>
+    <div><span class="line"></span>Главный бухгалтер</div>
+    <div><span class="line"></span>Отгрузил<br><span class="muted small">{{ seller.get("company_signer") or "" }}</span></div>
+    {% else %}
+    <div><span class="line"></span>Поставщик<br><span class="muted small">{{ seller.get("company_signer") or "" }}</span></div>
+    <div><span class="line"></span>Покупатель<br><span class="muted small">{{ company.name }}</span></div>
+    {% endif %}
   </div>
 </body>
 </html>

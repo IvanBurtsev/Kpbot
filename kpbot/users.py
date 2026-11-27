@@ -35,6 +35,8 @@ class User:
     email: str
     role: str
     name: str = ""
+    # ISO-время последней смены пароля: сессии, выданные раньше, недействительны.
+    password_changed_at: str = ""
 
     @property
     def is_admin(self) -> bool:

@@ -113,5 +113,31 @@ class ActorTest(unittest.TestCase):
             self.assertTrue(actor_of(object()).startswith("ui:"))
 
 
+class SessionRevocationTest(unittest.TestCase):
+    def test_password_change_invalidates_old_cookie(self) -> None:
+        import uuid
+
+        from fastapi.testclient import TestClient
+
+        from kpbot.web import app
+        from kpbot.web import store as web_store
+
+        email = f"revoke-{uuid.uuid4().hex[:8]}@test.ru"
+        user = web_store.create_user(email=email, password="old-password-1", role="manager")
+
+        client = TestClient(app, follow_redirects=False)
+        login = client.post("/ui/login", data={"email": email, "password": "old-password-1"})
+        self.assertEqual(login.status_code, 303)
+        self.assertEqual(client.get("/ui").status_code, 200)
+
+        # админ меняет пароль — старые cookie этого человека должны умереть
+        web_store.set_user_password(user.id, "new-password-2")
+        self.assertEqual(client.get("/ui").status_code, 303)
+
+        fresh = TestClient(app, follow_redirects=False)
+        again = fresh.post("/ui/login", data={"email": email, "password": "new-password-2"})
+        self.assertEqual(again.status_code, 303)
+
+
 if __name__ == "__main__":
     unittest.main()

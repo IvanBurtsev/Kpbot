@@ -17,6 +17,7 @@ import secrets
 import string
 import time
 import uuid
+from datetime import datetime
 from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -51,6 +52,7 @@ from .security import (
     make_session,
     make_user_session,
     same_origin,
+    session_issued_at,
     user_from_session,
     verify_csrf,
     verify_session,
@@ -244,12 +246,35 @@ def session_of(request: Request) -> str | None:
     return request.cookies.get(SESSION_COOKIE)
 
 
+def _changed_at_timestamp(value: str) -> float:
+    """ISO-время смены пароля → epoch. Пустое/битое — 0 (проверка не нужна)."""
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
 def current_user(request: Request) -> User | None:
-    """Кто пришёл: из подписанной куки. None — не авторизован."""
-    user_id = user_from_session(settings.session_secret, session_of(request), settings.session_ttl_seconds)
-    if user_id:
-        return store.user_by_id(user_id)
-    return None
+    """Кто пришёл: из подписанной куки. None — не авторизован.
+
+    Cookie, выданная до смены пароля, недействительна: иначе уволенный
+    сотрудник или украденный ноутбук работал бы до истечения TTL.
+    """
+    token = session_of(request)
+    user_id = user_from_session(settings.session_secret, token, settings.session_ttl_seconds)
+    if not user_id:
+        return None
+    user = store.user_by_id(user_id)
+    if user is None:
+        return None
+    changed = _changed_at_timestamp(user.password_changed_at)
+    if changed:
+        issued = session_issued_at(settings.session_secret, token, settings.session_ttl_seconds)
+        if issued is None or issued + 1 < changed:
+            return None
+    return user
 
 
 def is_authenticated(request: Request) -> bool:
@@ -474,7 +499,10 @@ async def ui_upload(request: Request, file: UploadFile):
 
 async def apply_company_form(form) -> None:
     """Реквизиты, цвет и логотип — общая логика для настроек и визарда."""
-    allowed = ("name", "inn", "kpp", "address", "phone", "email", "signer", "signature", "kp_intro")
+    allowed = (
+        "name", "inn", "kpp", "address", "phone", "email", "signer", "signature", "kp_intro",
+        "account", "bank", "bik", "corr_account",
+    )
     values = {f"company_{key}": str(form.get(key, "")).strip()[:500] for key in allowed}
 
     color = str(form.get("color", "")).strip()

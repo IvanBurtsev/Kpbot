@@ -190,8 +190,27 @@ class AdminAndDocsTest(CabinetBase):
         doc = self.client.get(f"/cabinet/orders/{order_id}/doc/invoice")
         self.assertEqual(doc.status_code, 200)
         self.assertIn(self.cabinet.order(order_id)["number"], doc.text)
+        self.assertIn("Всего к оплате", doc.text)
+        self.assertIn("НДС", doc.text)
+        # реквизиты не настроены в тестовой базе — документ обязан сказать это прямо
+        self.assertIn("Банковские реквизиты не заполнены", doc.text)
+
+        upd = self.client.get(f"/cabinet/orders/{order_id}/doc/upd")
+        self.assertEqual(upd.status_code, 200)
+        self.assertIn("Универсальный передаточный документ", upd.text)
+        self.assertIn("Главный бухгалтер", upd.text)
+
         act = self.client.get("/cabinet/documents/act")
         self.assertIn("Акт сверки", act.text)
+        self.assertIn("за период с", act.text)
+        self.assertIn("Оборот за период", act.text)
+
+        empty = self.client.get("/cabinet/documents/act?start=2035-01-01&end=2035-12-31")
+        self.assertIn("за выбранный период заказов нет", empty.text)
+
+        self.cabinet.update_status(order_id, "cancelled")
+        cancelled = self.client.get("/cabinet/documents/act")
+        self.assertIn("Отменённые заказы", cancelled.text)
 
         _, _, manager, password = make_company(admin=False)
         fresh = TestClient(app, follow_redirects=False)

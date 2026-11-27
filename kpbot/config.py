@@ -81,6 +81,12 @@ class Settings(BaseSettings):
     company_phone: str = "+7 (495) 000-00-00"
     company_email: str = "sales@example.ru"
     company_signer: str = "Иванов И. И., коммерческий директор"
+    # Банковские реквизиты для счёта и УПД в кабинете. Необязательны:
+    # если пусты, в документе будет честная пометка «не заполнены».
+    company_account: str = ""
+    company_bank: str = ""
+    company_bik: str = ""
+    company_corr_account: str = ""
     quote_valid_days: int = 7
 
     # --- расчёт ---

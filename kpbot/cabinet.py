@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -112,8 +112,22 @@ def _check_csrf(request: Request, form) -> bool:
 
 
 def _seller() -> dict:
-    """Реквизиты поставщика для документов: настройки компании из админки."""
-    return supplier_store().get_settings()
+    """Реквизиты поставщика для документов: интерфейс важнее .env, но .env — запасной."""
+    saved = supplier_store().get_settings()
+    defaults = {
+        "company_name": settings.company_name,
+        "company_inn": settings.company_inn,
+        "company_kpp": settings.company_kpp,
+        "company_address": settings.company_address,
+        "company_phone": settings.company_phone,
+        "company_email": settings.company_email,
+        "company_signer": settings.company_signer,
+        "company_account": settings.company_account,
+        "company_bank": settings.company_bank,
+        "company_bik": settings.company_bik,
+        "company_corr_account": settings.company_corr_account,
+    }
+    return {key: saved.get(key) or value for key, value in defaults.items()}
 
 
 def _fmt(value: object) -> Decimal:
@@ -556,9 +570,26 @@ def order_doc(request: Request, order_id: str, kind: str):
         return PlainTextResponse("заказ не найден", status_code=404)
     kind = kind if kind in DOC_TITLES else "invoice"
     seller = _seller()
+    net_total = sum((_fmt(line["amount"]) for line in order["lines"]), Decimal(0))
+    total = _fmt(order["total"])
+    vat_total = total - net_total
+    issued = (order["created_at"] or "")[:10]
+    try:
+        valid_until = (date.fromisoformat(issued) + timedelta(days=settings.quote_valid_days)).isoformat()
+    except ValueError:
+        valid_until = issued
     body = render_template(
-        "cabinet/doc.html", order=order, company=company, seller=seller,
-        title=DOC_TITLES[kind], kind=kind,
+        "cabinet/doc.html",
+        order=order,
+        company=company,
+        seller=seller,
+        title=DOC_TITLES[kind],
+        kind=kind,
+        net_total=net_total,
+        vat_total=vat_total,
+        total=total,
+        vat_rate=settings.vat_rate,
+        valid_until=valid_until,
     )
     html_path = settings.out_dir / f"cabinet-{order_id}-{kind}.html"
     html_path.parent.mkdir(parents=True, exist_ok=True)
@@ -572,17 +603,40 @@ def order_doc(request: Request, order_id: str, kind: str):
 
 
 @router.get("/documents/act")
-def reconciliation_act(request: Request):
-    """Акт сверки по заказам компании — для client_admin."""
+def reconciliation_act(request: Request, start: str = "", end: str = ""):
+    """Акт сверки за период — для client_admin."""
     user = _user(request)
     if user is None:
         return _login_redirect(request)
     company = _company(request, user)
     if user["role"] != "client_admin":
         return PlainTextResponse("акт сверки доступен администратору компании", status_code=403)
-    orders = cabinet_store().list_orders(company["id"], limit=500)
-    body = render_template("cabinet/act.html", company=company, orders=orders,
-                           seller=_seller(), total=sum(_fmt(order["total"]) for order in orders))
+    today = date.today()
+    period_start = (start or f"{today.year}-01-01")[:10]
+    period_end = (end or today.isoformat())[:10]
+    all_orders = cabinet_store().list_orders(company["id"], limit=500)
+    # Отменённые заказы в сверку не идут: это не оборот, а отмена.
+    cancelled = [order for order in all_orders if order["status"] == "cancelled"]
+    orders = [
+        order
+        for order in all_orders
+        if order["status"] != "cancelled" and period_start <= (order["created_at"] or "")[:10] <= period_end
+    ]
+    turnover = sum((_fmt(order["total"]) for order in orders), Decimal(0))
+    body = render_template(
+        "cabinet/act.html",
+        company=company,
+        orders=orders,
+        seller=_seller(),
+        total=turnover,
+        turnover=turnover,
+        period_start=period_start,
+        period_end=period_end,
+        excluded=len(cancelled),
+        balance=_fmt(company.get("balance")),
+        debt=_fmt(company.get("debt")),
+        credit_limit=_fmt(company.get("credit_limit")),
+    )
     return HTMLResponse(body, headers={"Content-Disposition": 'inline; filename="act.html"'})
 
 

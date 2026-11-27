@@ -72,8 +72,8 @@ def make_user_session(secret: str, user_id: str, ttl: int) -> str:
     return f"{payload}.{_hmac(secret, payload)}"
 
 
-def user_from_session(secret: str, token: str | None, ttl: int) -> str | None:
-    """Возвращает id пользователя, если подпись и срок в порядке."""
+def _session_payload(secret: str, token: str | None, ttl: int) -> tuple[str, int] | None:
+    """Проверяет подпись и срок; возвращает (id пользователя, время выдачи)."""
     if not token:
         return None
     parts = token.split(".")
@@ -87,7 +87,19 @@ def user_from_session(secret: str, token: str | None, ttl: int) -> str | None:
     issued_at = int(issued)
     if issued_at > time.time() + 60 or time.time() - issued_at > ttl:
         return None
-    return user_id
+    return user_id, issued_at
+
+
+def user_from_session(secret: str, token: str | None, ttl: int) -> str | None:
+    """Возвращает id пользователя, если подпись и срок в порядке."""
+    payload = _session_payload(secret, token, ttl)
+    return payload[0] if payload else None
+
+
+def session_issued_at(secret: str, token: str | None, ttl: int) -> int | None:
+    """Когда выдан токен: нужно, чтобы отозвать сессии после смены пароля."""
+    payload = _session_payload(secret, token, ttl)
+    return payload[1] if payload else None
 
 
 def verify_session(secret: str, token: str | None, ttl: int) -> bool:
