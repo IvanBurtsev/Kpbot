@@ -193,6 +193,57 @@ class PasswordChangeTest(CabinetBase):
         self.assertIn("не совпадают", response.text)
 
 
+class PasswordResetTest(CabinetBase):
+    def test_reset_link_sets_new_password(self) -> None:
+        token = self.cabinet.create_password_reset(self.user["id"])
+        page = self.client.get(f"/cabinet/reset?t={token}")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Новый пароль", page.text)
+
+        response = self.client.post(
+            "/cabinet/reset",
+            data={"token": token, "new": "reset-pass-1", "repeat": "reset-pass-1"},
+        )
+        self.assertEqual(response.status_code, 303)
+
+        fresh = TestClient(app, follow_redirects=False)
+        new = fresh.post(
+            "/cabinet/login", data={"email": self.user["email"], "password": "reset-pass-1"}
+        )
+        self.assertEqual(new.status_code, 303)
+        old = fresh.post(
+            "/cabinet/login", data={"email": self.user["email"], "password": self.password}
+        )
+        self.assertEqual(old.status_code, 401)
+
+    def test_token_is_single_use(self) -> None:
+        token = self.cabinet.create_password_reset(self.user["id"])
+        self.assertIsNotNone(self.cabinet.consume_password_reset(token))
+        self.assertIsNone(self.cabinet.consume_password_reset(token))
+        reused = self.client.post(
+            "/cabinet/reset",
+            data={"token": token, "new": "reset-pass-1", "repeat": "reset-pass-1"},
+        )
+        self.assertEqual(reused.status_code, 400)
+        self.assertIn("недействительна", reused.text)
+
+    def test_forgot_answers_same_for_unknown_email(self) -> None:
+        known = self.client.post("/cabinet/forgot", data={"email": self.user["email"]})
+        unknown = self.client.post("/cabinet/forgot", data={"email": "nobody@example.ru"})
+        self.assertEqual(known.status_code, 200)
+        self.assertEqual(unknown.status_code, 200)
+        self.assertIn("Если такой адрес есть", known.text)
+        self.assertIn("Если такой адрес есть", unknown.text)
+
+    def test_short_password_is_rejected(self) -> None:
+        token = self.cabinet.create_password_reset(self.user["id"])
+        response = self.client.post(
+            "/cabinet/reset", data={"token": token, "new": "short", "repeat": "short"}
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("короче", response.text)
+
+
 class AdminAndDocsTest(CabinetBase):
     def _order(self) -> str:
         self.client.post("/cabinet/cart/add",

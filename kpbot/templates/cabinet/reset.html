@@ -1,0 +1,25 @@
+{% extends "cabinet/base.html" %}
+{% block title %}Новый пароль · кабинет клиента{% endblock %}
+{% block content %}
+<section class="card narrow cabinet-login">
+  <h1>Новый пароль</h1>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if token %}
+  <p class="muted small">Придумайте новый пароль. После сохранения все старые сеансы завершатся.</p>
+  <form method="post" action="/cabinet/reset" class="stack">
+    <input type="hidden" name="token" value="{{ token }}">
+    <label>Новый пароль (не короче 8 символов)
+      <input type="password" name="new" autocomplete="new-password" minlength="8" required autofocus>
+    </label>
+    <label>Повторите пароль
+      <input type="password" name="repeat" autocomplete="new-password" minlength="8" required>
+    </label>
+    <button class="primary" type="submit">Сохранить пароль</button>
+  </form>
+  {% else %}
+  <p class="muted small">Ссылка недействительна или истекла.</p>
+  <p><a class="button primary" href="/cabinet/forgot">Запросить новую ссылку</a></p>
+  {% endif %}
+  <p class="muted small"><a href="/cabinet/login">← Ко входу</a></p>
+</section>
+{% endblock %}

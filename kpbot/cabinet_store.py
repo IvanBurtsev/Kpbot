@@ -10,10 +10,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import secrets
 import sqlite3
 import uuid
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -68,6 +70,16 @@ CREATE TABLE IF NOT EXISTS cabinet_prices(
 CREATE TABLE IF NOT EXISTS cabinet_packs(
     sku      TEXT PRIMARY KEY,
     pack_qty INTEGER NOT NULL DEFAULT 1
+);
+
+-- Одноразовые ссылки «забыли пароль»: в базе только хеш токена
+CREATE TABLE IF NOT EXISTS cabinet_password_resets(
+    token_hash TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at    TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES cabinet_users(id)
 );
 
 CREATE TABLE IF NOT EXISTS cabinet_order_events(
@@ -256,6 +268,57 @@ class CabinetStore:
         user.pop("salt", None)
         user.pop("password_hash", None)
         return user
+
+    def user_by_email(self, email: str) -> dict | None:
+        self.init_schema()
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM cabinet_users WHERE email = ? AND deleted_at IS NULL",
+                ((email or "").strip().lower(),),
+            ).fetchone()
+        if row is None:
+            return None
+        user = dict(row)
+        user.pop("salt", None)
+        user.pop("password_hash", None)
+        return user
+
+    def create_password_reset(self, user_id: str, ttl_minutes: int = 60) -> str:
+        """Одноразовая ссылка «забыли пароль». В базе хранится только хеш."""
+        token = secrets.token_urlsafe(32)
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        expires = (
+            datetime.now(timezone.utc) + timedelta(minutes=max(5, int(ttl_minutes)))
+        ).isoformat()
+        self.init_schema()
+        with closing(self._connect()) as conn, conn:
+            conn.execute("DELETE FROM cabinet_password_resets WHERE user_id = ?", (user_id,))
+            conn.execute(
+                "INSERT INTO cabinet_password_resets(token_hash, user_id, expires_at, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (digest, user_id, expires, _utcnow()),
+            )
+        return token
+
+    def consume_password_reset(self, token: str) -> str | None:
+        """Проверяет токен и гасит его. Возвращает id пользователя или None."""
+        if not token:
+            return None
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        self.init_schema()
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute(
+                "SELECT user_id FROM cabinet_password_resets"
+                " WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?",
+                (digest, _utcnow()),
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute(
+                "UPDATE cabinet_password_resets SET used_at = ? WHERE token_hash = ?",
+                (_utcnow(), digest),
+            )
+            return row["user_id"]
 
     def set_password(self, user_id: str, password: str) -> None:
         """Меняет пароль и обрывает ранее выданные cookie (password_changed_at)."""

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import logging
 import secrets
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -26,6 +27,7 @@ from .cabinet_store import (
 )
 from .config import settings
 from .domain import LineStatus, PriceItem, RfqLine, price_quote
+from .mailer import MailError, Mailer
 from .render import html_to_pdf, render_template
 from .security import (
     RateLimiter,
@@ -45,6 +47,8 @@ from .tenant_ctx import CLIENT_TENANT_COOKIE, current_client_db
 router = APIRouter(prefix="/cabinet", tags=["cabinet"])
 CLIENT_COOKIE = "kpbot_client_session"
 CSRF_FIELD = "csrf_token"
+
+log = logging.getLogger("kpbot.cabinet")
 
 _limiter = RateLimiter(settings.rate_limit_per_minute)
 
@@ -263,6 +267,104 @@ def logout(request: Request):
     response.delete_cookie(CLIENT_COOKIE, path="/")
     response.delete_cookie(CLIENT_TENANT_COOKIE, path="/")
     return response
+
+
+def _send_reset_email(address: str, link: str) -> bool:
+    """Письмо со ссылкой сброса. Без SMTP просто не отправляем."""
+    mailer = Mailer(settings)
+    if not (mailer.enabled and mailer.host):
+        log.warning("SMTP не настроен — ссылка сброса пароля не отправлена")
+        return False
+    from email.message import EmailMessage
+
+    message = EmailMessage()
+    message["From"] = mailer.from_addr or settings.smtp_user or "no-reply@localhost"
+    message["To"] = address
+    message["Subject"] = "Восстановление пароля в кабинете kpbot"
+    message.set_content(
+        "Здравствуйте!\n\n"
+        "Чтобы задать новый пароль, перейдите по ссылке (действует 60 минут):\n"
+        f"{link}\n\n"
+        "Если вы не запрашивали сброс — просто проигнорируйте это письмо.\n"
+    )
+    try:
+        mailer.send(message, to=address)
+        return True
+    except MailError as exc:
+        log.warning("письмо со сбросом пароля не ушло на %s: %s", address, exc)
+        return False
+
+
+@router.get("/forgot", response_class=HTMLResponse)
+def forgot_form(request: Request, flash: str = "", error: str = ""):
+    return _page(
+        request, "cabinet/forgot.html", user=None, company=None,
+        flash=flash[:200], error=error[:200],
+    )
+
+
+@router.post("/forgot")
+async def forgot(request: Request):
+    """Запрос ссылки сброса. Ответ одинаковый: адрес не подтверждаем."""
+    if not same_origin(request, settings.public_base_url):
+        return _page(
+            request, "cabinet/forgot.html", code=403, user=None, company=None,
+            error="запрос пришёл с другого сайта",
+        )
+    ip = resolve_client_ip(request, settings.trusted_proxy_set)
+    if not _limiter.allow(f"cabinet-forgot:{ip}"):
+        return _page(
+            request, "cabinet/forgot.html", code=429, user=None, company=None,
+            error="слишком много запросов, подождите минуту",
+        )
+    form = await request.form()
+    email = str(form.get("email", "")).strip().lower()[:200]
+    user = cabinet_store().user_by_email(email) if email else None
+    if user:
+        token = cabinet_store().create_password_reset(user["id"])
+        link = f"{settings.public_base_url.rstrip('/')}/cabinet/reset?t={token}"
+        _send_reset_email(user["email"], link)
+    return _page(
+        request, "cabinet/forgot.html", user=None, company=None,
+        flash="Если такой адрес есть в системе, письмо со ссылкой отправлено. Проверьте почту.",
+    )
+
+
+@router.get("/reset", response_class=HTMLResponse)
+def reset_form(request: Request, t: str = "", error: str = ""):
+    return _page(
+        request, "cabinet/reset.html", user=None, company=None,
+        token=t[:200], error=error[:200],
+    )
+
+
+@router.post("/reset")
+async def reset_password(request: Request):
+    form = await request.form()
+    token = str(form.get("token", ""))[:200]
+    new = str(form.get("new", ""))
+    repeat = str(form.get("repeat", ""))
+    if len(new) < 8:
+        return _page(
+            request, "cabinet/reset.html", code=400, user=None, company=None,
+            token=token, error="пароль короче 8 символов",
+        )
+    if new != repeat:
+        return _page(
+            request, "cabinet/reset.html", code=400, user=None, company=None,
+            token=token, error="пароли не совпадают",
+        )
+    user_id = cabinet_store().consume_password_reset(token)
+    if not user_id:
+        return _page(
+            request, "cabinet/reset.html", code=400, user=None, company=None,
+            token="", error="ссылка недействительна или истекла — запросите новую",
+        )
+    cabinet_store().set_password(user_id, new)
+    return RedirectResponse(
+        f"/cabinet/login?flash={quote('пароль изменён — войдите с новым')}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @router.get("/password", response_class=HTMLResponse)
