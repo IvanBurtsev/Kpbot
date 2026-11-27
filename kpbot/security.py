@@ -42,14 +42,25 @@ def client_ip(request: Any, trusted_proxies: set[str]) -> str:
 def same_origin(request: Any, public_base_url: str) -> bool:
     """Запрос пришёл со страницы того же сайта.
 
-    Браузер присылает Origin на POST. Если он есть и не совпадает с публичным
-    адресом — это login CSRF (чужой сайт авторизует жертву в своём аккаунте).
-    Отсутствие заголовка не блокируем: старые клиенты и curl его не шлют.
+    Браузер присылает Origin на POST. Если он есть и не совпадает с адресом, по
+    которому открыт сервис, — это login CSRF (чужой сайт авторизует жертву в своём
+    аккаунте). Отсутствие заголовка не блокируем: старые клиенты и curl его не шлют.
+
+    Свой адрес — это и `public_base_url`, и тот хост, по которому пришёл запрос:
+    владелец может открыть сервис по IP или по второму домену, и раньше такой
+    вход отвечал 403 «запрос пришёл с другого сайта» — выглядело как «пароль
+    не подходит».
     """
     origin = (request.headers.get("origin") or "").strip().rstrip("/")
     if not origin:
         return True
-    return origin == (public_base_url or "").strip().rstrip("/")
+    allowed = {(public_base_url or "").strip().rstrip("/")}
+    host = (request.headers.get("host") or "").strip()
+    if host:
+        scheme = (request.headers.get("x-forwarded-proto") or request.url.scheme or "http").strip()
+        allowed.add(f"{scheme}://{host}")
+    allowed.discard("")
+    return origin in allowed
 
 
 def _hmac(secret: str, payload: str) -> str:

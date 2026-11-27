@@ -13,6 +13,7 @@ os.environ.setdefault("KPBOT_SESSION_SECRET", "test-secret")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from kpbot.security import same_origin  # noqa: E402
 from kpbot.web import app, settings, store  # noqa: E402
 
 
@@ -140,6 +141,34 @@ class SqlInjectionTest(unittest.TestCase):
         # таблица на месте: запросы параметризованы
         self.assertGreaterEqual(store.stats()["rfqs"], 0)
         self.assertIsInstance(store.price_count(), int)
+
+
+class SameOriginTest(unittest.TestCase):
+    """CSRF-проверка входа: чужой сайт — нет, свой адрес под любым именем — да."""
+
+    def _request(self, origin: str, host: str = "debtcrm.duckdns.org:8443", scheme: str = "https"):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            headers={"origin": origin, "host": host, "x-forwarded-proto": scheme},
+            url=SimpleNamespace(scheme=scheme),
+        )
+
+    def test_public_url_is_allowed(self) -> None:
+        request = self._request("https://debtcrm.duckdns.org:8443")
+        self.assertTrue(same_origin(request, "https://debtcrm.duckdns.org:8443"))
+
+    def test_request_own_host_is_allowed(self) -> None:
+        # владелец открыл сервис по IP: адрес не совпадает с публичным, но это свой сайт
+        request = self._request("http://45.152.202.114", host="45.152.202.114", scheme="http")
+        self.assertTrue(same_origin(request, "https://debtcrm.duckdns.org:8443"))
+
+    def test_foreign_site_is_rejected(self) -> None:
+        request = self._request("https://evil.example")
+        self.assertFalse(same_origin(request, "https://debtcrm.duckdns.org:8443"))
+
+    def test_missing_origin_is_allowed(self) -> None:
+        self.assertTrue(same_origin(self._request(""), "https://debtcrm.duckdns.org:8443"))
 
 
 if __name__ == "__main__":

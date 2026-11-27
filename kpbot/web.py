@@ -538,7 +538,8 @@ async def ui_login(request: Request):
         if not settings.shared_login_allowed:
             return page(
                 "login.html", request, code=403,
-                error="вход общим паролем отключён — войдите по логину и паролю пользователя",
+                error="нужен логин: введите почту пользователя (например admin@local) "
+                      "и пароль. Вход одним паролем отключён",
             )
         # вход администратора общим паролем (обратная совместимость)
         token = make_session(settings.session_secret, settings.session_ttl_seconds)
