@@ -4,7 +4,10 @@ import support  # общий стенд: изолированные данные
 
 import os
 import unittest
+import uuid
+from decimal import Decimal
 from pathlib import Path
+from urllib.parse import unquote
 
 _TMP = support.subdir("admin_ui")
 os.environ.setdefault("KPBOT_API_KEY", "test-key")
@@ -14,7 +17,7 @@ os.environ.setdefault("KPBOT_SESSION_SECRET", "test-secret")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from kpbot.users import ROLE_ADMIN, ROLE_MANAGER  # noqa: E402
-from kpbot.web import app, settings, store  # noqa: E402
+from kpbot.web import app, pipeline, settings, store  # noqa: E402
 
 
 def csrf_from(client: TestClient, url: str = "/ui/admin/users") -> str:
@@ -80,6 +83,30 @@ class AdminPanelTest(unittest.TestCase):
         fresh = TestClient(app, follow_redirects=False)
         response = fresh.post("/ui/login", data={"email": "reset-me@test.ru", "password": "newpassword1"})
         self.assertEqual(response.status_code, 303)
+
+    def test_manager_cannot_approve_above_limit(self) -> None:
+        email = f"limit-{uuid.uuid4().hex[:6]}@test.ru"
+        store.create_user(email=email, password="managerpass", role=ROLE_MANAGER)
+        manager = TestClient(app, follow_redirects=False)
+        self.assertEqual(
+            manager.post("/ui/login", data={"email": email, "password": "managerpass"}).status_code,
+            303,
+        )
+        rfq = pipeline.process_text(
+            "уголок 50х50 — 10 шт", sender="limit@test.ru", subject="Лимит"
+        )
+        token = csrf_from(manager, f"/ui/rfq/{rfq.rfq_id}")
+        old_limit = settings.approval_limit
+        settings.approval_limit = Decimal("100.00")
+        try:
+            response = manager.post(
+                f"/ui/rfq/{rfq.rfq_id}/approve", data={"csrf_token": token}
+            )
+        finally:
+            settings.approval_limit = old_limit
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("лимит", unquote(response.headers["location"]))
+        self.assertNotEqual(store.get_rfq(rfq.rfq_id)["status"], "approved")
 
     def test_events_page_shows_actions(self) -> None:
         store.log_event("test_event", "unittest", "проверка журнала")

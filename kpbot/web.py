@@ -1581,6 +1581,16 @@ async def ui_approve(request: Request, rfq_id: str):
     form = await request.form()
     if not verify_csrf(settings.session_secret, session_of(request), str(form.get(CSRF_FIELD, ""))):
         return PlainTextResponse("csrf failed", status_code=403)
+    user = current_user(request)
+    if settings.approval_limit > 0 and user is not None and not user.is_admin:
+        quote_data = store.get_quote(rfq_id) or {}
+        total = Decimal(str(quote_data.get("total") or "0"))
+        if total > settings.approval_limit:
+            return back_to(
+                rfq_id,
+                f"сумма {total:.2f} ₽ выше лимита одобрения "
+                f"({settings.approval_limit:.2f} ₽) — нужно одобрение администратора",
+            )
     try:
         await run_in_threadpool(
             pipeline.approve,
@@ -1964,8 +1974,11 @@ async def health() -> dict:
 
 
 @app.post("/api/v1/rfqs", dependencies=[Depends(api_auth)])
-async def api_create_rfq(payload: RfqIn) -> JSONResponse:
-    if not limiter.allow("api:rfqs"):
+async def api_create_rfq(request: Request, payload: RfqIn) -> JSONResponse:
+    # Лимит — на клиента, а не один на весь сервис: иначе шумный клиент
+    # выбирает квоту у всех и получает 429 за чужие письма.
+    tenant_key = (request.headers.get("x-tenant") or "").strip() or "default"
+    if not limiter.allow(f"api:rfqs:{tenant_key}"):
         raise HTTPException(status_code=429, detail="rate limit")
     try:
         result = await run_in_threadpool(pipeline.process_text, 

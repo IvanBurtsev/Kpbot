@@ -20,6 +20,7 @@ from .domain import (
     RfqStatus,
     ValidationError,
     build_reply_subject,
+    money,
     price_quote,
     status_for,
 )
@@ -840,6 +841,43 @@ def _validity_phrase(days: int) -> str:
     return f"{days} календарных дней"
 
 
+def _reply_totals(
+    subtotal: Decimal,
+    vat: Decimal,
+    delivery: Decimal,
+    total: Decimal,
+    *,
+    prices_include_vat: bool,
+    delivery_vat: Decimal = Decimal("0.00"),
+) -> list[str]:
+    """Строки итогов для письма так, чтобы они складывались в «Итого».
+
+    В режиме «цены уже с НДС» доставка тоже уже с НДС: если показать её рядом
+    с «Сумма без НДС» и «НДС», клиент сложит 1000 + 242 + 122 и получит 1364
+    при «Итого 1342». Поэтому здесь либо доставка показывается без НДС
+    (обычный режим), либо «Сумма с НДС по товарам» + «Доставка с НДС», а НДС
+    идёт строкой «в том числе».
+    """
+    delivery = max(delivery, Decimal("0.00"))
+    if prices_include_vat:
+        goods_gross = money(subtotal + vat - delivery_vat)
+        lines = [
+            f"Сумма с НДС по товарам: {_money_text(goods_gross)} ₽",
+            f"В том числе НДС: {_money_text(vat)} ₽",
+        ]
+        if delivery:
+            lines.append(f"Доставка с НДС: {_money_text(delivery)} ₽")
+    else:
+        lines = [
+            f"Сумма без НДС: {_money_text(subtotal)} ₽",
+            f"НДС: {_money_text(vat)} ₽",
+        ]
+        if delivery:
+            lines.append(f"Доставка без НДС: {_money_text(delivery)} ₽")
+    lines.append(f"Итого: {_money_text(total)} ₽")
+    return lines
+
+
 def build_reply_text(
     parsed: ParsedEmail,
     quote: Quote,
@@ -859,16 +897,15 @@ def build_reply_text(
         head.append(
             f"Не вошли в расчёт (нужно уточнить): {quote.unmatched} — мы свяжемся отдельно."
         )
+    head += _reply_totals(
+        quote.subtotal,
+        quote.vat,
+        quote.delivery,
+        quote.total,
+        prices_include_vat=quote.prices_include_vat,
+        delivery_vat=quote.delivery_vat,
+    )
     head += [
-        f"Сумма без НДС: {_money_text(quote.subtotal)} ₽",
-        f"НДС: {_money_text(quote.vat)} ₽",
-    ]
-    if quote.delivery:
-        # Без этой строки «Итого» в письме не сходится с суммой строк:
-        # клиент видит 345 + 75,90 = 420,90, а в итоге 920,90.
-        head.append(f"Доставка: {_money_text(quote.delivery)} ₽")
-    head += [
-        f"Итого: {_money_text(quote.total)} ₽",
         "",
         f"Предложение действительно {_validity_phrase(valid_days)}.",
         "Если всё подходит — ответьте на это письмо, и мы выставим счёт.",
@@ -911,14 +948,16 @@ def build_reply_text_from_store(
     ]
     if unmatched:
         head.append(f"Не вошли в расчёт (нужно уточнить): {unmatched} — мы свяжемся отдельно.")
+    head += _reply_totals(
+        _money_value(quote.get("subtotal")),
+        _money_value(quote.get("vat")),
+        _money_value(quote.get("delivery")),
+        _money_value(quote.get("total")),
+        prices_include_vat=str(quote.get("prices_include_vat") or "0").strip().lower()
+        in {"1", "true", "yes", "on", "да"},
+        delivery_vat=_money_value(quote.get("delivery_vat")),
+    )
     head += [
-        f"Сумма без НДС: {_money_text(quote.get('subtotal'))} ₽",
-        f"НДС: {_money_text(quote.get('vat'))} ₽",
-    ]
-    if _money_value(quote.get("delivery")) > 0:
-        head.append(f"Доставка: {_money_text(quote.get('delivery'))} ₽")
-    head += [
-        f"Итого: {_money_text(quote.get('total'))} ₽",
         "",
         f"Предложение действительно {_validity_phrase(valid_days)}.",
         "Если всё подходит — ответьте на это письмо, и мы выставим счёт.",

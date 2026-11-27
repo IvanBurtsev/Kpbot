@@ -26,7 +26,7 @@ from .cabinet_store import (
     CabinetStore,
 )
 from .config import settings
-from .domain import LineStatus, PriceItem, RfqLine, ValidationError, price_quote
+from .domain import LineStatus, PriceItem, Quote, RfqLine, ValidationError, price_quote
 from .pipeline import calc_settings, tenant_out_dir
 from .mailer import MailError, Mailer
 from .render import html_to_pdf, render_template
@@ -499,8 +499,6 @@ def _catalog(company_id: str, query: str = "") -> list[dict]:
             "available": available,
             "can_order": (available is None) or (available >= pack),
         })
-        if len(items) >= 300:
-            break
     return items
 
 
@@ -545,8 +543,6 @@ def _cart_context(request: Request, user: dict, company: dict) -> dict:
     packs = cabinet.pack_map()
     stock = supplier.stock_map()
     rows: list[dict] = []
-    total = Decimal(0)
-    vat = calc_settings(supplier, settings).vat_rate
     for entry in cabinet.cart_items(user["id"]):
         item = by_sku.get(entry["sku"])
         if item is None:
@@ -555,7 +551,6 @@ def _cart_context(request: Request, user: dict, company: dict) -> dict:
         qty = int(entry["qty"])
         price = _fmt(personal.get(item.sku, item.price))
         amount = price * qty
-        total += amount
         stock_row = stock.get(item.sku) or {}
         rows.append({
             "sku": item.sku, "name": item.name, "unit": item.unit,
@@ -563,11 +558,31 @@ def _cart_context(request: Request, user: dict, company: dict) -> dict:
             "pack": int(packs.get(item.sku, 1) or 1),
             "available": _fmt(stock_row.get("qty")) if stock_row else None,
         })
+
+    # Корзина считает те же деньги, что и заказ/КП: при ценах «с НДС» нельзя
+    # начислять НДС повторно, а доставка должна быть видна до оформления.
+    lines = [
+        RfqLine(
+            idx=index, raw_text=f"{row['name']} — {row['qty']} {row['unit']}",
+            qty=Decimal(str(row["qty"])), unit=row["unit"],
+            matched_sku=row["sku"], match_score=1.0, matched_name=row["name"],
+            status=LineStatus.OK,
+        )
+        for index, row in enumerate(rows, start=1)
+    ]
+    catalogue = {
+        row["sku"]: PriceItem(sku=row["sku"], name=row["name"], unit=row["unit"], price=row["price"])
+        for row in rows
+    }
+    quote = price_quote(lines, catalogue, **calc_settings(supplier, settings).as_kwargs())
     return {
         "rows": rows,
-        "subtotal": total,
-        "vat": (total * vat).quantize(Decimal("0.01")),
-        "total": (total * (1 + vat)).quantize(Decimal("0.01")),
+        "subtotal": quote.subtotal,
+        "vat": quote.vat,
+        "delivery": quote.delivery,
+        "delivery_vat": quote.delivery_vat,
+        "total": quote.total,
+        "prices_include_vat": quote.prices_include_vat,
     }
 
 
@@ -637,7 +652,7 @@ async def cart_remove(request: Request):
 # ---------- оформление заказа ----------
 
 
-def _validate_order(user: dict, company: dict) -> tuple[list[dict], Decimal, Decimal]:
+def _validate_order(user: dict, company: dict) -> tuple[list[dict], Quote]:
     supplier = supplier_store()
     cabinet = cabinet_store()
     by_sku = {item.sku: item for item in supplier.price_items()}
@@ -645,7 +660,6 @@ def _validate_order(user: dict, company: dict) -> tuple[list[dict], Decimal, Dec
     packs = cabinet.pack_map()
     stock = supplier.stock_map()
     rows: list[dict] = []
-    subtotal = Decimal(0)
     for entry in cabinet.cart_items(user["id"]):
         sku, qty = entry["sku"], int(entry["qty"])
         item = by_sku.get(sku)
@@ -665,28 +679,52 @@ def _validate_order(user: dict, company: dict) -> tuple[list[dict], Decimal, Dec
             available = _fmt(stock[sku].get("qty"))
             if qty > available:
                 raise OrderError(f"{item.name}: на складе только {available:g} {item.unit}")
-        price = _fmt(personal.get(sku, item.price))
-        amount = price * qty
-        subtotal += amount
         rows.append({
             "sku": sku, "name": item.name, "unit": item.unit, "qty": qty,
-            "price": price, "amount": amount,
+            "price": _fmt(personal.get(sku, item.price)), "amount": Decimal(0),
         })
     if not rows:
         raise OrderError("корзина пуста")
-    rate = calc_settings(supplier, settings).vat_rate
-    vat = (subtotal * rate).quantize(Decimal("0.01"))
-    return rows, subtotal, subtotal + vat
+
+    # Считаем заказ тем же price_quote, что и КП поставщика: иначе кабинет
+    # показывал сумму без доставки и начислял НДС повторно при ценах «с НДС».
+    lines = [
+        RfqLine(
+            idx=index, raw_text=f"{row['name']} — {row['qty']} {row['unit']}",
+            qty=Decimal(str(row["qty"])), unit=row["unit"],
+            matched_sku=row["sku"], match_score=1.0, matched_name=row["name"],
+            status=LineStatus.OK,
+        )
+        for index, row in enumerate(rows, start=1)
+    ]
+    catalogue = {
+        row["sku"]: PriceItem(sku=row["sku"], name=row["name"], unit=row["unit"], price=row["price"])
+        for row in rows
+    }
+    quote = price_quote(lines, catalogue, **calc_settings(supplier, settings).as_kwargs())
+    if len(quote.lines) != len(rows):
+        raise OrderError("не все позиции корзины удалось рассчитать — обновите корзину")
+
+    priced_rows = [
+        {
+            "sku": line.sku, "name": line.name, "unit": line.unit, "qty": line.qty,
+            "price": line.price, "amount": line.amount,
+        }
+        for line in quote.lines
+    ]
+    return priced_rows, quote
 
 
-def _rfq_from_order(user: dict, company: dict, rows: list[dict], order_number: str) -> str:
+def _rfq_from_order(
+    user: dict, company: dict, rows: list[dict], order_number: str, quote: Quote
+) -> str:
     """Заказ ЛК → обычная заявка поставщика с готовым расчётом."""
     store = supplier_store()
     rfq_id = uuid.uuid4().hex
     lines = [
         RfqLine(
             idx=index, raw_text=f"{row['name']} — {row['qty']} {row['unit']}",
-            qty=Decimal(row["qty"]), unit=row["unit"],
+            qty=Decimal(str(row["qty"])), unit=row["unit"],
             matched_sku=row["sku"], match_score=1.0, matched_name=row["name"],
             status=LineStatus.OK,
         )
@@ -702,11 +740,6 @@ def _rfq_from_order(user: dict, company: dict, rows: list[dict], order_number: s
         raw_text="\n".join(line.raw_text for line in lines),
         lines=lines,
     )
-    catalogue = {
-        row["sku"]: PriceItem(sku=row["sku"], name=row["name"], unit=row["unit"], price=row["price"])
-        for row in rows
-    }
-    quote = price_quote(lines, catalogue, **calc_settings(store, settings).as_kwargs())
     store.save_quote(uuid.uuid4().hex, rfq_id, quote)
     store.log(rfq_id, "cabinet_order", f"client:{user['id']}", order_number)
     return rfq_id
@@ -726,7 +759,7 @@ async def create_order(request: Request):
         return PlainTextResponse("csrf failed", status_code=403)
     comment = str(form.get("comment", "")).strip()[:500]
     try:
-        rows, subtotal, total = _validate_order(user, company)
+        rows, order_quote = _validate_order(user, company)
     except OrderError as exc:
         return RedirectResponse(f"/cabinet/cart?error={quote(str(exc))}",
                                 status_code=status.HTTP_303_SEE_OTHER)
@@ -734,7 +767,7 @@ async def create_order(request: Request):
     cabinet = cabinet_store()
     number = cabinet.next_number()
     try:
-        rfq_id = _rfq_from_order(user, company, rows, number)
+        rfq_id = _rfq_from_order(user, company, rows, number, order_quote)
     except ValidationError as exc:
         # расчёт — последний рубеж: клиент должен увидеть причину, а не 500
         return RedirectResponse(
@@ -742,9 +775,9 @@ async def create_order(request: Request):
         )
     order = cabinet.create_order(
         company_id=company["id"], created_by=user["id"], number=number,
-        comment=comment, total=str(total),
+        comment=comment, total=str(order_quote.total),
         lines=[
-            {**row, "price": str(row["price"]), "amount": str(row["amount"])}
+            {**row, "qty": str(row["qty"]), "price": str(row["price"]), "amount": str(row["amount"])}
             for row in rows
         ],
         rfq_id=rfq_id,
@@ -820,9 +853,42 @@ def order_doc(request: Request, order_id: str, kind: str):
         return PlainTextResponse("заказ не найден", status_code=404)
     kind = kind if kind in DOC_TITLES else "invoice"
     seller = _seller()
-    net_total = sum((_fmt(line["amount"]) for line in order["lines"]), Decimal(0))
-    total = _fmt(order["total"])
-    vat_total = total - net_total
+    supplier = supplier_store()
+    quote = supplier.get_quote(order["rfq_id"]) if order.get("rfq_id") else None
+    rate = calc_settings(supplier, settings).vat_rate
+    lines = order["lines"]
+    if quote:
+        # Документ берёт итоги из снимка КП: в режиме «цены с НДС» строки
+        # заказа уже с НДС, и таблица не должна начислять его второй раз.
+        rate = _fmt(quote.get("vat_rate") or rate)
+        inclusive = bool(int(quote.get("prices_include_vat") or 0))
+        delivery = _fmt(quote.get("delivery"))
+        delivery_vat = _fmt(quote.get("delivery_vat"))
+        factor = (Decimal("1") + rate) if inclusive and rate else Decimal("1")
+        lines = [
+            {
+                **line,
+                "price": _fmt(line["price"]) / factor,
+                "amount": _fmt(line["amount"]) / factor,
+            }
+            for line in order["lines"]
+        ]
+        if delivery:
+            lines.append({
+                "sku": "", "name": "Доставка", "unit": "", "qty": 1,
+                "price": delivery / factor, "amount": delivery / factor,
+            })
+        if inclusive:
+            net_total = _fmt(quote.get("subtotal")) + (delivery - delivery_vat)
+        else:
+            net_total = _fmt(quote.get("subtotal")) + delivery
+        vat_total = _fmt(quote.get("vat"))
+        total = _fmt(quote.get("total"))
+    else:
+        net_total = sum((_fmt(line["amount"]) for line in order["lines"]), Decimal(0))
+        total = _fmt(order["total"])
+        vat_total = total - net_total
+    order = {**order, "lines": lines}
     issued = (order["created_at"] or "")[:10]
     try:
         valid_until = (date.fromisoformat(issued) + timedelta(days=settings.quote_valid_days)).isoformat()
@@ -838,7 +904,7 @@ def order_doc(request: Request, order_id: str, kind: str):
         net_total=net_total,
         vat_total=vat_total,
         total=total,
-        vat_rate=calc_settings(supplier_store(), settings).vat_rate,
+        vat_rate=rate,
         valid_until=valid_until,
     )
     html_path = tenant_out_dir(settings, supplier_store().db_path) / f"cabinet-{order_id}-{kind}.html"
@@ -920,15 +986,19 @@ async def repeat_order(request: Request, order_id: str):
 
 
 def _api_allowed(request: Request) -> bool:
-    """Ключ владельца или ключ конкретного клиента (вместе с X-Tenant)."""
+    """Ключ владельца или ключ конкретного клиента (вместе с X-Tenant).
+
+    Если запрос адресован клиенту (X-Tenant), принимается только ключ этого
+    клиента. Общий ключ владельца сюда не подставляется: иначе его утечка
+    открывала бы заказы и финансы всех клиентов, а не одну базу.
+    """
     key = request.headers.get("X-API-Key", "")
     if not key:
         return False
     code = (request.headers.get("X-Tenant") or "").strip()
     if code:
         tenant = _resolve_tenant(code)
-        if tenant and get_registry(settings).verify_key(tenant["id"], key):
-            return True
+        return bool(tenant and get_registry(settings).verify_key(tenant["id"], key))
     return constant_time_equal(key, settings.api_key)
 
 

@@ -59,6 +59,20 @@ class TenantKeyTest(unittest.TestCase):
         response = self.client.get("/api/v1/stats", headers={"X-API-Key": settings.api_key})
         self.assertEqual(response.status_code, 200)
 
+    def test_owner_key_does_not_open_tenant_cabinet_api(self) -> None:
+        """Ключ владельца не должен читать кабинет чужого клиента через X-Tenant."""
+        response = self.client.get(
+            "/cabinet/api/1c/stock",
+            headers={"X-API-Key": settings.api_key, "X-Tenant": self.code},
+        )
+        self.assertEqual(response.status_code, 401, response.text)
+        own_key = registry.issue_key(self.code)
+        allowed = self.client.get(
+            "/cabinet/api/1c/stock",
+            headers={"X-API-Key": own_key, "X-Tenant": self.code},
+        )
+        self.assertEqual(allowed.status_code, 200, allowed.text)
+
     def test_reissued_key_replaces_old(self) -> None:
         old = registry.issue_key(self.code)
         registry.issue_key(self.code)

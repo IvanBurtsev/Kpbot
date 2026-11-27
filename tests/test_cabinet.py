@@ -122,6 +122,44 @@ class CatalogCartOrderTest(CabinetBase):
         self.assertEqual(response.status_code, 403)
 
 
+class InclusiveDeliveryOrderTest(CabinetBase):
+    """Итог заказа в ЛК совпадает с КП, даже если цены уже с НДС и есть доставка."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        supplier.set_settings({"prices_include_vat": "1", "delivery_price": "122.00"})
+        self.addCleanup(
+            lambda: supplier.set_settings({"prices_include_vat": "", "delivery_price": ""})
+        )
+        self.cabinet.set_price(self.company["id"], STOCK_SKU.sku, "122.00")
+
+    def test_order_total_matches_generated_quote(self) -> None:
+        self.client.post(
+            "/cabinet/cart/add",
+            data={"csrf_token": self.csrf, "sku": STOCK_SKU.sku, "qty": "10"},
+        )
+        cart = self.client.get("/cabinet/cart")
+        self.assertEqual(cart.status_code, 200)
+        self.assertIn("Сумма с НДС по товарам", cart.text)
+        self.assertIn("1220.00", cart.text)
+        response = self.client.post("/cabinet/orders", data={"csrf_token": self.csrf})
+        self.assertEqual(response.status_code, 303)
+        order_id = response.headers["location"].split("/orders/")[1].split("?")[0]
+        order = self.cabinet.order(order_id)
+        quote = supplier.get_quote(order["rfq_id"])
+        self.assertEqual(Decimal(order["total"]), Decimal(quote["total"]))
+        # 1220 с НДС + 122 доставка с НДС = 1342, а не 1488 (НДС дважды).
+        self.assertEqual(Decimal(order["total"]), Decimal("1342.00"))
+        self.assertEqual(quote["prices_include_vat"], 1)
+        self.assertEqual(quote["delivery_vat"], "22.00")
+
+        doc = self.client.get(f"/cabinet/orders/{order_id}/doc/invoice")
+        self.assertEqual(doc.status_code, 200)
+        self.assertIn("Доставка", doc.text)
+        self.assertIn("1 100,00", doc.text)  # 1000 товары без НДС + 100 доставка без НДС
+        self.assertIn("1 342,00", doc.text)
+
+
 class IsolationTest(CabinetBase):
     def test_other_company_cannot_open_order(self) -> None:
         self.client.post("/cabinet/cart/add",

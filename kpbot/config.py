@@ -32,7 +32,14 @@ def _resolve_env_file() -> str | None:
 _ENV_FILE = _resolve_env_file()
 
 DEFAULT_SECRETS = frozenset(
-    {"dev-api-key-change-me", "dev-password", "dev-session-secret-change-me", "change-me", ""}
+    {
+        "dev-api-key-change-me",
+        "dev-password",
+        "dev-session-secret-change-me",
+        "12345678",
+        "change-me",
+        "",
+    }
 )
 
 
@@ -94,6 +101,9 @@ class Settings(BaseSettings):
     # конфигом: у клиента может быть 10%, 7%, 5% или 0%.
     vat_rate: Decimal = Decimal("0.22")
     delivery_price: Decimal = Decimal("0.00")
+    # Лимит, выше которого менеджер не может одобрить КП (0 — без лимита).
+    # Сумма в рублях; администратор апрувит всегда.
+    approval_limit: Decimal = Decimal("0.00")
     max_qty: Decimal = Decimal("1000000")
     # Прайс клиента уже с НДС (типичная выгрузка из 1С/розничного каталога):
     # тогда НДС выделяется из цены, а не начисляется сверху.
@@ -119,6 +129,13 @@ class Settings(BaseSettings):
     def _check_delivery(cls, value: Decimal) -> Decimal:
         if value < 0:
             raise ValueError(f"KPBOT_DELIVERY_PRICE не может быть отрицательной (получено {value})")
+        return value
+
+    @field_validator("approval_limit")
+    @classmethod
+    def _check_approval_limit(cls, value: Decimal) -> Decimal:
+        if value < 0:
+            raise ValueError(f"KPBOT_APPROVAL_LIMIT не может быть отрицательным (получено {value})")
         return value
 
     # --- матчинг ---

@@ -76,13 +76,24 @@ class TenantCabinetTest(unittest.TestCase):
 
     def test_api_uses_tenant_header(self) -> None:
         Store(self.path).replace_price_items([])
-        headers = {"X-API-Key": settings.api_key, "X-Tenant": self.tenant["id"]}
+        # Ключ владельца не должен подставляться в чужой кабинет.
+        owner = self.client.get(
+            "/cabinet/api/1c/prices",
+            headers={"X-API-Key": settings.api_key, "X-Tenant": self.tenant["id"]},
+        )
+        self.assertEqual(owner.status_code, 401)
+        # Свой ключ клиента — работает.
+        tenant_key = registry.issue_key(self.tenant["id"])
+        headers = {"X-API-Key": tenant_key, "X-Tenant": self.tenant["id"]}
         response = self.client.get("/cabinet/api/1c/prices", headers=headers)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [])
         self.assertEqual(
-            self.client.get("/cabinet/api/1c/prices", headers={"X-API-Key": settings.api_key, "X-Tenant": "nope"}).status_code,
-            404,
+            self.client.get(
+                "/cabinet/api/1c/prices",
+                headers={"X-API-Key": tenant_key, "X-Tenant": "nope"},
+            ).status_code,
+            401,
         )
 
 

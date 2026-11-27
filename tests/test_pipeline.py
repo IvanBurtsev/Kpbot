@@ -87,7 +87,7 @@ class PipelineTest(unittest.TestCase):
         )
         # 345 + НДС 22% на (345 + 500) = 185,90 + доставка 500 = 1030,90
         self.assertEqual(Decimal(result.total), Decimal("1030.90"))
-        self.assertIn("Доставка: 500,00", result.reply_text)
+        self.assertIn("Доставка без НДС: 500,00", result.reply_text)
 
     def test_unknown_position_goes_to_human_review(self) -> None:
         result = self.pipeline.process_eml_bytes(build_eml("подрозетник 68 мм — 20 шт"), actor="test")

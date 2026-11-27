@@ -67,6 +67,10 @@ CREATE TABLE IF NOT EXISTS quotes(
     delivery        TEXT NOT NULL,
     total           TEXT NOT NULL,
     vat_rate        TEXT NOT NULL,
+    -- Снимок должен помнить режим НДС и НДС с доставки: иначе письмо и
+    -- документ, пересобранные из базы, считают итог иначе, чем при создании.
+    prices_include_vat INTEGER NOT NULL DEFAULT 0,
+    delivery_vat    TEXT NOT NULL DEFAULT '0.00',
     requires_review INTEGER NOT NULL,
     unmatched       INTEGER NOT NULL,
     duration_ms     INTEGER,
@@ -214,6 +218,18 @@ class Store:
                     pass
                 try:
                     conn.execute("ALTER TABLE quotes ADD COLUMN number INTEGER")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute(
+                        "ALTER TABLE quotes ADD COLUMN prices_include_vat INTEGER NOT NULL DEFAULT 0"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute(
+                        "ALTER TABLE quotes ADD COLUMN delivery_vat TEXT NOT NULL DEFAULT '0.00'"
+                    )
                 except sqlite3.OperationalError:
                     pass
                 try:
@@ -439,8 +455,8 @@ class Store:
             quote.number = number
             conn.execute(
                 "INSERT INTO quotes(id, rfq_id, number, subtotal, vat, delivery, total, vat_rate,"
-                " requires_review, unmatched, duration_ms, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " prices_include_vat, delivery_vat, requires_review, unmatched, duration_ms, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     quote_id,
                     rfq_id,
@@ -450,6 +466,8 @@ class Store:
                     str(quote.delivery),
                     str(quote.total),
                     str(quote.vat_rate),
+                    int(quote.prices_include_vat),
+                    str(quote.delivery_vat),
                     int(quote.requires_review),
                     int(quote.unmatched),
                     duration_ms,

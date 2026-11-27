@@ -63,7 +63,7 @@ cd "$APP_DIR"
 
 log "бэкап базы перед обновлением"
 if [ -x .venv/bin/python ]; then
-    .venv/bin/python -m kpbot.cli backup --keep 14 || echo "бэкап пропущен — деплой продолжаем"
+    .venv/bin/python -m kpbot.cli backup --all --keep 14 || echo "бэкап пропущен — деплой продолжаем"
 fi
 
 PREVIOUS="$(git rev-parse HEAD)"
@@ -80,7 +80,10 @@ log "зависимости"
 .venv/bin/pip install -q --upgrade pip
 .venv/bin/pip install -q -r requirements.txt
 
-log ".env: НДС 22% и вход общим паролем выключен"
+log ".env: боевой режим, НДС 22% и вход общим паролем выключен"
+# Без KPBOT_ENV=prod проверки дефолтных секретов на старте не запускаются:
+# деплой не должен оставлять сервис в dev-режиме «по умолчанию».
+set_env KPBOT_ENV prod
 set_env KPBOT_VAT_RATE 0.22
 set_env KPBOT_ALLOW_SHARED_LOGIN false
 
