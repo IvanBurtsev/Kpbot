@@ -203,6 +203,43 @@ PATH=/usr/local/bin:/usr/bin:/bin
 CRON
 ```
 
+На сервере `45.152.202.114` cron не установлен — вместо него работают
+systemd-таймеры с теми же задачами (так же можно и на новой машине):
+
+| Юнит | Что делает | Расписание |
+|---|---|---|
+| `kpbot-poll.timer` | `poll --limit 10` | каждые 5 минут |
+| `kpbot-outbox.timer` | `retry-outbox --limit 20 --all` | каждые 10 минут |
+| `kpbot-backup.timer` | `backup --keep 14 --all` | ежедневно в 03:00 |
+| `kpbot-watchdog.timer` | healthz + журнал ошибок | каждые 5 минут |
+
+Пример юнита (остальные — копии с другой `ExecStart`):
+
+```ini
+# /etc/systemd/system/kpbot-poll.service
+[Service]
+Type=oneshot
+User=kpbot
+Group=kpbot
+WorkingDirectory=/opt/kpbot
+EnvironmentFile=/opt/kpbot/.env
+ExecStart=/opt/kpbot/.venv/bin/python -m kpbot.cli poll --limit 10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/kpbot/data
+
+# /etc/systemd/system/kpbot-poll.timer
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+```
+
+`systemctl enable --now kpbot-poll.timer kpbot-outbox.timer kpbot-backup.timer`.
+
 `kpbot-watchdog.timer` каждые 5 минут проверяет `/healthz` и перезапускает сервис,
 если он не отвечает. **Порт в `ExecStart` и `WATCHDOG_HEALTHZ` должны совпадать** —
 иначе сторож будет перезапускать живой сервис по кругу. Второй проверкой он смотрит
