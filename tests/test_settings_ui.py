@@ -68,6 +68,28 @@ class CompanySettingsTest(unittest.TestCase):
         self.assertIn("7701234567", html)
         self.assertIn("Цены действительны 7 дней", html)
 
+    def test_vat_20_is_not_saved(self) -> None:
+        """С 2026 года 20% незаконна: настройка не сохраняется, человек видит причину."""
+        token = csrf(self.client)
+        response = self.client.post(
+            "/ui/settings",
+            data={"csrf_token": token, "name": "ООО «Ставка»", "vat_rate": "20"},
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertNotEqual(store.get_settings().get("vat_rate"), "0.2000")
+        self.assertIn("flash=", response.headers["location"])
+        # ставка не записалась — расчёт возьмёт законные 22% из конфига
+        self.assertEqual(pipeline.calc().vat_rate, settings.vat_rate)
+
+    def test_vat_22_is_saved(self) -> None:
+        token = csrf(self.client)
+        response = self.client.post(
+            "/ui/settings",
+            data={"csrf_token": token, "name": "ООО «Ставка»", "vat_rate": "22"},
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(store.get_settings().get("vat_rate"), "0.2200")
+
     def test_manager_cannot_open_settings(self) -> None:
         try:
             store.create_user(email="mgr-settings@test.ru", password="managerpass", role="manager")

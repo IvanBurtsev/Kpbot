@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field, field_validator
 from . import __version__
 from .cabinet import order_transition_error, router as cabinet_router
 from .cabinet_store import ORDER_STATUS_LABELS, ORDER_STATUSES, CabinetStore
-from .config import settings
+from .config import LEGAL_VAT_RATES, settings
 from .domain import LineStatus, RfqLine, RfqStatus, ValidationError, quantity
 from .export import build_rfq_xlsx, check_1c_sheet
 from .mailer import MailError, Mailer, build_kp_message, load_attachments, reply_subject
@@ -654,13 +654,17 @@ async def ui_upload(request: Request, file: UploadFile):
     return RedirectResponse(f"{target}?flash={quote(flash)}", status_code=status.HTTP_303_SEE_OTHER)
 
 
-async def apply_company_form(form) -> None:
-    """Реквизиты, цвет и логотип — общая логика для настроек и визарда."""
+async def apply_company_form(form) -> str:
+    """Реквизиты, цвет и логотип — общая логика для настроек и визарда.
+
+    Возвращает предупреждение для человека (пустая строка — всё в порядке).
+    """
     allowed = (
         "name", "inn", "kpp", "address", "phone", "email", "signer", "signature", "kp_intro",
         "account", "bank", "bik", "corr_account",
     )
     values = {f"company_{key}": str(form.get(key, "")).strip()[:500] for key in allowed}
+    vat_warning = ""
 
     # Расчёт клиента: ставка, режим цен и доставка. Пишем только если поля пришли —
     # мастер подключения эти поля не отправляет и не должен сбрасывать настройки.
@@ -673,7 +677,17 @@ async def apply_company_form(form) -> None:
             try:
                 percent = Decimal(raw_rate)
                 if 0 <= percent <= 100:
-                    values["vat_rate"] = str((percent / 100).quantize(Decimal("0.0001")))
+                    rate = (percent / 100).quantize(Decimal("0.0001"))
+                    if rate in LEGAL_VAT_RATES:
+                        values["vat_rate"] = str(rate)
+                    else:
+                        # 20% и 18% — ставки прошлых лет. С 2026 года основная
+                        # 22% (ст. 164 НК РФ): сохранять незаконную ставку нельзя.
+                        vat_warning = (
+                            f"ставка НДС {percent:g}% не применяется с 01.01.2026 — "
+                            "оставлена прежняя. Законные ставки: 22% (основная), 10%, 7%, 5%, 0%"
+                        )
+                        log.error("настройки: %s", vat_warning)
                 else:
                     log.warning("ставка НДС в форме вне 0..100: %r — оставляю прежнюю", raw_rate)
             except (InvalidOperation, ValueError):
@@ -707,6 +721,7 @@ async def apply_company_form(form) -> None:
                 values["company_logo"] = "data:image/%s;base64,%s" % (kind, base64.b64encode(raw).decode("ascii"))
 
     store.set_settings(values)
+    return vat_warning
 
 
 @app.get("/ui/stats", response_class=HTMLResponse)
@@ -848,10 +863,11 @@ async def ui_settings_save(request: Request):
     if denied is not None:
         return denied
     form = await verified_form(request)
-    await apply_company_form(form)
+    warning = await apply_company_form(form)
     store.log_event("company_settings", actor_of(request), str(form.get("name", ""))[:120])
     return RedirectResponse(
-        f"/ui/settings?flash={quote('настройки сохранены')}", status_code=status.HTTP_303_SEE_OTHER
+        f"/ui/settings?flash={quote(warning or 'настройки сохранены')}",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 def setup_state() -> dict:
@@ -889,10 +905,11 @@ async def ui_setup_company(request: Request):
     if denied is not None:
         return denied
     form = await verified_form(request)
-    await apply_company_form(form)
+    warning = await apply_company_form(form)
     store.log_event("setup_company", actor_of(request), str(form.get("name", ""))[:120])
     return RedirectResponse(
-        f"/ui/setup?flash={quote('шаг 1 готов: реквизиты сохранены')}", status_code=status.HTTP_303_SEE_OTHER
+        f"/ui/setup?flash={quote(warning or 'шаг 1 готов: реквизиты сохранены')}",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 

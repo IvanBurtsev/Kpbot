@@ -452,6 +452,20 @@ class SendKpStatusTest(unittest.TestCase):
         shutil.rmtree(cfg.data_dir, ignore_errors=True)
 
 
+class VatComplianceTest(unittest.TestCase):
+    """Ставки НДС по закону 2026 года: 22% основная, 20/18 не применяются."""
+
+    def test_client_rate_falls_back_to_legal(self) -> None:
+        from kpbot.pipeline import _rate_from
+
+        self.assertEqual(_rate_from("0.20", Decimal("0.22")), Decimal("0.22"))
+        self.assertEqual(_rate_from("0.18", Decimal("0.22")), Decimal("0.22"))
+        self.assertEqual(_rate_from("0.10", Decimal("0.22")), Decimal("0.10"))
+        self.assertEqual(_rate_from("0", Decimal("0.22")), Decimal("0"))
+        # даже неверный серверный fallback не должен просочиться в документ
+        self.assertEqual(_rate_from(None, Decimal("0.20")), Decimal("0.22"))
+
+
 class LogsRedactionTest(unittest.TestCase):
     def test_integration_passwords_are_masked(self) -> None:
         settings = make_settings(

@@ -1,9 +1,10 @@
 """Ставка НДС и режим цен — на каждого клиента, а не на сервис.
 
-Аудит и разговор с владельцем продукта вскрыли дыру: у одного поставщика база
-на 20% (документы 2025 года), у другого — 22% (закон с 01.01.2026), у третьего
-цены в прайсе уже с НДС. Одна ставка на процесс делает такой набор клиентов
-невозможным: второй клиент получает неверный налог.
+У поставщиков разные законные ставки: 22% (основная с 01.01.2026), 10% для
+отдельных товаров, 0/5/7% для спецрежимов. 20% — ставка прошлых лет, она не
+должна попадать в документы 2026 года.
+Одна ставка на процесс делает такой набор клиентов невозможным: второй клиент
+получает неверный налог.
 
 Здесь проверяется:
 
@@ -54,8 +55,10 @@ class StartupValidationTest(unittest.TestCase):
 
     def test_normal_rate_passes(self) -> None:
         self.assertEqual(_settings(support.ROOT, vat_rate=Decimal("0.22")).vat_rate, Decimal("0.22"))
-        self.assertEqual(_settings(support.ROOT, vat_rate=Decimal("0.20")).vat_rate, Decimal("0.20"))
+        self.assertEqual(_settings(support.ROOT, vat_rate=Decimal("0.10")).vat_rate, Decimal("0.10"))
         self.assertEqual(_settings(support.ROOT, vat_rate=Decimal("0")).vat_rate, Decimal("0"))
+        # 20% не запрещена на уровне модели (исторические данные читаются),
+        # но в расчёт и в прод она не проходит — см. тесты ниже.
 
     def test_negative_delivery_is_rejected(self) -> None:
         with self.assertRaises(PydanticValidationError):
@@ -75,9 +78,13 @@ class TenantCalcTest(unittest.TestCase):
         self.assertEqual(calc.delivery_price, Decimal("0.00"))
 
     def test_tenant_rate_overrides_server(self) -> None:
-        # клиент на документах 2025 года: 20%
-        self.store.set_settings({"vat_rate": "0.2"})
-        self.assertEqual(calc_settings(self.store, self.cfg).vat_rate, Decimal("0.2"))
+        self.store.set_settings({"vat_rate": "0.10"})
+        self.assertEqual(calc_settings(self.store, self.cfg).vat_rate, Decimal("0.10"))
+
+    def test_illegal_tenant_rate_falls_back_to_22(self) -> None:
+        # 20% — ставка до 2026 года: в документы 2026-го она попасть не должна
+        self.store.set_settings({"vat_rate": "0.20"})
+        self.assertEqual(calc_settings(self.store, self.cfg).vat_rate, Decimal("0.22"))
 
     def test_tenant_mode_and_delivery(self) -> None:
         self.store.set_settings({"prices_include_vat": "1", "delivery_price": "500"})
@@ -99,19 +106,31 @@ class TenantCalcTest(unittest.TestCase):
 class TenantQuoteTest(unittest.TestCase):
     """Ставка клиента доходит до денег, а не только до настроек."""
 
-    def test_twenty_percent_tenant_counts_twenty(self) -> None:
-        store = Store(support.ROOT / f"tenant-quote-20-{id(self)}.sqlite3")
+    def test_ten_percent_tenant_counts_ten(self) -> None:
+        store = Store(support.ROOT / f"tenant-quote-10-{id(self)}.sqlite3")
         cfg = _settings(support.ROOT)
         pipeline = Pipeline(store, cfg)
-        store.set_settings({"vat_rate": "0.2"})
+        store.set_settings({"vat_rate": "0.10"})
         quote = price_quote(
             _one_line(), {"KR-001": PriceItem("KR-001", "Уголок", "шт", Decimal("34.50"))},
             **pipeline.calc().as_kwargs(),
         )
         self.assertEqual(quote.subtotal, Decimal("345.00"))
-        self.assertEqual(quote.vat, Decimal("69.00"), "20%: 345 × 0.2")
-        self.assertEqual(quote.total, Decimal("414.00"))
-        self.assertEqual(quote.vat_rate, Decimal("0.2"))
+        self.assertEqual(quote.vat, Decimal("34.50"), "10%: 345 × 0.1")
+        self.assertEqual(quote.total, Decimal("379.50"))
+        self.assertEqual(quote.vat_rate, Decimal("0.10"))
+
+    def test_illegal_twenty_percent_tenant_counts_22(self) -> None:
+        store = Store(support.ROOT / f"tenant-quote-20-{id(self)}.sqlite3")
+        cfg = _settings(support.ROOT)
+        pipeline = Pipeline(store, cfg)
+        store.set_settings({"vat_rate": "0.20"})
+        quote = price_quote(
+            _one_line(), {"KR-001": PriceItem("KR-001", "Уголок", "шт", Decimal("34.50"))},
+            **pipeline.calc().as_kwargs(),
+        )
+        self.assertEqual(quote.vat, Decimal("75.90"), "20% заменяется законными 22%")
+        self.assertEqual(quote.vat_rate, Decimal("0.22"))
 
     def test_twenty_two_percent_tenant_counts_twenty_two(self) -> None:
         store = Store(support.ROOT / f"tenant-quote-22-{id(self)}.sqlite3")
@@ -165,20 +184,20 @@ class TenantIsolationTest(unittest.TestCase):
         registry = TenantRegistry(support.ROOT / f"iso-reg-{run}.sqlite3", main_db)
         registry.ensure_default()
         old_db = Path(main_db).parent / f"iso-old-{run}.sqlite3"
-        registry.create("Старая база 20%", old_db)
+        registry.create("Льготная база 10%", old_db)
 
         cfg = _settings(support.ROOT)
         stores = {tenant["id"]: Store(Path(tenant["db_path"])) for tenant in registry.list()}
         stores["default"].set_settings({"vat_rate": "0.22"})
         old_id = next(tid for tid in stores if tid != "default")
-        stores[old_id].set_settings({"vat_rate": "0.20"})
+        stores[old_id].set_settings({"vat_rate": "0.10"})
 
         self.assertEqual(calc_settings(stores["default"], cfg).vat_rate, Decimal("0.22"))
-        self.assertEqual(calc_settings(stores[old_id], cfg).vat_rate, Decimal("0.20"))
+        self.assertEqual(calc_settings(stores[old_id], cfg).vat_rate, Decimal("0.10"))
 
         # и деньги считаются по своей ставке у каждого: 10 × 100 = 1000 без НДС
         items = {"KR-001": PriceItem("KR-001", "Уголок", "шт", Decimal("100"))}
-        for tenant_id, expected_vat in (("default", "220.00"), (old_id, "200.00")):
+        for tenant_id, expected_vat in (("default", "220.00"), (old_id, "100.00")):
             pipeline = Pipeline(stores[tenant_id], cfg)
             quote = price_quote(_one_line(), items, **pipeline.calc().as_kwargs())
             self.assertEqual(quote.vat, Decimal(expected_vat), tenant_id)
@@ -209,12 +228,12 @@ class SettingsUiTest(unittest.TestCase):
         token = self._csrf()
         response = self.client.post(
             "/ui/settings",
-            data={"csrf_token": token, "name": "ООО Тест", "vat_rate": "20", "delivery_price": "500",
+            data={"csrf_token": token, "name": "ООО Тест", "vat_rate": "22", "delivery_price": "500",
                   "prices_include_vat": "1", "vat_mode": "1"},
         )
         self.assertEqual(response.status_code, 303)
         saved = self.store.get_settings()
-        self.assertEqual(saved.get("vat_rate"), "0.2000")
+        self.assertEqual(saved.get("vat_rate"), "0.2200")
         self.assertEqual(saved.get("delivery_price"), "500.00")
         self.assertEqual(saved.get("prices_include_vat"), "1")
 

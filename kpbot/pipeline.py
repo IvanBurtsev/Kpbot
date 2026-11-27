@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from .config import Settings, settings as default_settings
+from .config import LEGAL_VAT_RATES, Settings, settings as default_settings
 from .domain import (
     CalcSettings,
     LineStatus,
@@ -825,6 +825,14 @@ def calc_settings(store: Store, cfg) -> CalcSettings:
 
 
 def _rate_from(raw: object, fallback: Decimal) -> Decimal:
+    # Запасное значение тоже должно быть законным: иначе неверная настройка
+    # сервера «просочится» в документ через клиента без своей ставки.
+    if fallback not in LEGAL_VAT_RATES:
+        log.error(
+            "ставка НДС по умолчанию %s не применяется с 01.01.2026 — беру 22%%",
+            fallback,
+        )
+        fallback = Decimal("0.22")
     if raw is None or str(raw).strip() == "":
         return fallback
     try:
@@ -840,14 +848,17 @@ def _rate_from(raw: object, fallback: Decimal) -> Decimal:
             fallback,
         )
         return fallback
-    if value == Decimal("0.20"):
-        # Ставка 20% действовала до 01.01.2026. Оставляем расчёт как задан
-        # (данные клиента не переписываем молча), но говорим прямо, что
-        # документ будет неверным: с 2026 года основная ставка — 22%.
+    if value not in LEGAL_VAT_RATES:
+        # 20% и 18% — ставки прошлых лет. С 2026 года основная ставка 22%
+        # (ст. 164 НК РФ); выпускать с ними документы нельзя, поэтому берём
+        # законную ставку и громко пишем в журнал, а не «как настроено».
         log.error(
-            "у клиента ставка НДС 20%% — это ставка до 01.01.2026; "
-            "с 2026 года основная ставка в РФ 22%%, документы с 20%% незаконны"
+            "у клиента ставка НДС %s%% не применяется с 01.01.2026 — "
+            "считаю по %s%%; исправьте настройку клиента",
+            value * 100,
+            fallback * 100,
         )
+        return fallback
     return value
 
 
