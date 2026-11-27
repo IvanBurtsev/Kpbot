@@ -9,7 +9,7 @@
   <form method="post" action="/ui/login" class="stack">
     <label>Логин (e-mail)
       <input type="email" name="email" autocomplete="username" placeholder="admin@local">
-      <span class="muted small">у администратора можно оставить пустым</span>
+      <span class="muted small">{% if shared_login_allowed %}у администратора можно оставить пустым{% else %}для администратора: admin@local{% endif %}</span>
     </label>
     <label>Пароль
       <input type="password" name="password" autocomplete="current-password" required autofocus>

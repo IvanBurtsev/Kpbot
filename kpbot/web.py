@@ -441,6 +441,7 @@ def page(name: str, request: Request, *, code: int = 200, **context: object) -> 
         price_count=store.price_count(),
         smtp_ready=bool(mailer.enabled and mailer.host),
         prices_include_vat=settings.prices_include_vat,
+        shared_login_allowed=settings.shared_login_allowed,
         **context,
     )
     return HTMLResponse(body, status_code=code)
