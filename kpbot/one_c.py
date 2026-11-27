@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -22,6 +23,8 @@ from .one_c_profiles import detect_configuration, parse_entities
 import httpx
 
 ODATA = "/odata/standard.odata"
+
+log = logging.getLogger("kpbot.one_c")
 
 
 class OneCError(RuntimeError):
@@ -34,6 +37,30 @@ class OneCResponseError(OneCError):
     def __init__(self, message: str, status: int) -> None:
         super().__init__(message)
         self.status = status
+
+
+def _error_hint(text: str) -> str:
+    """Подсказка к частым ошибкам 1С: сам текст платформы ничего не объясняет.
+
+    «Перечисление 'СтавкиНДС' не содержит элемент 'НДС22'» значит, что в базе
+    устаревшая конфигурация: основной ставки 22% (ст. 164 НК РФ, с 01.01.2026)
+    в перечислении нет. Понижать ставку в kpbot нельзя — документ станет
+    неверным, а НДС недоплаченным; обновляется конфигурация 1С.
+    """
+    low = (text or "").lower()
+    if "не содержит элемент" in low and "ндс" in low:
+        return (
+            "\nв базе 1С нет ставки НДС 22% — это устаревшая конфигурация:"
+            " с 01.01.2026 основная ставка в РФ 22% (ст. 164 НК РФ),"
+            " обновите конфигурацию 1С. Ставку в kpbot понижать нельзя:"
+            " счёт станет неверным"
+        )
+    if "передзаписью" in low:
+        return (
+            "\n1С отбила запись в «ПередЗаписью»: документ нужно создавать"
+            " в интерфейсе или дать пользователю API полные права"
+        )
+    return ""
 
 
 def _error_text(response: httpx.Response) -> str:
@@ -195,7 +222,8 @@ class OneCClient:
             raise OneCResponseError("у пользователя нет прав на это действие (403)", 403)
         if response.status_code >= 400:
             raise OneCResponseError(
-                f"1С ответила {response.status_code}: {_error_text(response)}",
+                f"1С ответила {response.status_code}: {_error_text(response)}"
+                + _error_hint(_error_text(response)),
                 response.status_code,
             )
         return response
@@ -532,7 +560,7 @@ class OneCClient:
         warehouse: str = "",
         currency: str = "",
         date: str | None = None,
-        vat_rate: Decimal = Decimal("0.20"),
+        vat_rate: Decimal = Decimal("0.22"),
         post: bool = False,
     ) -> str:
         """Создаёт «Счёт на оплату покупателю» и возвращает Ref_Key.
@@ -692,13 +720,22 @@ class OneCClient:
                 row["СтавкаНДС"] = _vat_enum(vat_rate)
             rows.append(row)
 
-        self.update_entity(
-            entity,
-            ref,
-            {tabular: rows, "СуммаДокумента": float(total)},
-        )
-        if post:
-            self.post_document(entity, ref)
+        try:
+            self.update_entity(
+                entity,
+                ref,
+                {tabular: rows, "СуммаДокумента": float(total)},
+            )
+            if post:
+                self.post_document(entity, ref)
+        except Exception:
+            # Шапка уже создана: без отката в базе остаётся пустой документ,
+            # который никто не найдёт (1С отбила ставку НДС или табличную часть).
+            try:
+                self.delete_entity(entity, ref)
+            except Exception as cleanup_error:  # noqa: BLE001 - главная ошибка важнее
+                log.warning("не удалось удалить пустой документ 1С %s: %s", ref, cleanup_error)
+            raise
         return ref
 
 

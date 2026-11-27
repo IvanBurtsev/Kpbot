@@ -167,7 +167,7 @@ def build_rfq_xlsx(
 
 
 def _vat_percent(quote: dict | None) -> str:
-    """0.20 → «20%». Пустая строка, если ставка неизвестна."""
+    """0.22 → «22%». Пустая строка, если ставка неизвестна."""
     if not quote:
         return ""
     rate = quote.get("vat_rate")

@@ -345,14 +345,24 @@ class InvoiceCreationTest(unittest.TestCase):
         self.assertNotIn("Товары", header)
 
         patch = capture["patch"]
-        self.assertEqual(patch["СуммаДокумента"], 240.0)
+        # по умолчанию — законная ставка 22% (ст. 164 НК РФ, с 01.01.2026)
+        self.assertEqual(patch["СуммаДокумента"], 244.0)
         line = patch["Товары"][0]
         self.assertEqual(line["Номенклатура_Key"], "n-1")
         self.assertEqual(line["Количество"], 2)
         self.assertEqual(line["Сумма"], 200.0)
-        self.assertEqual(line["СуммаНДС"], 40.0)
-        self.assertEqual(line["СтавкаНДС"], "НДС20")
+        self.assertEqual(line["СуммаНДС"], 44.0)
+        self.assertEqual(line["СтавкаНДС"], "НДС22")
         self.assertEqual(line["LineNumber"], "1")
+
+    def test_legacy_twenty_percent_can_be_requested_explicitly(self) -> None:
+        # 20% остаётся только как явный выбор (документы до 2026 года)
+        capture: dict = {}
+        client_with(self._handler(capture)).create_invoice(
+            counterparty="cp-1", lines=[("KR-001", "2", "100")], vat_rate=Decimal("0.20")
+        )
+        self.assertEqual(capture["patch"]["Товары"][0]["СтавкаНДС"], "НДС20")
+        self.assertEqual(capture["patch"]["Товары"][0]["СуммаНДС"], 40.0)
 
     def test_without_vat_marks_document(self) -> None:
         capture: dict = {}
@@ -386,6 +396,52 @@ class InvoiceCreationTest(unittest.TestCase):
         with self.assertRaises(OneCError) as ctx:
             client_with(base_handler).create_invoice(counterparty="", lines=[("KR-001", "1", "1")])
         self.assertIn("контрагент", str(ctx.exception))
+
+
+class VatRatePolicyTest(unittest.TestCase):
+    """Ставка 22% — закон с 01.01.2026, а не настройка под базу."""
+
+    def test_default_rate_is_legal_twenty_two(self) -> None:
+        from kpbot.one_c import _vat_enum
+
+        self.assertEqual(_vat_enum(Decimal("0.22")), "НДС22")
+        self.assertEqual(_vat_enum(Decimal("0.20")), "НДС20")
+
+    def test_outdated_base_error_names_the_law_and_forbids_lowering(self) -> None:
+        from kpbot.one_c import _error_hint
+
+        hint = _error_hint("Перечисление 'СтавкиНДС' не содержит элемент 'НДС22'.")
+        self.assertIn("22%", hint)
+        self.assertIn("164", hint)
+        self.assertIn("обновите конфигурацию", hint)
+        self.assertNotIn("KPBOT_VAT_RATE", hint, "нельзя предлагать понизить ставку")
+
+    def test_failed_lines_roll_back_created_header(self) -> None:
+        # шапка создана, строки не записались (нет ставки НДС) — пустой документ
+        # в базе остаться не должен
+        calls: list[tuple[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            calls.append((request.method, path))
+            if "Document_СчетНаОплатуПокупателю" in path:
+                if request.method == "POST":
+                    return httpx.Response(201, json={"Ref_Key": "inv-bad"})
+                if request.method == "PATCH":
+                    return httpx.Response(
+                        400, json={"odata.error": {"message": {"value":
+                            "Перечисление 'СтавкиНДС' не содержит элемент 'НДС22'."}}}
+                    )
+                if request.method == "DELETE":
+                    return httpx.Response(204, text="")
+                return httpx.Response(200, json={})
+            return base_handler(request)
+
+        with self.assertRaises(OneCError) as ctx:
+            client_with(handler).create_invoice(counterparty="cp-1", lines=[("KR-001", "1", "100")])
+        self.assertIn("22%", str(ctx.exception))
+        methods = [method for method, path in calls if "Document_Счет" in path]
+        self.assertEqual(methods, ["POST", "PATCH", "DELETE"], "шапка должна быть удалена")
 
 
 class InvoiceLifecycleTest(unittest.TestCase):
