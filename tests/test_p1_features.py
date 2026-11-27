@@ -3,6 +3,7 @@
 import support  # общий стенд
 
 import os
+import time
 import unittest
 from decimal import Decimal
 from unittest.mock import patch
@@ -129,6 +130,10 @@ class SessionRevocationTest(unittest.TestCase):
         login = client.post("/ui/login", data={"email": email, "password": "old-password-1"})
         self.assertEqual(login.status_code, 303)
         self.assertEqual(client.get("/ui").status_code, 200)
+
+        # В токене время с точностью до секунды, поэтому ждём смену секунды:
+        # иначе «вход и смена пароля в одну секунду» — законный допуск.
+        time.sleep(1.1)
 
         # админ меняет пароль — старые cookie этого человека должны умереть
         web_store.set_user_password(user.id, "new-password-2")
