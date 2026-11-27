@@ -534,6 +534,36 @@ async def apply_company_form(form) -> None:
     )
     values = {f"company_{key}": str(form.get(key, "")).strip()[:500] for key in allowed}
 
+    # Расчёт клиента: ставка, режим цен и доставка. Пишем только если поля пришли —
+    # мастер подключения эти поля не отправляет и не должен сбрасывать настройки.
+    # Пустое поле означает «как на сервере»: сохраняем пусто, расчёт возьмёт .env.
+    if "vat_rate" in form:
+        raw_rate = str(form.get("vat_rate", "")).strip().replace(",", ".")
+        if not raw_rate:
+            values["vat_rate"] = ""
+        else:
+            try:
+                percent = Decimal(raw_rate)
+                if 0 <= percent <= 100:
+                    values["vat_rate"] = str((percent / 100).quantize(Decimal("0.0001")))
+                else:
+                    log.warning("ставка НДС в форме вне 0..100: %r — оставляю прежнюю", raw_rate)
+            except (InvalidOperation, ValueError):
+                log.warning("ставка НДС в форме не число: %r — оставляю прежнюю", raw_rate)
+    if "delivery_price" in form:
+        raw_delivery = str(form.get("delivery_price", "")).strip().replace(",", ".")
+        if not raw_delivery:
+            values["delivery_price"] = ""
+        else:
+            try:
+                delivery = Decimal(raw_delivery)
+                if delivery >= 0:
+                    values["delivery_price"] = str(delivery.quantize(Decimal("0.01")))
+            except (InvalidOperation, ValueError):
+                log.warning("доставка в форме не число: %r — оставляю прежнюю", raw_delivery)
+    if "prices_include_vat" in form or "vat_mode" in form:
+        values["prices_include_vat"] = "1" if str(form.get("prices_include_vat", "")) else "0"
+
     color = str(form.get("color", "")).strip()
     if re.fullmatch(r"#[0-9a-fA-F]{6}", color):
         values["company_color"] = color.lower()
@@ -805,6 +835,7 @@ def admin_context(request: Request) -> dict:
         "pairs": store.learned_pairs(300),
         "learned_total": store.learned_count(),
         "company": pipeline.company(),
+        "calc": pipeline.calc(),
         "totals": store.stats(),
         "report": store.report(30),
         "diagnostics": {

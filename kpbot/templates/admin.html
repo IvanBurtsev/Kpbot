@@ -341,6 +341,28 @@
     <label>Вводный текст КП (необязательно)
       <textarea name="kp_intro" rows="3" placeholder="Например: Цены действительны при заказе от 50 000 ₽">{{ company.kp_intro }}</textarea>
     </label>
+
+    <fieldset class="stack">
+      <legend>Расчёт НДС и доставки</legend>
+      <div class="row">
+        <label>Ставка НДС, %
+          <input type="text" name="vat_rate" value="{{ '%g'|format(calc.vat_rate * 100) }}" inputmode="decimal" size="6">
+        </label>
+        <label>Доставка, ₽
+          <input type="text" name="delivery_price" value="{{ '%g'|format(calc.delivery_price) }}" inputmode="decimal" size="8">
+        </label>
+      </div>
+      <input type="hidden" name="vat_mode" value="1">
+      <label class="inline">
+        <input type="checkbox" name="prices_include_vat" value="1" {% if calc.prices_include_vat %}checked{% endif %}>
+        Цены в прайсе уже с НДС (тогда он выделяется из цены, а не начисляется сверху)
+      </label>
+      <span class="muted small">
+        С 01.01.2026 основная ставка НДС в РФ — 22% (у части товаров 10%, у УСН 5/7%).
+        Значения свои у каждого клиента; пустое или битое поле — берётся значение сервера.
+        Изменение действует на новые расчёты, уже выпущенные КП остаются как были.
+      </span>
+    </fieldset>
     <div class="row">
       <label>Цвет компании
         <input type="color" name="color" value="{{ company.color or '#1a5fd0' }}">

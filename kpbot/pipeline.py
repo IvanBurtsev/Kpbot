@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .config import Settings, settings as default_settings
 from .domain import (
+    CalcSettings,
     LineStatus,
     Quote,
     RfqLine,
@@ -95,6 +96,15 @@ class Pipeline:
             log.info("индекс прайса собран: %s позиций", len(self._index))
         return self._index
 
+    def calc(self) -> CalcSettings:
+        """Ставка НДС, режим цен и доставка этого клиента.
+
+        Сначала то, что задано в интерфейсе клиента, потом — значения из `.env`.
+        У одного поставщика 22% и цены без НДС, у другого 20% и цены с НДС:
+        общая настройка сервиса тут не годится.
+        """
+        return calc_settings(self.store, self.cfg)
+
     # ---------- прайс ----------
 
     def ensure_price_list(self) -> int:
@@ -173,10 +183,7 @@ class Pipeline:
         quote = price_quote(
             lines,
             {item.sku: item for item in index.items},
-            vat_rate=self.cfg.vat_rate,
-            delivery=self.cfg.delivery_price,
-            max_qty=self.cfg.max_qty,
-            prices_include_vat=self.cfg.prices_include_vat,
+            **self.calc().as_kwargs(max_qty=self.cfg.max_qty),
         )
         return lines, quote, is_request
 
@@ -531,10 +538,7 @@ class Pipeline:
         quote = price_quote(
             lines,
             {item.sku: item for item in index.items},
-            vat_rate=self.cfg.vat_rate,
-            delivery=self.cfg.delivery_price,
-            max_qty=self.cfg.max_qty,
-            prices_include_vat=self.cfg.prices_include_vat,
+            **self.calc().as_kwargs(max_qty=self.cfg.max_qty),
         )
         self.store.replace_lines(rfq_id, lines)
         self._learn_from_edits(before, lines)
@@ -725,6 +729,59 @@ def _money_value(value: object) -> Decimal:
         return Decimal(str(value or "0"))
     except (InvalidOperation, ValueError):
         return Decimal("0")
+
+
+def calc_settings(store: Store, cfg) -> CalcSettings:
+    """Как считать деньги у клиента: интерфейс важнее `.env`, мусор — тоже `.env`.
+
+    Битое значение в базе не должно ронять приём писем и не должно менять деньги
+    молча: пишем предупреждение и берём значение по умолчанию из настроек сервиса.
+    """
+    saved = store.get_settings()
+    return CalcSettings(
+        vat_rate=_rate_from(saved.get("vat_rate"), cfg.vat_rate),
+        prices_include_vat=_bool_from(saved.get("prices_include_vat"), cfg.prices_include_vat),
+        delivery_price=_money_from(saved.get("delivery_price"), cfg.delivery_price),
+    )
+
+
+def _rate_from(raw: object, fallback: Decimal) -> Decimal:
+    if raw is None or str(raw).strip() == "":
+        return fallback
+    try:
+        value = Decimal(str(raw).strip().replace(",", "."))
+    except (InvalidOperation, ValueError):
+        log.warning("ставка НДС в настройках клиента не число (%r) — беру %s", raw, fallback)
+        return fallback
+    if not (0 <= value <= 1):
+        log.warning(
+            "ставка НДС в настройках клиента вне 0..1 (%s) — беру %s; "
+            "в интерфейсе ставка задаётся долей: 22%% → 0.22",
+            value,
+            fallback,
+        )
+        return fallback
+    return value
+
+
+def _bool_from(raw: object, fallback: bool) -> bool:
+    if raw is None or str(raw).strip() == "":
+        return fallback
+    return str(raw).strip().lower() in {"1", "true", "yes", "on", "да"}
+
+
+def _money_from(raw: object, fallback: Decimal) -> Decimal:
+    if raw is None or str(raw).strip() == "":
+        return fallback
+    try:
+        value = Decimal(str(raw).strip().replace(",", "."))
+    except (InvalidOperation, ValueError):
+        log.warning("доставка в настройках клиента не число (%r) — беру %s", raw, fallback)
+        return fallback
+    if value < 0:
+        log.warning("доставка в настройках клиента отрицательная (%s) — беру %s", value, fallback)
+        return fallback
+    return value
 
 
 def _validity_phrase(days: int) -> str:

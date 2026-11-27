@@ -72,7 +72,7 @@ def _expected_total(pipeline: Pipeline, expected: list[tuple[str, str]]) -> Deci
         item = prices.get(sku)
         if item is not None:
             subtotal += item.price * _qty(qty)
-    vat = subtotal * pipeline.cfg.vat_rate
+    vat = subtotal * pipeline.calc().vat_rate
     return (subtotal + vat).quantize(Decimal("0.01"))
 
 

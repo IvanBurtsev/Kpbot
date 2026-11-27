@@ -27,6 +27,7 @@ from .cabinet_store import (
 )
 from .config import settings
 from .domain import LineStatus, PriceItem, RfqLine, ValidationError, price_quote
+from .pipeline import calc_settings
 from .mailer import MailError, Mailer
 from .render import html_to_pdf, render_template
 from .security import (
@@ -526,7 +527,7 @@ def _cart_context(request: Request, user: dict, company: dict) -> dict:
     stock = supplier.stock_map()
     rows: list[dict] = []
     total = Decimal(0)
-    vat = settings.vat_rate
+    vat = calc_settings(supplier, settings).vat_rate
     for entry in cabinet.cart_items(user["id"]):
         item = by_sku.get(entry["sku"])
         if item is None:
@@ -654,7 +655,8 @@ def _validate_order(user: dict, company: dict) -> tuple[list[dict], Decimal, Dec
         })
     if not rows:
         raise OrderError("корзина пуста")
-    vat = (subtotal * settings.vat_rate).quantize(Decimal("0.01"))
+    rate = calc_settings(supplier, settings).vat_rate
+    vat = (subtotal * rate).quantize(Decimal("0.01"))
     return rows, subtotal, subtotal + vat
 
 
@@ -685,7 +687,7 @@ def _rfq_from_order(user: dict, company: dict, rows: list[dict], order_number: s
         row["sku"]: PriceItem(sku=row["sku"], name=row["name"], unit=row["unit"], price=row["price"])
         for row in rows
     }
-    quote = price_quote(lines, catalogue, vat_rate=settings.vat_rate)
+    quote = price_quote(lines, catalogue, **calc_settings(store, settings).as_kwargs())
     store.save_quote(uuid.uuid4().hex, rfq_id, quote)
     store.log(rfq_id, "cabinet_order", f"client:{user['id']}", order_number)
     return rfq_id
@@ -817,7 +819,7 @@ def order_doc(request: Request, order_id: str, kind: str):
         net_total=net_total,
         vat_total=vat_total,
         total=total,
-        vat_rate=settings.vat_rate,
+        vat_rate=calc_settings(supplier_store(), settings).vat_rate,
         valid_until=valid_until,
     )
     html_path = settings.out_dir / f"cabinet-{order_id}-{kind}.html"

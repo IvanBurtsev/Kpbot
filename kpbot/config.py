@@ -7,7 +7,7 @@ import os
 from decimal import Decimal
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -98,6 +98,28 @@ class Settings(BaseSettings):
     # Прайс клиента уже с НДС (типичная выгрузка из 1С/розничного каталога):
     # тогда НДС выделяется из цены, а не начисляется сверху.
     prices_include_vat: bool = False
+
+    @field_validator("vat_rate")
+    @classmethod
+    def _check_vat_rate(cls, value: Decimal) -> Decimal:
+        """Ставка — доля, а не проценты. Иначе НДС вырастет в сто раз.
+
+        `KPBOT_VAT_RATE=22` вместо `0.22` — самая вероятная опечатка в .env:
+        раньше она всплывала только на первом письме, теперь — при запуске.
+        """
+        if value < 0 or value > 1:
+            raise ValueError(
+                f"KPBOT_VAT_RATE задаётся долей, а не процентами: 22% → 0.22 "
+                f"(получено {value})"
+            )
+        return value
+
+    @field_validator("delivery_price")
+    @classmethod
+    def _check_delivery(cls, value: Decimal) -> Decimal:
+        if value < 0:
+            raise ValueError(f"KPBOT_DELIVERY_PRICE не может быть отрицательной (получено {value})")
+        return value
 
     # --- матчинг ---
     match_auto_threshold: float = 0.75

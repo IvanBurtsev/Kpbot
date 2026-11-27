@@ -1259,19 +1259,23 @@ def cmd_one_c_invoice(args: argparse.Namespace) -> int:
 
     lines = [(line["sku"], line["qty"], line["price"]) for line in quote["lines"]]
     client = _one_c_client()
+    # Ставка — клиента, а не сервиса: у одного поставщика 22%, у другого 20%.
+    from .pipeline import calc_settings
+
+    vat_rate = calc_settings(store, settings).vat_rate
     use_service = args.via == "service" or (
         args.via == "auto" and bool(settings.one_c_service_url)
     )
     try:
         if use_service:
             result = client.create_invoice_via_service(
-                counterparty=args.counterparty, lines=lines, vat_rate=settings.vat_rate
+                counterparty=args.counterparty, lines=lines, vat_rate=vat_rate
             )
         else:
             result = client.create_invoice(
                 counterparty=args.counterparty,
                 lines=lines,
-                vat_rate=settings.vat_rate,
+                vat_rate=vat_rate,
                 post=args.post,
             )
     except (OneCError, SystemExit) as exc:

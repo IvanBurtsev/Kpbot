@@ -124,6 +124,31 @@ class QuoteLine:
     amount: Decimal
 
 
+@dataclass(frozen=True, slots=True)
+class CalcSettings:
+    """Как считать деньги у конкретного клиента.
+
+    Ставка НДС, режим цен и доставка — свойства поставщика, а не сервиса: у одного
+    клиента может быть 22% и цены без НДС, у другого — 20% и цены с НДС. Поэтому
+    они лежат в базе клиента, а значения из `.env` — только значения по умолчанию.
+    """
+
+    vat_rate: Decimal = Decimal("0.22")
+    prices_include_vat: bool = False
+    delivery_price: Decimal = Decimal("0.00")
+
+    def as_kwargs(self, *, max_qty: Decimal | None = None) -> dict:
+        """Аргументы для price_quote: один источник правды для всех вызовов."""
+        kwargs: dict = {
+            "vat_rate": self.vat_rate,
+            "delivery": self.delivery_price,
+            "prices_include_vat": self.prices_include_vat,
+        }
+        if max_qty is not None:
+            kwargs["max_qty"] = max_qty
+        return kwargs
+
+
 @dataclass(slots=True)
 class Quote:
     lines: list[QuoteLine]
