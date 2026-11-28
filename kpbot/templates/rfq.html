@@ -13,6 +13,7 @@
   <h1>{{ rfq.subject }}</h1>
   <p>
     <span class="badge s-{{ rfq.status }}">{{ rfq_labels.get(rfq.status, rfq.status) }}</span>
+    {% if quote and quote.number %}<span class="badge" title="номер коммерческого предложения">КП № {{ quote.number }}</span>{% endif %}
     <span class="muted small">от {{ rfq.sender }} · {{ rfq.created_at|dt_ru }} · заявка <code>{{ rfq.id[:12] }}</code></span>
   </p>
   {% if timing and timing.duration_seconds is not none %}
@@ -43,13 +44,14 @@
   <div class="attention-box">
     <p><b>Расчёт по ставке {% for rate in stale_vat %}{{ (rate * 100)|int }}%{{ ", " if not loop.last }}{% endfor %} — с 01.01.2026 она не применяется.</b>
       Такой документ нельзя одобрить и отправить: клиент получит счёт с незаконной ставкой.</p>
-    {% if can_edit %}
-    <form method="post" action="/ui/rfq/{{ rfq.id }}/reprice" class="inline">
+    <form method="post" action="/ui/rfq/{{ rfq.id }}/reprice" class="inline"
+          {% if not can_edit %}data-confirm="Документ уже отправлен клиенту. Пересчитать по 22% и вернуть заявку в работу, чтобы отправить исправленное КП?"{% endif %}>
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button class="mini primary" type="submit">Пересчитать по действующей ставке</button>
+      {% if not can_edit %}<input type="hidden" name="force" value="1">{% endif %}
+      <button class="mini primary" type="submit">{% if can_edit %}Пересчитать по действующей ставке{% else %}Исправить и подготовить заново{% endif %}</button>
     </form>
-    {% else %}
-    <p class="muted small">Заявка уже отправлена: пересчёт изменил бы документ, который у клиента.</p>
+    {% if not can_edit %}
+    <p class="muted small">Документ уже у клиента: пересчёт вернёт заявку в работу, чтобы отправить исправленное КП.</p>
     {% endif %}
   </div>
   {% endif %}
@@ -69,7 +71,7 @@
   {% if quote.lines %}
   <table class="grid">
     <thead>
-      <tr><th>#</th><th>Позиция</th><th>Ед.</th><th class="num">Кол-во</th><th class="num">Цена</th><th class="num">Сумма</th></tr>
+      <tr><th>#</th><th>Позиция</th><th>Ед.</th><th class="num">Кол-во</th><th class="num">Цена</th><th class="num">НДС</th><th class="num">Сумма</th></tr>
     </thead>
     <tbody>
       {% for l in quote.lines %}
@@ -79,6 +81,8 @@
         <td>{{ l.unit }}</td>
         <td class="num">{{ l.qty|qty }}</td>
         <td class="num">{{ l.price|rub }}</td>
+        {% set rate = l.vat_rate if l.vat_rate not in (none, "") else quote.vat_rate %}
+        <td class="num">{% if rate not in (none, "") %}{{ (rate|float * 100)|round(0)|int }}%{% else %}—{% endif %}</td>
         <td class="num">{{ l.amount|rub }}</td>
       </tr>
       {% endfor %}
@@ -240,7 +244,8 @@
     </form>
     {% endif %}
     {% if can_reject %}
-    <form method="post" action="/ui/rfq/{{ rfq.id }}/reject" class="inline">
+    <form method="post" action="/ui/rfq/{{ rfq.id }}/reject" class="inline"
+          data-confirm="Отклонить заявку? Причина сохранится в журнале решений.">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="text" name="reason" placeholder="причина отказа">
       <button class="danger" type="submit">Отклонить</button>

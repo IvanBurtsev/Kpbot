@@ -44,6 +44,7 @@ from .pipeline import (
     Pipeline,
     build_reply_text_from_store,
     legacy_vat_rates,
+    rfq_lines,
 )
 from .pricelist import load_price_items, load_stock_items, merge_prices
 from .render import render_template
@@ -1773,26 +1774,7 @@ def lines_from_db(rfq_id: str) -> tuple[dict, list[RfqLine]]:
     rfq = store.get_rfq(rfq_id)
     if rfq is None:
         raise HTTPException(status_code=404, detail="заявка не найдена")
-    lines: list[RfqLine] = []
-    for row in rfq["lines"]:
-        try:
-            line_status = LineStatus(row["status"])
-        except ValueError:
-            line_status = LineStatus.INVALID
-        lines.append(
-            RfqLine(
-                idx=int(row["idx"]),
-                raw_text=row["raw_text"],
-                qty=Decimal(row["qty"]) if row["qty"] else None,
-                unit=row["unit"],
-                matched_sku=row["matched_sku"],
-                matched_name=row["matched_name"],
-                match_score=float(row["score"] or 0),
-                status=line_status,
-                note=row["note"],
-            )
-        )
-    return rfq, lines
+    return rfq, rfq_lines(rfq)
 
 
 async def verified_form(request: Request):
@@ -2000,12 +1982,14 @@ async def ui_rfq_reprice(request: Request, rfq_id: str):
     if not is_authenticated(request):
         return login_redirect(request)
     ensure_rfq_id(rfq_id)
-    await verified_form(request)
+    form = await verified_form(request)
+    # force=1 — исправление уже отправленного документа: заявка вернётся в
+    # работу, чтобы выпустить корректное КП. Без него отправленную не трогаем.
+    force = str(form.get("force", "")).strip() == "1"
     rfq = store.get_rfq(rfq_id)
     if rfq is None:
         raise HTTPException(status_code=404, detail="заявка не найдена")
-    if rfq["status"] == RfqStatus.SENT.value:
-        # Уже отправленный документ не пересчитываем: у клиента на руках другой.
+    if rfq["status"] == RfqStatus.SENT.value and not force:
         return back_to(
             rfq_id, "заявка уже отправлена — пересчёт изменил бы отправленный документ"
         )
@@ -2019,12 +2003,23 @@ async def ui_rfq_reprice(request: Request, rfq_id: str):
             lines,
             actor=actor_of(request),
             note="пересчёт по действующей ставке НДС",
+            allow_sent=force,
         )
     except PermissionError as exc:
         return back_to(rfq_id, str(exc))
     except ValidationError as exc:
         return back_to(rfq_id, str(exc))
-    store.log(rfq_id, "reprice_vat", actor_of(request), "снимок пересчитан по действующей ставке")
+    store.log(
+        rfq_id,
+        "reprice_vat",
+        actor_of(request),
+        "снимок пересчитан по действующей ставке"
+        + ("; отправленная возвращена в работу" if force else ""),
+    )
+    if force:
+        return back_to(
+            rfq_id, "расчёт исправлен и возвращён в работу — проверьте и отправьте заново"
+        )
     return back_to(rfq_id, "расчёт пересчитан по текущему прайсу и действующей ставке")
 
 

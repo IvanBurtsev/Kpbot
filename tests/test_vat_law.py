@@ -166,6 +166,26 @@ class LegacyQuoteCardTest(unittest.TestCase):
         self.assertNotIn("не применяется", page)
         self.assertIn("Одобрить и подготовить ответ", page)
 
+    def test_card_shows_kp_number_and_vat_column(self) -> None:
+        page = self.client.get(f"/ui/rfq/{self.rfq_id}").text
+        self.assertIn("КП №", page)
+        self.assertIn(">НДС</th>", page.replace("\n", ""))
+        self.assertIn(">20%</td>", page.replace("\n", ""))
+
+    def test_sent_request_can_be_reopened_with_force(self) -> None:
+        self.store.set_status(self.rfq_id, "sent", force=True)
+        response = self.client.post(
+            f"/ui/rfq/{self.rfq_id}/reprice",
+            data={"csrf_token": self._csrf(), "force": "1"},
+        )
+        self.assertEqual(response.status_code, 303)
+        quote = self.store.get_quote(self.rfq_id)
+        self.assertEqual(Decimal(quote["vat_rate"]), Decimal("0.22"))
+        self.assertIn(
+            self.store.get_rfq(self.rfq_id)["status"], {"human_review", "draft_ready"},
+            "исправленная заявка должна вернуться в работу",
+        )
+
     def test_sent_request_is_not_repriced(self) -> None:
         self.store.set_status(self.rfq_id, "sent", force=True)
         response = self.client.post(

@@ -583,12 +583,25 @@ class Pipeline:
                     return True
         return False
 
-    def apply_edits(self, rfq_id: str, lines: list[RfqLine], *, actor: str, note: str = "") -> None:
-        """Сохраняет правки человека, пересчитывает КП и перерисовывает документы."""
+    def apply_edits(
+        self,
+        rfq_id: str,
+        lines: list[RfqLine],
+        *,
+        actor: str,
+        note: str = "",
+        allow_sent: bool = False,
+    ) -> None:
+        """Сохраняет правки человека, пересчитывает КП и перерисовывает документы.
+
+        allow_sent — только для исправления документа с незаконной ставкой:
+        отправленная заявка возвращается в работу, чтобы выпустить корректное КП.
+        """
         rfq = self.store.get_rfq(rfq_id)
         if rfq is None:
             raise KeyError(rfq_id)
-        if rfq["status"] == RfqStatus.SENT.value:
+        was_sent = rfq["status"] == RfqStatus.SENT.value
+        if was_sent and not allow_sent:
             raise PermissionError("отправленную заявку менять нельзя")
 
         before = {line["idx"]: RfqLine(
@@ -623,7 +636,9 @@ class Pipeline:
         self.store.replace_lines(rfq_id, lines)
         self._learn_from_edits(before, lines)
         self.store.save_quote(uuid.uuid4().hex, rfq_id, quote)
-        self.store.set_status(rfq_id, status_for(quote).value)
+        # Отправленную заявку возвращаем в работу принудительно: у sent нет
+        # переходов, а исправление незаконного документа — исключение.
+        self.store.set_status(rfq_id, status_for(quote).value, force=was_sent)
 
         parsed = ParsedEmail(
             sender=rfq["sender"],
@@ -871,6 +886,30 @@ def _money_value(value: object) -> Decimal:
         return Decimal(str(value or "0"))
     except (InvalidOperation, ValueError):
         return Decimal("0")
+
+
+def rfq_lines(rfq: dict) -> list[RfqLine]:
+    """Строки заявки из базы в доменные объекты: общий код карточки и CLI."""
+    lines: list[RfqLine] = []
+    for row in rfq.get("lines", []):
+        try:
+            status = LineStatus(row["status"])
+        except ValueError:
+            status = LineStatus.INVALID
+        lines.append(
+            RfqLine(
+                idx=int(row["idx"]),
+                raw_text=row["raw_text"],
+                qty=Decimal(row["qty"]) if row["qty"] else None,
+                unit=row["unit"],
+                matched_sku=row["matched_sku"],
+                matched_name=row["matched_name"],
+                match_score=float(row["score"] or 0),
+                status=status,
+                note=row["note"],
+            )
+        )
+    return lines
 
 
 def legacy_vat_rates(quote: dict) -> list[Decimal]:

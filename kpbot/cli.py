@@ -1547,6 +1547,85 @@ def cmd_backup(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reprice_legacy(args: argparse.Namespace) -> int:
+    """Пересчитывает снимки КП с незаконной ставкой (20%, 18%) по действующей.
+
+    Снимок — это документ. Менять его задним числом нельзя, поэтому по умолчанию
+    отправленные заявки пропускаются: у клиента на руках другой файл. С
+    --include-sent они возвращаются в работу, чтобы выпустить исправленное КП.
+    """
+    from .pipeline import Pipeline, legacy_vat_rates, rfq_lines
+
+    targets: list[tuple[str, Store]] = []
+    if args.all:
+        for tenant_id, name, tenant_store in tenant_stores():
+            targets.append((f"{name} ({tenant_id})", tenant_store))
+    else:
+        targets.append(("Основной", Store(settings.db_path)))
+
+    total = fixed = skipped_sent = skipped_missing = errors = 0
+    for label, tenant_store in targets:
+        pipeline = Pipeline(tenant_store, settings)
+        price_skus = {item.sku for item in tenant_store.price_items()}
+        offset = 0
+        print(f"== {label}")
+        while True:
+            rows = tenant_store.list_rfqs(200, offset=offset)
+            if not rows:
+                break
+            offset += len(rows)
+            for row in rows:
+                rfq = tenant_store.get_rfq(row["id"])
+                if rfq is None:
+                    continue
+                quote = tenant_store.get_quote(row["id"])
+                if not quote or not legacy_vat_rates(quote):
+                    continue
+                total += 1
+                title = f"{row['id'][:8]} · {str(rfq.get('subject') or '')[:40]}"
+                if rfq["status"] == RfqStatus.SENT.value and not args.include_sent:
+                    skipped_sent += 1
+                    print(f"  пропуск (отправлена): {title}")
+                    continue
+                lines = rfq_lines(rfq)
+                missing = sorted(
+                    {
+                        line.matched_sku
+                        for line in lines
+                        if line.status.value == "ok" and line.matched_sku not in price_skus
+                    }
+                )
+                if missing:
+                    # Пересчёт молча выбросил бы эти строки из расчёта: лучше
+                    # оставить старый снимок и показать, чего не хватает в прайсе.
+                    skipped_missing += 1
+                    print(f"  пропуск (нет в прайсе: {', '.join(missing[:3])}): {title}")
+                    continue
+                if args.dry_run:
+                    fixed += 1
+                    print(f"  будет пересчитана: {title}")
+                    continue
+                try:
+                    pipeline.apply_edits(
+                        row["id"],
+                        lines,
+                        actor="cli:reprice",
+                        note="пересчёт по действующей ставке",
+                        allow_sent=args.include_sent,
+                    )
+                    fixed += 1
+                    print(f"  пересчитана: {title}")
+                except Exception as exc:  # noqa: BLE001 - один сбой не должен останавливать остальные
+                    errors += 1
+                    print(f"  ОШИБКА {title}: {exc}")
+    print(
+        f"\nснимков со старой ставкой: {total}; пересчитано: {fixed}; "
+        f"отправленных пропущено: {skipped_sent}; без позиций в прайсе: {skipped_missing}; "
+        f"ошибок: {errors}"
+    )
+    return 1 if errors else 0
+
+
 def cmd_restore(args: argparse.Namespace) -> int:
     """Восстановление базы из копии. Требует остановленного сервиса и --yes."""
     from .tenancy import TenantRegistry
@@ -1820,6 +1899,16 @@ def main(argv: list[str] | None = None) -> int:
     backup.add_argument("--keep", type=int, default=7, help="сколько копий хранить")
     backup.add_argument("--all", action="store_true", help="все клиенты, не только основная база")
     backup.set_defaults(func=cmd_backup)
+
+    reprice = sub.add_parser(
+        "reprice-legacy", help="пересчитать снимки КП со ставкой 20/18%% по действующей"
+    )
+    reprice.add_argument("--all", action="store_true", help="все клиенты, не только основная база")
+    reprice.add_argument(
+        "--include-sent", action="store_true", help="включая отправленные (вернутся в работу)"
+    )
+    reprice.add_argument("--dry-run", action="store_true", help="только показать, ничего не менять")
+    reprice.set_defaults(func=cmd_reprice_legacy)
 
     restore = sub.add_parser("restore", help="восстановить базу из копии (сервис остановить)")
     restore.add_argument("--file", required=True, help="путь к копии .sqlite3")
