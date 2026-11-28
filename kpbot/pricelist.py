@@ -9,12 +9,37 @@ import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from .config import LEGAL_VAT_RATES
 from .domain import PriceItem, ValidationError
 from .extract import canonical_unit
 
 log = logging.getLogger("kpbot.pricelist")
 
 _THOUSANDS_SPACES = ("\u00a0", "\u202f", "\u2009", "\u2007", " ")
+
+
+def vat_rate_from_text(raw: object) -> Decimal | None:
+    """Ставка НДС из ячейки прайса: «22», «22%», «0.22», «без НДС».
+
+    Пусто — ставка клиента по умолчанию (None). «Без НДС» — это 0, а не
+    «не задано»: для необлагаемых товаров документ должен это показать.
+    """
+    text = str(raw or "").strip().lower().replace("ё", "е")
+    if not text:
+        return None
+    text = text.replace("%", "").replace("ндс", "").replace("ставка", "").strip()
+    if text in {"без", "нет", "не облагается", "-"}:
+        return Decimal("0")
+    text = text.replace(",", ".")
+    try:
+        value = Decimal(text)
+    except InvalidOperation as exc:
+        raise ValidationError(f"ставка НДС не число: {raw!r}") from exc
+    if value > 1:
+        value = value / 100
+    if not (0 <= value <= 1):
+        raise ValidationError(f"ставка НДС вне 0..100%: {raw!r}")
+    return value
 
 
 def decimal_from_text(raw: object) -> Decimal:
@@ -245,6 +270,7 @@ def _header_indexes(header: list[object]) -> dict[str, int] | None:
     unit = find(("единица", "ед", "unit", "едизм"))
     price = _pick_price_column(names)
     currency = find(("валюта", "currency", "вал"))
+    vat = find(("ставкандс", "ставка", "ндс", "vat"))
     # «с НДС» в заголовке цены — отдельный признак, а не часть имени колонки
     price_header = _header_text(names[price]) if price is not None else ""
     price_includes_vat = bool(price_header) and _header_means_inclusive(price_header)
@@ -257,6 +283,7 @@ def _header_indexes(header: list[object]) -> dict[str, int] | None:
         "unit": unit if unit is not None else -1,
         "price": price,
         "currency": currency if currency is not None else -1,
+        "vat_rate": vat if vat is not None else -1,
         "price_includes_vat": 1 if price_includes_vat else 0,
     }
 
@@ -307,6 +334,7 @@ def merge_prices(
                 unit=current.unit or normalize_unit_label(str(row.get("unit") or "шт")),
                 price=price,
                 currency=current.currency,
+                vat_rate=current.vat_rate,
             )
             changed += 1
     return sorted(by_sku.values(), key=lambda item: item.sku), changed
@@ -418,7 +446,18 @@ def load_price_items(
         if price < 0:
             skipped_prices += 1
             continue
-        item = PriceItem(sku=sku, name=name, unit=unit, price=price, currency=currency)
+        try:
+            line_vat = vat_rate_from_text(cell("vat_rate"))
+        except ValidationError as exc:
+            raise ValidationError(f"строка «{name}»: {exc}") from None
+        if line_vat is not None and line_vat not in LEGAL_VAT_RATES:
+            raise ValidationError(
+                f"строка «{name}»: ставка НДС {line_vat * 100:g}% не применяется "
+                "с 01.01.2026; законные: 22%, 10%, 7%, 5%, 0%"
+            )
+        item = PriceItem(
+            sku=sku, name=name, unit=unit, price=price, currency=currency, vat_rate=line_vat
+        )
         if sku in by_sku:
             # Дубль артикула — обычная ошибка выгрузки. Раньше он ронял загрузку
             # всего прайса (UNIQUE constraint), теперь побеждает последняя строка.

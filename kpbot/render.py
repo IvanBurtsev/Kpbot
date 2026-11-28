@@ -310,18 +310,34 @@ def render_quote_docx(
 
     doc.add_paragraph()
     delivery_vat = getattr(quote, "delivery_vat", Decimal("0.00"))
+    breakdown = [item for item in getattr(quote, "vat_breakdown", []) if item[2]]
+    rates_part = [
+        (f"НДС {int(round(rate * 100))}%", f"{rub(rate_vat)} ₽")
+        for rate, _net, rate_vat in breakdown
+    ]
     if getattr(quote, "prices_include_vat", False):
-        totals = (
+        totals = [
             ("Сумма с НДС по товарам", f"{rub(quote.subtotal + quote.vat - delivery_vat)} ₽"),
-            (f"В том числе НДС {int(round(quote.vat_rate * 100))}%", f"{rub(quote.vat)} ₽"),
-            ("Доставка с НДС", f"{rub(quote.delivery)} ₽"),
-        )
+        ]
+        if len(breakdown) > 1:
+            totals.extend(
+                (label.replace("НДС", "В том числе НДС", 1), value)
+                for label, value in rates_part
+            )
+        else:
+            totals.append(
+                (f"В том числе НДС {int(round(quote.vat_rate * 100))}%", f"{rub(quote.vat)} ₽")
+            )
+        totals.append(("Доставка с НДС", f"{rub(quote.delivery)} ₽"))
     else:
-        totals = (
-            ("Сумма без НДС", f"{rub(quote.subtotal)} ₽"),
-            (f"НДС {int(round(quote.vat_rate * 100))}%", f"{rub(quote.vat)} ₽"),
-            ("Доставка без НДС", f"{rub(quote.delivery)} ₽"),
-        )
+        totals = [("Сумма без НДС", f"{rub(quote.subtotal)} ₽")]
+        if len(breakdown) > 1:
+            totals.extend(rates_part)
+        else:
+            totals.append(
+                (f"НДС {int(round(quote.vat_rate * 100))}%", f"{rub(quote.vat)} ₽")
+            )
+        totals.append(("Доставка без НДС", f"{rub(quote.delivery)} ₽"))
     for label, value in totals:
         row = doc.add_paragraph()
         row.alignment = WD_ALIGN_PARAGRAPH.RIGHT

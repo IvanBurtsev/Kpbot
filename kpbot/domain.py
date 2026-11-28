@@ -93,12 +93,18 @@ class PriceItem:
     unit: str
     price: Decimal
     currency: str = "RUB"
+    # Ставка НДС конкретной позиции. None — ставка клиента по умолчанию:
+    # в одном счёте могут встретиться 22% и 10%, и считать их одной ставкой
+    # нельзя (документ станет неверным).
+    vat_rate: Decimal | None = None
 
     def __post_init__(self) -> None:
         if not self.sku.strip():
             raise ValidationError("пустой SKU")
         if self.price < 0:
             raise ValidationError(f"отрицательная цена у {self.sku}")
+        if self.vat_rate is not None and not (0 <= self.vat_rate <= 1):
+            raise ValidationError(f"ставка НДС у {self.sku} вне 0..1: {self.vat_rate}")
 
 
 @dataclass(slots=True)
@@ -126,6 +132,8 @@ class QuoteLine:
     # счёта не совпадает с итогом (расхождение в копейках — брак документа).
     net: Decimal = Decimal("0.00")
     vat: Decimal = Decimal("0.00")
+    # Фактическая ставка строки: из прайса или ставка клиента.
+    vat_rate: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +181,10 @@ class Quote:
     # НДС, приходящийся на доставку. Отдельным полем, чтобы документ мог показать
     # «в том числе НДС с доставки», не пересчитывая сумму задним числом.
     delivery_vat: Decimal = Decimal("0.00")
+    # Разбивка НДС по ставкам: [(ставка, сумма без НДС, НДС), ...]. Нужна
+    # документам, когда в одном счёте 22% и 10%: одной строкой «НДС 22%» его
+    # не показать, а сумма по ставкам должна сходиться с итогом.
+    vat_breakdown: list[tuple[Decimal, Decimal, Decimal]] = field(default_factory=list)
 
 
 def price_quote(
@@ -226,18 +238,23 @@ def price_quote(
             raise ValidationError(f"количество больше допустимого: {line.raw_text!r}")
 
         price = money(item.price)
+        # Ставка строки: из прайса, иначе ставка клиента. В одном счёте могут
+        # быть 22% и 10% — считать их одной ставкой нельзя.
+        line_rate = item.vat_rate if item.vat_rate is not None else vat_rate
+        if not (0 <= line_rate <= 1):
+            raise ValidationError(f"ставка НДС строки вне 0..1: {line_rate}")
         # Сумма считается от уже округлённой цены, иначе «0,34 × 3 = 1,01».
         # НДС — тоже построчно: иначе сумма НДС в строках документа не
         # совпадает с итогом (в счёте и УПД это видно и это брак).
         base = money(price * qty)
-        if prices_include_vat and vat_rate > 0:
+        if prices_include_vat and line_rate > 0:
             gross = base
-            net = money(gross / (Decimal("1") + vat_rate))
+            net = money(gross / (Decimal("1") + line_rate))
             line_vat = money(gross - net)
             amount = gross
         else:
             net = base
-            line_vat = money(net * vat_rate) if vat_rate > 0 else money(Decimal("0"))
+            line_vat = money(net * line_rate) if line_rate > 0 else money(Decimal("0"))
             amount = net
         quoted.append(
             QuoteLine(
@@ -249,6 +266,7 @@ def price_quote(
                 amount=amount,
                 net=net,
                 vat=line_vat,
+                vat_rate=line_rate,
             )
         )
 
@@ -269,6 +287,22 @@ def price_quote(
         total = money(subtotal + goods_vat + delivery_money + delivery_vat)
     vat = money(goods_vat + delivery_vat)
 
+    # Разбивка по ставкам: сумма НДС в разрезе ставок должна сходиться с vat.
+    buckets: dict[Decimal, list[Decimal]] = {}
+    for line in quoted:
+        rate = line.vat_rate if line.vat_rate is not None else vat_rate
+        bucket = buckets.setdefault(rate, [Decimal("0"), Decimal("0")])
+        bucket[0] += line.net
+        bucket[1] += line.vat
+    if delivery_vat:
+        bucket = buckets.setdefault(vat_rate, [Decimal("0"), Decimal("0")])
+        bucket[1] += delivery_vat
+    breakdown = [
+        (rate, money(values[0]), money(values[1]))
+        for rate, values in sorted(buckets.items(), key=lambda pair: pair[0], reverse=True)
+        if values[0] or values[1]
+    ]
+
     return Quote(
         lines=quoted,
         subtotal=subtotal,
@@ -281,6 +315,7 @@ def price_quote(
         excluded=excluded,
         prices_include_vat=prices_include_vat,
         delivery_vat=delivery_vat,
+        vat_breakdown=breakdown,
     )
 
 

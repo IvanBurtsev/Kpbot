@@ -79,7 +79,7 @@
         <td class="num">{{ line.qty|qty }}</td>
         <td class="num">{{ line.price|rub }}</td>
         <td class="num">{{ line.net|rub }}</td>
-        <td class="num">{{ (vat_rate * 100)|round(0, 'floor')|int }}%</td>
+        <td class="num">{{ (line.vat_rate * 100)|round(0, 'floor')|int }}%</td>
         <td class="num">{{ line.vat|rub }}</td>
         <td class="num">{{ line.gross|rub }}</td>
       </tr>
@@ -121,7 +121,13 @@
   <table style="width:52%; margin-left:auto; margin-top:0">
     <tbody>
       <tr><td>Итого без НДС</td><td class="num">{{ net_total|rub }} ₽</td></tr>
+      {% if breakdown|length > 1 %}
+        {% for rate, net, rate_vat in breakdown %}
+        <tr><td>НДС {{ (rate * 100)|round(0, 'floor')|int }}%</td><td class="num">{{ rate_vat|rub }} ₽</td></tr>
+        {% endfor %}
+      {% else %}
       <tr><td>НДС {{ (vat_rate * 100)|round(0, 'floor')|int }}%</td><td class="num">{{ vat_total|rub }} ₽</td></tr>
+      {% endif %}
       <tr><td><b>Всего к оплате</b></td><td class="num"><b>{{ total|rub }} ₽</b></td></tr>
     </tbody>
   </table>

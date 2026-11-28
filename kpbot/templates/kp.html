@@ -86,13 +86,26 @@
   </tbody>
 </table>
 
+{% set rates = quote.vat_breakdown or [] %}
 <table class="totals">
   {% if quote.prices_include_vat %}
   <tr><td>Сумма с НДС{% if quote.delivery %} по товарам{% endif %}</td><td class="num">{{ (quote.subtotal + quote.vat - quote.delivery_vat)|rub }} ₽</td></tr>
+  {% if rates|length > 1 %}
+    {% for rate, net, rate_vat in rates %}
+    <tr><td>В том числе НДС {{ (rate * 100)|round(0, 'floor')|int }}%</td><td class="num">{{ rate_vat|rub }} ₽</td></tr>
+    {% endfor %}
+  {% else %}
   <tr><td>В том числе НДС {{ (quote.vat_rate * 100)|round(0, 'floor')|int }}%{% if quote.delivery %} (товары и доставка){% endif %}</td><td class="num">{{ quote.vat|rub }} ₽</td></tr>
+  {% endif %}
   {% else %}
   <tr><td>Сумма без НДС</td><td class="num">{{ quote.subtotal|rub }} ₽</td></tr>
+  {% if rates|length > 1 %}
+    {% for rate, net, rate_vat in rates %}
+    <tr><td>НДС {{ (rate * 100)|round(0, 'floor')|int }}%</td><td class="num">{{ rate_vat|rub }} ₽</td></tr>
+    {% endfor %}
+  {% else %}
   <tr><td>НДС {{ (quote.vat_rate * 100)|round(0, 'floor')|int }}%{% if quote.delivery %} (товары и доставка){% endif %}</td><td class="num">{{ quote.vat|rub }} ₽</td></tr>
+  {% endif %}
   {% endif %}
   <tr><td>Доставка{% if quote.prices_include_vat and quote.delivery %} с НДС{% elif quote.delivery %} без НДС{% endif %}</td><td class="num">{{ quote.delivery|rub }} ₽</td></tr>
   <tr class="grand"><td>Итого к оплате</td><td class="num">{{ quote.total|rub }} ₽</td></tr>
@@ -110,9 +123,9 @@
 <div class="conditions">
   <div>Предложение действительно {{ valid_days }} календарных дней с даты выставления.</div>
   {% if quote.prices_include_vat %}
-  <div>Цены в таблице указаны с НДС. НДС {{ (quote.vat_rate * 100)|round(0, 'floor')|int }}% выделен в строке «В том числе НДС».</div>
+  <div>Цены в таблице указаны с НДС. НДС{% if rates|length > 1 %} показан по каждой ставке{% else %} {{ (quote.vat_rate * 100)|round(0, 'floor')|int }}% выделен{% endif %} в строке «В том числе НДС».</div>
   {% else %}
-  <div>Цены в таблице указаны без НДС. НДС {{ (quote.vat_rate * 100)|round(0, 'floor')|int }}% начисляется сверху и включён в строку «Итого к оплате».</div>
+  <div>Цены в таблице указаны без НДС. НДС{% if rates|length > 1 %} начислен по каждой ставке{% else %} {{ (quote.vat_rate * 100)|round(0, 'floor')|int }}% начисляется сверху{% endif %} и включён в строку «Итого к оплате».</div>
   {% endif %}
   <div>Срок поставки и условия оплаты согласуются отдельно.</div>
 </div>

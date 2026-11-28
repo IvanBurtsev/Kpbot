@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS price_items(
     unit        TEXT NOT NULL,
     price       TEXT NOT NULL,
     currency    TEXT NOT NULL DEFAULT 'RUB',
+    vat_rate    TEXT,
     updated_at  TEXT NOT NULL
 );
 
@@ -89,6 +90,7 @@ CREATE TABLE IF NOT EXISTS quote_lines(
     amount   TEXT NOT NULL,
     net      TEXT NOT NULL DEFAULT '0.00',
     vat      TEXT NOT NULL DEFAULT '0.00',
+    vat_rate TEXT,
     PRIMARY KEY (quote_id, idx)
 );
 
@@ -243,6 +245,14 @@ class Store:
                 except sqlite3.OperationalError:
                     pass
                 try:
+                    conn.execute("ALTER TABLE quote_lines ADD COLUMN vat_rate TEXT")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE price_items ADD COLUMN vat_rate TEXT")
+                except sqlite3.OperationalError:
+                    pass
+                try:
                     conn.execute("ALTER TABLE rfqs ADD COLUMN assignee TEXT")
                 except sqlite3.OperationalError:
                     pass
@@ -265,9 +275,16 @@ class Store:
         with closing(self._connect()) as conn, conn:
             conn.execute("DELETE FROM price_items")
             conn.executemany(
-                "INSERT INTO price_items(sku, name, unit, price, currency, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                [(i.sku, i.name, i.unit, str(i.price), i.currency, now) for i in items],
+                "INSERT INTO price_items(sku, name, unit, price, currency, vat_rate, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        i.sku, i.name, i.unit, str(i.price), i.currency,
+                        str(i.vat_rate) if i.vat_rate is not None else None,
+                        now,
+                    )
+                    for i in items
+                ],
             )
             conn.execute(
                 "INSERT INTO price_meta(k, v) VALUES ('updated_at', ?)"
@@ -279,18 +296,22 @@ class Store:
     def price_items(self) -> list[PriceItem]:
         with closing(self._connect()) as conn:
             rows = conn.execute(
-                "SELECT sku, name, unit, price, currency FROM price_items ORDER BY sku"
+                "SELECT sku, name, unit, price, currency, vat_rate FROM price_items ORDER BY sku"
             ).fetchall()
-        return [
-            PriceItem(
-                sku=row["sku"],
-                name=row["name"],
-                unit=row["unit"],
-                price=Decimal(row["price"]),
-                currency=row["currency"],
+        result: list[PriceItem] = []
+        for row in rows:
+            raw_rate = row["vat_rate"]
+            result.append(
+                PriceItem(
+                    sku=row["sku"],
+                    name=row["name"],
+                    unit=row["unit"],
+                    price=Decimal(row["price"]),
+                    currency=row["currency"],
+                    vat_rate=Decimal(str(raw_rate)) if raw_rate not in (None, "") else None,
+                )
             )
-            for row in rows
-        ]
+        return result
 
     def price_count(self) -> int:
         with closing(self._connect()) as conn:
@@ -485,8 +506,8 @@ class Store:
                 ),
             )
             conn.executemany(
-                "INSERT INTO quote_lines(quote_id, idx, sku, name, unit, qty, price, amount, net, vat)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO quote_lines(quote_id, idx, sku, name, unit, qty, price, amount, net, vat, vat_rate)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         quote_id,
@@ -499,6 +520,7 @@ class Store:
                         str(line.amount),
                         str(line.net),
                         str(line.vat),
+                        str(line.vat_rate) if line.vat_rate is not None else None,
                     )
                     for idx, line in enumerate(quote.lines, start=1)
                 ],

@@ -926,6 +926,13 @@ def _validity_phrase(days: int) -> str:
     return f"{days} календарных дней"
 
 
+def _rate_label(rate: Decimal) -> str:
+    """«22%», «10%», «Без НДС» для строки итогов."""
+    if rate <= 0:
+        return "Без НДС"
+    return f"{int((rate * 100).to_integral_value())}%"
+
+
 def _reply_totals(
     subtotal: Decimal,
     vat: Decimal,
@@ -934,6 +941,7 @@ def _reply_totals(
     *,
     prices_include_vat: bool,
     delivery_vat: Decimal = Decimal("0.00"),
+    breakdown: list[tuple[Decimal, Decimal, Decimal]] | None = None,
 ) -> list[str]:
     """Строки итогов для письма так, чтобы они складывались в «Итого».
 
@@ -942,25 +950,73 @@ def _reply_totals(
     при «Итого 1342». Поэтому здесь либо доставка показывается без НДС
     (обычный режим), либо «Сумма с НДС по товарам» + «Доставка с НДС», а НДС
     идёт строкой «в том числе».
+
+    Если ставки разные (22% и 10%), НДС показывается по каждой ставке:
+    иначе клиент не увидит, из чего сложился налог.
     """
     delivery = max(delivery, Decimal("0.00"))
+    rates = [
+        (rate, net, rate_vat)
+        for rate, net, rate_vat in (breakdown or [])
+        if rate_vat
+    ]
     if prices_include_vat:
         goods_gross = money(subtotal + vat - delivery_vat)
-        lines = [
-            f"Сумма с НДС по товарам: {_money_text(goods_gross)} ₽",
-            f"В том числе НДС: {_money_text(vat)} ₽",
-        ]
+        lines = [f"Сумма с НДС по товарам: {_money_text(goods_gross)} ₽"]
+        if len(rates) > 1:
+            lines.extend(
+                f"В том числе НДС {_rate_label(rate)}: {_money_text(rate_vat)} ₽"
+                for rate, _net, rate_vat in rates
+            )
+        else:
+            lines.append(f"В том числе НДС: {_money_text(vat)} ₽")
         if delivery:
             lines.append(f"Доставка с НДС: {_money_text(delivery)} ₽")
     else:
-        lines = [
-            f"Сумма без НДС: {_money_text(subtotal)} ₽",
-            f"НДС: {_money_text(vat)} ₽",
-        ]
+        lines = [f"Сумма без НДС: {_money_text(subtotal)} ₽"]
+        if len(rates) > 1:
+            lines.extend(
+                f"НДС {_rate_label(rate)}: {_money_text(rate_vat)} ₽"
+                for rate, _net, rate_vat in rates
+            )
+        else:
+            lines.append(f"НДС: {_money_text(vat)} ₽")
         if delivery:
             lines.append(f"Доставка без НДС: {_money_text(delivery)} ₽")
     lines.append(f"Итого: {_money_text(total)} ₽")
     return lines
+
+
+def _breakdown_from_store(quote: dict) -> list[tuple[Decimal, Decimal, Decimal]]:
+    """Разбивка НДС по ставкам из снимка КП в базе (для письма)."""
+    default_rate = _money_value(quote.get("vat_rate"))
+    buckets: dict[Decimal, list[Decimal]] = {}
+    for line in quote.get("lines", []):
+        if not isinstance(line, dict):
+            continue
+        raw_rate = line.get("vat_rate")
+        rate = _money_value(raw_rate) if raw_rate not in (None, "") else default_rate
+        net = _money_value(line.get("net"))
+        vat = _money_value(line.get("vat"))
+        if not net and not vat:
+            amount = _money_value(line.get("amount"))
+            if _bool_from(quote.get("prices_include_vat"), False) and rate > 0:
+                net = (amount / (Decimal("1") + rate)).quantize(Decimal("0.01"))
+                vat = amount - net
+            else:
+                net, vat = amount, (amount * rate).quantize(Decimal("0.01")) if rate > 0 else Decimal("0")
+        bucket = buckets.setdefault(rate, [Decimal("0"), Decimal("0")])
+        bucket[0] += net
+        bucket[1] += vat
+    delivery_vat = _money_value(quote.get("delivery_vat"))
+    if delivery_vat:
+        bucket = buckets.setdefault(default_rate, [Decimal("0"), Decimal("0")])
+        bucket[1] += delivery_vat
+    return [
+        (rate, money(values[0]), money(values[1]))
+        for rate, values in sorted(buckets.items(), key=lambda pair: pair[0], reverse=True)
+        if values[0] or values[1]
+    ]
 
 
 def build_reply_text(
@@ -989,6 +1045,7 @@ def build_reply_text(
         quote.total,
         prices_include_vat=quote.prices_include_vat,
         delivery_vat=quote.delivery_vat,
+        breakdown=quote.vat_breakdown,
     )
     head += [
         "",
@@ -1041,6 +1098,7 @@ def build_reply_text_from_store(
         prices_include_vat=str(quote.get("prices_include_vat") or "0").strip().lower()
         in {"1", "true", "yes", "on", "да"},
         delivery_vat=_money_value(quote.get("delivery_vat")),
+        breakdown=_breakdown_from_store(quote),
     )
     head += [
         "",

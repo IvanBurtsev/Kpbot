@@ -669,6 +669,7 @@ def _cart_context(request: Request, user: dict, company: dict) -> dict:
             "qty": qty, "price": price, "amount": amount,
             "pack": int(packs.get(item.sku, 1) or 1),
             "available": _fmt(stock_row.get("qty")) if stock_row else None,
+            "vat_rate": item.vat_rate,
         })
 
     # Корзина считает те же деньги, что и заказ/КП: при ценах «с НДС» нельзя
@@ -683,7 +684,10 @@ def _cart_context(request: Request, user: dict, company: dict) -> dict:
         for index, row in enumerate(rows, start=1)
     ]
     catalogue = {
-        row["sku"]: PriceItem(sku=row["sku"], name=row["name"], unit=row["unit"], price=row["price"])
+        row["sku"]: PriceItem(
+            sku=row["sku"], name=row["name"], unit=row["unit"], price=row["price"],
+            vat_rate=row.get("vat_rate"),
+        )
         for row in rows
     }
     quote = price_quote(lines, catalogue, **calc_settings(supplier, settings).as_kwargs())
@@ -792,6 +796,7 @@ def _validate_order(user: dict, company: dict) -> tuple[list[dict], Quote]:
         rows.append({
             "sku": sku, "name": item.name, "unit": item.unit, "qty": qty,
             "price": _fmt(personal.get(sku, item.price)), "amount": Decimal(0),
+            "vat_rate": item.vat_rate,
         })
     if not rows:
         raise OrderError("корзина пуста")
@@ -808,7 +813,10 @@ def _validate_order(user: dict, company: dict) -> tuple[list[dict], Quote]:
         for index, row in enumerate(rows, start=1)
     ]
     catalogue = {
-        row["sku"]: PriceItem(sku=row["sku"], name=row["name"], unit=row["unit"], price=row["price"])
+        row["sku"]: PriceItem(
+            sku=row["sku"], name=row["name"], unit=row["unit"], price=row["price"],
+            vat_rate=row.get("vat_rate"),
+        )
         for row in rows
     }
     quote = price_quote(lines, catalogue, **calc_settings(supplier, settings).as_kwargs())
@@ -1114,6 +1122,7 @@ def order_doc(request: Request, order_id: str, kind: str):
         quote = supplier.get_quote(order["rfq_id"])
     rate = calc_settings(supplier, settings).vat_rate
     lines = order["lines"]
+    breakdown: list[tuple[Decimal, Decimal, Decimal]] = []
     if quote:
         # Документ берёт итоги и построчный НДС из снимка КП. Строки заказа —
         # снимок на момент заказа, поэтому сумма строк, НДС и «Итого» сходятся
@@ -1161,6 +1170,7 @@ def order_doc(request: Request, order_id: str, kind: str):
                 "net": net,
                 "vat": vat,
                 "gross": net + vat,
+                "vat_rate": _fmt(snap.get("vat_rate")) if snap and snap.get("vat_rate") not in (None, "") else rate,
             })
         lines = built
         if delivery:
@@ -1172,11 +1182,22 @@ def order_doc(request: Request, order_id: str, kind: str):
                 "sku": "", "name": "Доставка", "unit": "", "qty": 1,
                 "price": delivery_net, "amount": delivery_net,
                 "net": delivery_net, "vat": delivery_vat,
-                "gross": delivery_net + delivery_vat,
+                "gross": delivery_net + delivery_vat, "vat_rate": rate,
             })
         net_total = _fmt(quote.get("subtotal")) + (delivery - delivery_vat if inclusive else delivery)
         vat_total = _fmt(quote.get("vat"))
         total = _fmt(quote.get("total"))
+        buckets: dict[Decimal, list[Decimal]] = {}
+        for line in lines:
+            line_rate = _fmt(line.get("vat_rate")) if line.get("vat_rate") not in (None, "") else rate
+            bucket = buckets.setdefault(line_rate, [Decimal("0"), Decimal("0")])
+            bucket[0] += _fmt(line.get("net"))
+            bucket[1] += _fmt(line.get("vat"))
+        breakdown = [
+            (line_rate, values[0], values[1])
+            for line_rate, values in sorted(buckets.items(), key=lambda pair: pair[0], reverse=True)
+            if values[1]
+        ]
     else:
         net_total = sum((_fmt(line["amount"]) for line in order["lines"]), Decimal(0))
         total = _fmt(order["total"])
@@ -1198,6 +1219,7 @@ def order_doc(request: Request, order_id: str, kind: str):
         vat_total=vat_total,
         total=total,
         vat_rate=rate,
+        breakdown=breakdown,
         valid_until=valid_until,
     )
     html_path = tenant_out_dir(settings, supplier_store().db_path) / f"cabinet-{order_id}-{kind}.html"

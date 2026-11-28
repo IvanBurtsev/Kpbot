@@ -1319,6 +1319,10 @@ def cmd_one_c_invoice(args: argparse.Namespace) -> int:
         if has_split
         else None
     )
+    line_rates = [
+        Decimal(str(line.get("vat_rate") or quote.get("vat_rate") or "0"))
+        for line in quote["lines"]
+    ]
     client = _one_c_client()
     # Ставка и режим цен — из снимка КП, а не из текущих настроек: если клиент
     # поменял ставку после выпуска КП, счёт в 1С обязан совпасть с КП.
@@ -1334,6 +1338,7 @@ def cmd_one_c_invoice(args: argparse.Namespace) -> int:
                 lines=lines,
                 vat_rate=vat_rate,
                 line_vats=line_vats,
+                line_rates=line_rates,
                 prices_include_vat=prices_include_vat,
             )
         else:
@@ -1342,6 +1347,7 @@ def cmd_one_c_invoice(args: argparse.Namespace) -> int:
                 lines=lines,
                 vat_rate=vat_rate,
                 line_vats=line_vats,
+                line_rates=line_rates,
                 prices_include_vat=prices_include_vat,
                 post=args.post,
             )

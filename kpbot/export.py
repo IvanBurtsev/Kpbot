@@ -177,7 +177,6 @@ def build_rfq_xlsx(
     # достаточно удалить две последние колонки.
     one_c = wb.create_sheet("Для 1С")
     one_c.append(("Код", "Наименование", "Количество", "Цена", "Сумма", "Склад", "Ставка НДС"))
-    vat_percent = _vat_percent(quote)
     for line in lines:
         entry = (stock or {}).get(line["sku"]) or {}
         net, _vat, _gross = _line_split(line, rate, inclusive)
@@ -191,14 +190,14 @@ def build_rfq_xlsx(
                 float(net_price),
                 float(net),
                 entry.get("warehouse") or "",
-                vat_percent,
+                _line_vat_percent(line, _vat_percent(quote)),
             )
         )
     delivery = _money((quote or {}).get("delivery"))
     if delivery:
         delivery_vat = _money((quote or {}).get("delivery_vat"))
         delivery_net = delivery - delivery_vat if inclusive else delivery
-        one_c.append(("DELIVERY", "Доставка", 1, float(delivery_net), float(delivery_net), "", vat_percent))
+        one_c.append(("DELIVERY", "Доставка", 1, float(delivery_net), float(delivery_net), "", _vat_percent(quote)))
     for column, width in {"A": 14, "B": 52, "C": 12, "D": 12, "E": 14, "F": 18, "G": 12}.items():
         one_c.column_dimensions[column].width = width
 
@@ -231,11 +230,23 @@ def _vat_percent(quote: dict | None) -> str:
     rate = quote.get("vat_rate")
     if rate in (None, ""):
         return ""
+    return _rate_percent(rate)
+
+
+def _rate_percent(rate: object) -> str:
     try:
         percent = Decimal(str(rate)) * 100
-    except InvalidOperation:
+    except (InvalidOperation, ValueError):
         return ""
     return f"{format(percent.normalize(), 'f')}%"
+
+
+def _line_vat_percent(line: dict, default_percent: str) -> str:
+    """Ставка конкретной строки: из снимка, иначе ставка клиента."""
+    raw = line.get("vat_rate")
+    if raw in (None, ""):
+        return default_percent
+    return _rate_percent(raw)
 
 
 def check_1c_sheet(content: bytes) -> list[str]:
@@ -330,7 +341,6 @@ def build_rfq_csv(
     written.append(nom_path)
 
     order_path = out_dir / f"1c-order-{short}.csv"
-    vat_percent = _vat_percent(quote)
     rate = _quote_rate(quote)
     inclusive = _quote_inclusive(quote)
     with order_path.open("w", encoding="utf-8-sig", newline="") as fh:
@@ -349,7 +359,7 @@ def build_rfq_csv(
                     _ru_number(net_price),
                     _ru_number(net),
                     entry.get("warehouse") or "",
-                    vat_percent,
+                    _line_vat_percent(line, _vat_percent(quote)),
                 )
             )
         delivery = _money((quote or {}).get("delivery"))
@@ -357,7 +367,7 @@ def build_rfq_csv(
             delivery_vat = _money((quote or {}).get("delivery_vat"))
             delivery_net = delivery - delivery_vat if inclusive else delivery
             writer.writerow(("DELIVERY", "Доставка", "1", _ru_number(delivery_net),
-                             _ru_number(delivery_net), "", vat_percent))
+                             _ru_number(delivery_net), "", _vat_percent(quote)))
     written.append(order_path)
     return written
 
