@@ -149,7 +149,7 @@ DEFAULT_ITEMS: tuple[tuple[str, str, str, str], ...] = (
     ("MT-010", "Герметик силиконовый 310 мл", "шт", "315.00"),
 )
 
-COLUMNS = ("SKU", "Наименование", "Ед.", "Цена", "Валюта")
+COLUMNS = ("SKU", "Наименование", "Ед.", "Цена", "Валюта", "Ставка НДС")
 
 
 def default_price_items() -> list[PriceItem]:
@@ -159,6 +159,17 @@ def default_price_items() -> list[PriceItem]:
     ]
 
 
+def _vat_cell(item: PriceItem) -> str:
+    """Ставка для выгрузки: «22», «10», «0», пусто — ставка клиента.
+
+    Колонка нужна, чтобы выгруженный прайс можно было загрузить обратно без
+    потери ставок: экспорт-импорт — обычный способ поправить прайс в Excel.
+    """
+    if item.vat_rate is None:
+        return ""
+    return f"{item.vat_rate * 100:.0f}"
+
+
 def write_csv(path: Path, items: list[PriceItem] | None = None) -> Path:
     items = items or default_price_items()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -166,7 +177,9 @@ def write_csv(path: Path, items: list[PriceItem] | None = None) -> Path:
         writer = csv.writer(fh, delimiter=";")
         writer.writerow(COLUMNS)
         for item in items:
-            writer.writerow([item.sku, item.name, item.unit, str(item.price), item.currency])
+            writer.writerow(
+                [item.sku, item.name, item.unit, str(item.price), item.currency, _vat_cell(item)]
+            )
     return path
 
 
@@ -186,9 +199,11 @@ def write_xlsx(path: Path, items: list[PriceItem] | None = None) -> Path:
     for cell in ws[1]:
         cell.font = Font(bold=True)
     for item in items:
-        ws.append([item.sku, item.name, item.unit, float(item.price), item.currency])
+        ws.append(
+            [item.sku, item.name, item.unit, float(item.price), item.currency, _vat_cell(item)]
+        )
 
-    widths = {"A": 12, "B": 46, "C": 12, "D": 12, "E": 10}
+    widths = {"A": 12, "B": 46, "C": 12, "D": 12, "E": 10, "F": 13}
     for column, width in widths.items():
         ws.column_dimensions[column].width = width
     ws.freeze_panes = "A2"

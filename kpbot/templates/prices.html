@@ -1,3 +1,16 @@
+{% macro pager(pages, page_number, query) -%}
+{% if pages > 1 %}
+<p class="pager small">
+  {% if page_number > 1 %}
+  <a href="/ui/prices?{{ {'q': query, 'page': page_number - 1}|urlencode }}">← назад</a>
+  {% endif %}
+  <span class="muted">страница {{ page_number }} из {{ pages }}</span>
+  {% if page_number < pages %}
+  <a href="/ui/prices?{{ {'q': query, 'page': page_number + 1}|urlencode }}">вперёд →</a>
+  {% endif %}
+</p>
+{% endif %}
+{%- endmacro %}
 {% extends "base.html" %}
 {% block title %}Прайс · kpbot{% endblock %}
 {% block content %}
@@ -14,6 +27,7 @@
     <input type="search" name="q" value="{{ query }}" placeholder="поиск по названию или коду">
     <button type="submit" class="mini">Найти</button>
     {% if query %}<a class="mini" href="/ui/prices">Сбросить</a>{% endif %}
+    <a class="button mini" href="/ui/prices/export.xlsx">Выгрузить прайс (XLSX)</a>
   </form>
 
   {% if can_edit %}
@@ -68,9 +82,30 @@
     Понимаем выгрузку из 1С и наш шаблон: колонки ищутся по смыслу
     (Код/Артикул, Наименование/Номенклатура, Единица, Цена).
   </p>
+
+  {% if stock_rows %}
+  <table class="cards-table stock-table">
+    <thead>
+      <tr><th>Код</th><th class="num">Остаток</th><th>Ед.</th><th>Склад</th><th>Обновлено</th></tr>
+    </thead>
+    <tbody>
+      {% for row in stock_rows %}
+      <tr>
+        <td data-label="Код"><code>{{ row.sku }}</code></td>
+        <td data-label="Остаток" class="num">{{ row.qty|qty }}</td>
+        <td data-label="Ед.">{{ row.unit or "—" }}</td>
+        <td data-label="Склад">{{ row.warehouse or "—" }}</td>
+        <td data-label="Обновлено" class="small muted">{{ row.updated_at|dt_ru }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if stock_more %}<p class="muted small">и ещё {{ stock_more }} позиций остатков</p>{% endif %}
+  {% endif %}
 </section>
 
 <section class="card">
+  {{ pager(pages, page_number, query) }}
   <table class="cards-table">
     <thead>
       <tr><th>Код</th><th>Наименование</th><th>Ед.</th><th class="num">Цена</th><th class="num">НДС</th></tr>
@@ -89,6 +124,6 @@
       {% endfor %}
     </tbody>
   </table>
-  {% if truncated %}<p class="muted small">показаны первые {{ shown }} из {{ matched }} — уточните поиск</p>{% endif %}
+  {{ pager(pages, page_number, query) }}
 </section>
 {% endblock %}

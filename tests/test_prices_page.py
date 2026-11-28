@@ -153,11 +153,47 @@ class PricesPageTest(unittest.TestCase):
         self.assertIn("найдено", page)
         self.assertNotIn("показаны первые", page)
 
-    def test_truncation_message_mentions_300(self) -> None:
+    def test_pagination_splits_long_price_list(self) -> None:
         rows = "".join(f"K{i:04d};Товар {i};шт;10\n" for i in range(305))
         self._upload("many.csv", f"SKU;Наименование;Ед.;Цена\n{rows}".encode())
+        first = self.client.get("/ui/prices").text
+        self.assertIn("страница 1 из 4", first)
+        self.assertIn("K0000", first)
+        self.assertNotIn("K0150", first)
+        second = self.client.get("/ui/prices?page=2").text
+        self.assertIn("страница 2 из 4", second)
+        self.assertIn("K0100", second)
+        self.assertIn("page=3", second)
+
+    def test_export_keeps_vat_rates(self) -> None:
+        self._upload(
+            "rates.csv",
+            "SKU;Наименование;Ед.;Цена;Ставка НДС\nA1;Уголок;шт;34,50;22\nB1;Кабель;м;128;10\n".encode(),
+        )
+        response = self.client.get("/ui/prices/export.xlsx")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.content.startswith(b"PK"))
+        path = support.subdir("prices_export") / "export.xlsx"
+        path.write_bytes(response.content)
+        from kpbot.pricelist import load_price_items
+
+        items = {item.sku: item for item in load_price_items(path)}
+        self.assertEqual(items["A1"].vat_rate, __import__("decimal").Decimal("0.22"))
+        self.assertEqual(items["B1"].vat_rate, __import__("decimal").Decimal("0.1"))
+
+    def test_export_requires_login(self) -> None:
+        fresh = TestClient(app, follow_redirects=False)
+        self.assertEqual(fresh.get("/ui/prices/export.xlsx").status_code, 401)
+
+    def test_stock_table_is_shown(self) -> None:
+        self._upload(
+            "stock2.csv", "Артикул;Остаток;Единица;Склад\nA1;10;шт;Основной\n".encode(),
+            url="/ui/prices/stock",
+        )
         page = self.client.get("/ui/prices").text
-        self.assertIn("показаны первые 300 из 305", page)
+        self.assertIn("A1", page)
+        self.assertIn("Основной", page)
+        self.assertIn(">Остаток</th>", page.replace("\n", ""))
 
     def test_search_ignores_yo_and_case(self) -> None:
         self._upload(

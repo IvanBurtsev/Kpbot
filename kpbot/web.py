@@ -790,25 +790,58 @@ def ui_prices(request: Request, q: str = "", flash: str = ""):
     for index, item in enumerate(items):
         if item.vat_rate is None:
             items[index] = replace(item, vat_rate=default_rate)
-    page_size = 300
-    shown_items = items[:page_size]
+    # Страницы: 100 позиций — читаемый размер и для 10 000 позиций не нужно
+    # держать в разметке мегабайты.
+    page_size = 100
+    matched = len(items)
+    pages = max(1, (matched + page_size - 1) // page_size)
+    page_number = min(safe_int(request.query_params.get("page"), 1, 1, 10000), pages)
+    start = (page_number - 1) * page_size
+    shown_items = items[start : start + page_size]
+    stock_rows = sorted(store.stock_map().values(), key=lambda row: str(row.get("sku") or ""))
     return page(
         "prices.html",
         request,
         active_page="prices",
         items=shown_items,
-        stock=store.stock_map(),
+        stock_rows=stock_rows[:200],
+        stock_more=max(0, len(stock_rows) - 200),
         stock_count=store.stock_count(),
         stock_updated_at=store.stock_updated_at(),
         total=store.price_count(),
-        matched=len(items),
+        matched=matched,
         shown=len(shown_items),
-        truncated=len(items) > page_size,
+        page_number=page_number,
+        pages=pages,
         query=q.strip(),
         updated_at=store.price_updated_at(),
         can_edit=is_admin_request(request),
         one_c_configured=bool(settings.one_c_base_url),
         flash=flash[:200],
+    )
+
+
+@app.get("/ui/prices/export.xlsx")
+async def ui_prices_export(request: Request):
+    """Выгрузка текущего прайса в XLSX: править в Excel и загрузить обратно.
+
+    Колонка «Ставка НДС» входит в файл, иначе экспорт-импорт терял бы ставки
+    строк и подменял их ставкой клиента.
+    """
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="нужен вход")
+    from .pricelist import write_xlsx
+
+    temp_path = _upload_temp(".xlsx", "price-export")
+    try:
+        await run_in_threadpool(write_xlsx, temp_path, store.price_items())
+        content = temp_path.read_bytes()
+    finally:
+        temp_path.unlink(missing_ok=True)
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="price-list.xlsx"'},
     )
 
 
