@@ -186,6 +186,19 @@ class LegacyQuoteCardTest(unittest.TestCase):
             "исправленная заявка должна вернуться в работу",
         )
 
+    def test_reprice_refuses_missing_price_item(self) -> None:
+        from kpbot.pipeline import rfq_lines
+
+        lines = rfq_lines(self.store.get_rfq(self.rfq_id))
+        lines[0].matched_sku = "GONE-SKU"
+        self.store.replace_lines(self.rfq_id, lines)
+        response = self.client.post(
+            f"/ui/rfq/{self.rfq_id}/reprice", data={"csrf_token": self._csrf()}
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("нет позиции", unquote(response.headers.get("location", "")))
+        self.assertEqual(Decimal(self.store.get_quote(self.rfq_id)["vat_rate"]), Decimal("0.20"))
+
     def test_sent_request_is_not_repriced(self) -> None:
         self.store.set_status(self.rfq_id, "sent", force=True)
         response = self.client.post(
@@ -197,6 +210,23 @@ class LegacyQuoteCardTest(unittest.TestCase):
             "ожидали отказ «уже отправлена»",
         )
         self.assertEqual(Decimal(self.store.get_quote(self.rfq_id)["vat_rate"]), Decimal("0.20"))
+
+
+class MergeSameSkuTest(unittest.TestCase):
+    def test_duplicates_are_merged_without_losing_amount(self) -> None:
+        from kpbot.cli import _merge_same_sku
+
+        lines = [
+            RfqLine(1, "уголок — 2 шт", Decimal("2"), "шт", "A", 1.0, "Уголок", LineStatus.OK),
+            RfqLine(2, "уголок — 3 шт", Decimal("3"), "шт", "A", 1.0, "Уголок", LineStatus.OK),
+            RfqLine(3, "кабель — 1 м", Decimal("1"), "м", "B", 1.0, "Кабель", LineStatus.OK),
+            RfqLine(4, "что-то", None, None, None, 0.0, "", LineStatus.NO_MATCH),
+        ]
+        merged, count = _merge_same_sku(lines)
+        self.assertEqual(count, 1)
+        self.assertEqual([line.matched_sku for line in merged], ["A", "B", None])
+        self.assertEqual(merged[0].qty, Decimal("5"), "2 + 3 = 5, сумма не меняется")
+        self.assertNotEqual(merged[2].status, LineStatus.OK)
 
 
 if __name__ == "__main__":

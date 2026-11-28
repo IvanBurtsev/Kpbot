@@ -1996,6 +1996,21 @@ async def ui_rfq_reprice(request: Request, rfq_id: str):
     _rfq, lines = lines_from_db(rfq_id)
     if not lines:
         return back_to(rfq_id, "в заявке нет строк — пересчитывать нечего")
+    # Позиции, которой уже нет в прайсе, в новом расчёте не будет — молча
+    # выбрасывать строку из документа нельзя, пусть человек заменит или удалит.
+    price_skus = {item.sku for item in store.price_items()}
+    missing = sorted(
+        {
+            line.matched_sku
+            for line in lines
+            if line.status is LineStatus.OK and line.matched_sku and line.matched_sku not in price_skus
+        }
+    )
+    if missing:
+        return back_to(
+            rfq_id,
+            f"в прайсе нет позиции {', '.join(missing[:3])} — замените или удалите строку",
+        )
     try:
         await run_in_threadpool(
             pipeline.apply_edits,

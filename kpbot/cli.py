@@ -1547,6 +1547,33 @@ def cmd_backup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _merge_same_sku(lines: list) -> tuple[list, int]:
+    """Склеивает строки с одним артикулом: две строки «уголок 2 шт» и «уголок 3 шт»
+    по одной цене — это 5 шт, а не повод отказать в пересчёте.
+
+    Нужно старым заявкам: дубль артикула появился до проверки на дубли, и
+    пересчёт такого снимка падал с «позиция уже есть в КП».
+    """
+    first_by_sku: dict[str, object] = {}
+    result: list = []
+    merged = 0
+    for line in lines:
+        sku = getattr(line, "matched_sku", None)
+        is_ok = getattr(getattr(line, "status", None), "value", "") == "ok"
+        if not (sku and is_ok):
+            result.append(line)
+            continue
+        first = first_by_sku.get(sku)
+        if first is None:
+            first_by_sku[sku] = line
+            result.append(line)
+            continue
+        first.qty = (first.qty or 0) + (line.qty or 0)
+        first.raw_text = f"{first.raw_text}; {line.raw_text}"
+        merged += 1
+    return result, merged
+
+
 def cmd_reprice_legacy(args: argparse.Namespace) -> int:
     """Пересчитывает снимки КП с незаконной ставкой (20%, 18%) по действующей.
 
@@ -1601,9 +1628,11 @@ def cmd_reprice_legacy(args: argparse.Namespace) -> int:
                     skipped_missing += 1
                     print(f"  пропуск (нет в прайсе: {', '.join(missing[:3])}): {title}")
                     continue
+                lines, merged = _merge_same_sku(lines)
                 if args.dry_run:
                     fixed += 1
-                    print(f"  будет пересчитана: {title}")
+                    extra = f", дублей склеено: {merged}" if merged else ""
+                    print(f"  будет пересчитана: {title}{extra}")
                     continue
                 try:
                     pipeline.apply_edits(
