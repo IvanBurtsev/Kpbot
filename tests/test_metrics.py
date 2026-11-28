@@ -154,7 +154,7 @@ class Export1cTest(unittest.TestCase):
             "lines": [{"sku": "KR-001", "name": "Уголок", "unit": "шт",
                        "qty": "10", "price": "34.50", "amount": "345.00"}],
             "subtotal": "345.00", "vat": "69.00", "delivery": "0", "total": "414.00",
-            "vat_rate": "0.20",
+            "vat_rate": "0.22",
         }
         stock = {"KR-001": {"warehouse": "Основной склад", "qty": "120"}}
         content = build_rfq_xlsx(rfq, quote, stock=stock)
@@ -162,7 +162,7 @@ class Export1cTest(unittest.TestCase):
         header = [cell.value for cell in sheet[1]]
         row = [cell.value for cell in sheet[2]]
         self.assertEqual(header[-2:], ["Склад", "Ставка НДС"])
-        self.assertEqual(row[-2:], ["Основной склад", "20%"])
+        self.assertEqual(row[-2:], ["Основной склад", "22%"])
 
     def test_unknown_vat_rate_is_blank(self) -> None:
         from io import BytesIO
@@ -207,7 +207,7 @@ class Export1cTest(unittest.TestCase):
             "lines": [{"sku": "KR-001", "name": "Уголок", "unit": "шт",
                        "qty": "2", "price": "34.50", "amount": "69.00"}],
             "subtotal": "69.00", "vat": "13.80", "delivery": "0", "total": "82.80",
-            "vat_rate": "0.20",
+            "vat_rate": "0.22",
         }
         stock = {"KR-001": {"warehouse": "Склад №2"}}
         TMP.mkdir(parents=True, exist_ok=True)
@@ -216,7 +216,7 @@ class Export1cTest(unittest.TestCase):
         text = order.read_text(encoding="utf-8-sig")
         self.assertIn("Склад;Ставка НДС", text)
         self.assertIn("Склад №2", text)
-        self.assertIn("20%", text)
+        self.assertIn("22%", text)
 
     def test_broken_file_is_reported(self) -> None:
         from io import BytesIO

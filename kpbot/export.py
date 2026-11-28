@@ -3,11 +3,54 @@
 from __future__ import annotations
 
 import sys
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from io import BytesIO
 from pathlib import Path
 
 from .domain import LineStatus, PriceItem
+
+CENT = Decimal("0.01")
+
+
+def _money(value: object) -> Decimal:
+    try:
+        return Decimal(str(value or "0")).quantize(CENT, rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError):
+        return Decimal("0.00")
+
+
+def _quote_rate(quote: dict | None) -> Decimal:
+    try:
+        return Decimal(str((quote or {}).get("vat_rate") or "0"))
+    except (InvalidOperation, ValueError):
+        return Decimal("0")
+
+
+def _quote_inclusive(quote: dict | None) -> bool:
+    return str((quote or {}).get("prices_include_vat") or "0").strip().lower() in {
+        "1", "true", "yes", "on", "да"
+    }
+
+
+def _line_split(line: dict, rate: Decimal, inclusive: bool) -> tuple[Decimal, Decimal, Decimal]:
+    """(без НДС, НДС, с НДС) для строки снимка КП.
+
+    Снимки нового формата хранят net/vat; старые (и тесты) — только amount,
+    тогда считаем по ставке. В Excel нельзя показывать сумму с НДС под
+    заголовком «Сумма без НДС» — это и была ошибка в режиме «цены с НДС».
+    """
+    amount = _money(line.get("amount"))
+    has_split = "net" in line and "vat" in line
+    if has_split:
+        net = _money(line.get("net"))
+        vat = _money(line.get("vat"))
+        if not (net == 0 and vat == 0 and amount != 0):
+            return net, vat, _money(net + vat)
+    if inclusive and rate > 0:
+        net = (amount / (Decimal("1") + rate)).quantize(CENT, rounding=ROUND_HALF_UP)
+        return net, _money(amount - net), amount
+    vat = (amount * rate).quantize(CENT, rounding=ROUND_HALF_UP) if rate > 0 else Decimal("0.00")
+    return amount, vat, _money(amount + vat)
 
 _VENDOR = Path(__file__).resolve().parent.parent / "vendor"
 if _VENDOR.exists() and str(_VENDOR) not in sys.path:
@@ -80,14 +123,19 @@ def build_rfq_xlsx(
 
     row = table_row + 1
     lines = (quote or {}).get("lines", [])
+    rate = _quote_rate(quote)
+    inclusive = _quote_inclusive(quote)
     for number, line in enumerate(lines, start=1):
+        net, _vat, _gross = _line_split(line, rate, inclusive)
+        qty = Decimal(str(line.get("qty") or "0"))
+        net_price = (net / qty).quantize(CENT, rounding=ROUND_HALF_UP) if qty else _money(line.get("price"))
         sheet.cell(row=row, column=1, value=number)
         sheet.cell(row=row, column=2, value=safe_text(line["sku"]))
         sheet.cell(row=row, column=3, value=safe_text(line["name"]))
         sheet.cell(row=row, column=4, value=safe_text(line["unit"]))
-        sheet.cell(row=row, column=5, value=float(Decimal(str(line["qty"]))))
-        sheet.cell(row=row, column=6, value=float(Decimal(str(line["price"]))))
-        sheet.cell(row=row, column=7, value=float(Decimal(str(line["amount"]))))
+        sheet.cell(row=row, column=5, value=float(qty))
+        sheet.cell(row=row, column=6, value=float(net_price))
+        sheet.cell(row=row, column=7, value=float(net))
         sheet.cell(row=row, column=6).number_format = money_format
         sheet.cell(row=row, column=7).number_format = money_format
         row += 1
@@ -119,6 +167,8 @@ def build_rfq_xlsx(
             continue
         seen.add(line["sku"])
         nom.append((safe_text(line["name"]), safe_text(line["sku"]), safe_text(line["unit"])))
+    if _money((quote or {}).get("delivery")):
+        nom.append(("Доставка", "DELIVERY", ""))
     for column, width in {"A": 60, "B": 16, "C": 18}.items():
         nom.column_dimensions[column].width = width
 
@@ -130,17 +180,25 @@ def build_rfq_xlsx(
     vat_percent = _vat_percent(quote)
     for line in lines:
         entry = (stock or {}).get(line["sku"]) or {}
+        net, _vat, _gross = _line_split(line, rate, inclusive)
+        qty = Decimal(str(line.get("qty") or "0"))
+        net_price = (net / qty).quantize(CENT, rounding=ROUND_HALF_UP) if qty else _money(line.get("price"))
         one_c.append(
             (
                 safe_text(line["sku"]),
                 safe_text(line["name"]),
-                float(Decimal(str(line["qty"]))),
-                float(Decimal(str(line["price"]))),
-                float(Decimal(str(line["amount"]))),
+                float(qty),
+                float(net_price),
+                float(net),
                 entry.get("warehouse") or "",
                 vat_percent,
             )
         )
+    delivery = _money((quote or {}).get("delivery"))
+    if delivery:
+        delivery_vat = _money((quote or {}).get("delivery_vat"))
+        delivery_net = delivery - delivery_vat if inclusive else delivery
+        one_c.append(("DELIVERY", "Доставка", 1, float(delivery_net), float(delivery_net), "", vat_percent))
     for column, width in {"A": 14, "B": 52, "C": 12, "D": 12, "E": 14, "F": 18, "G": 12}.items():
         one_c.column_dimensions[column].width = width
 
@@ -273,22 +331,33 @@ def build_rfq_csv(
 
     order_path = out_dir / f"1c-order-{short}.csv"
     vat_percent = _vat_percent(quote)
+    rate = _quote_rate(quote)
+    inclusive = _quote_inclusive(quote)
     with order_path.open("w", encoding="utf-8-sig", newline="") as fh:
         writer = csv.writer(fh, delimiter=";")
         writer.writerow(("Код", "Наименование", "Количество", "Цена", "Сумма", "Склад", "Ставка НДС"))
         for line in lines:
             entry = (stock or {}).get(line["sku"]) or {}
+            net, _vat, _gross = _line_split(line, rate, inclusive)
+            qty = Decimal(str(line.get("qty") or "0"))
+            net_price = (net / qty).quantize(CENT, rounding=ROUND_HALF_UP) if qty else _money(line.get("price"))
             writer.writerow(
                 (
                     safe_text(line["sku"]),
                     safe_text(line["name"]),
-                    _ru_number(line["qty"]),
-                    _ru_number(line["price"]),
-                    _ru_number(line["amount"]),
+                    _ru_number(qty),
+                    _ru_number(net_price),
+                    _ru_number(net),
                     entry.get("warehouse") or "",
                     vat_percent,
                 )
             )
+        delivery = _money((quote or {}).get("delivery"))
+        if delivery:
+            delivery_vat = _money((quote or {}).get("delivery_vat"))
+            delivery_net = delivery - delivery_vat if inclusive else delivery
+            writer.writerow(("DELIVERY", "Доставка", "1", _ru_number(delivery_net),
+                             _ru_number(delivery_net), "", vat_percent))
     written.append(order_path)
     return written
 

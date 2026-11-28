@@ -122,6 +122,10 @@ class QuoteLine:
     qty: Decimal
     price: Decimal
     amount: Decimal
+    # НДС строки считается и округляется построчно: иначе сумма НДС в строках
+    # счёта не совпадает с итогом (расхождение в копейках — брак документа).
+    net: Decimal = Decimal("0.00")
+    vat: Decimal = Decimal("0.00")
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +226,19 @@ def price_quote(
             raise ValidationError(f"количество больше допустимого: {line.raw_text!r}")
 
         price = money(item.price)
+        # Сумма считается от уже округлённой цены, иначе «0,34 × 3 = 1,01».
+        # НДС — тоже построчно: иначе сумма НДС в строках документа не
+        # совпадает с итогом (в счёте и УПД это видно и это брак).
+        base = money(price * qty)
+        if prices_include_vat and vat_rate > 0:
+            gross = base
+            net = money(gross / (Decimal("1") + vat_rate))
+            line_vat = money(gross - net)
+            amount = gross
+        else:
+            net = base
+            line_vat = money(net * vat_rate) if vat_rate > 0 else money(Decimal("0"))
+            amount = net
         quoted.append(
             QuoteLine(
                 sku=item.sku,
@@ -229,28 +246,28 @@ def price_quote(
                 unit=item.unit,
                 qty=qty,
                 price=price,
-                # сумма считается от уже округлённой цены, иначе «0,34 × 3 = 1,01»
-                amount=money(price * qty),
+                amount=amount,
+                net=net,
+                vat=line_vat,
             )
         )
 
-    gross = money(sum((ln.amount for ln in quoted), Decimal("0")))
+    subtotal = money(sum((ln.net for ln in quoted), Decimal("0")))
+    goods_vat = money(sum((ln.vat for ln in quoted), Decimal("0")))
     delivery_money = money(max(delivery, Decimal("0")))
     if prices_include_vat and vat_rate > 0:
         # НДС уже внутри цены: выделяем его из суммы, а не начисляем сверху.
         # Доставка — такая же услуга и живёт по тому же правилу: её цена с НДС.
-        subtotal = money(gross / (Decimal("1") + vat_rate))
         delivery_net = money(delivery_money / (Decimal("1") + vat_rate))
         delivery_vat = money(delivery_money - delivery_net)
-        vat = money((gross - subtotal) + delivery_vat)
-        total = money(gross + delivery_money)
+        total = money(sum((ln.amount for ln in quoted), Decimal("0")) + delivery_money)
     else:
-        subtotal = gross
         # Доставка облагается НДС по той же ставке, что и товары: иначе «Итого»
         # не сходится с письмом и с 1С, где НДС считается на всю сумму.
+        delivery_net = delivery_money
         delivery_vat = money(delivery_money * vat_rate) if vat_rate > 0 else money(Decimal("0"))
-        vat = money(subtotal * vat_rate + delivery_vat)
-        total = money(subtotal + vat + delivery_money)
+        total = money(subtotal + goods_vat + delivery_money + delivery_vat)
+    vat = money(goods_vat + delivery_vat)
 
     return Quote(
         lines=quoted,

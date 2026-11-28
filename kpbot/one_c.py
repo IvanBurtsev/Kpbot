@@ -17,7 +17,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from .one_c_profiles import detect_configuration, parse_entities
 
@@ -700,6 +700,8 @@ class OneCClient:
         currency: str = "",
         date: str | None = None,
         vat_rate: Decimal = Decimal("0.22"),
+        line_vats: list[Decimal] | None = None,
+        prices_include_vat: bool = False,
         post: bool = False,
     ) -> str:
         """Создаёт «Счёт на оплату покупателю» и возвращает Ref_Key.
@@ -734,6 +736,8 @@ class OneCClient:
                 **({"Склад_Key": warehouse} if warehouse else {}),
             },
             vat_rate=Decimal(str(vat_rate)),
+            line_vats=line_vats,
+            prices_include_vat=prices_include_vat,
             post=post,
         )
 
@@ -747,6 +751,8 @@ class OneCClient:
         date: str | None = None,
         comment: str = "",
         vat_rate: Decimal | None = None,
+        line_vats: list[Decimal] | None = None,
+        prices_include_vat: bool = False,
     ) -> str:
         """Создаёт счёт через HTTP-сервис 1С (`deploy/1c/kpbot-invoice.bsl`).
 
@@ -764,22 +770,52 @@ class OneCClient:
         if not counterparty:
             raise OneCError("не передан контрагент: без него 1С счёт не запишет")
 
+        payload_lines = []
+        cent = Decimal("0.01")
+        for index, (sku, qty, price) in enumerate(lines):
+            quantity = Decimal(str(qty))
+            unit_price = Decimal(str(price))
+            gross_or_net = (quantity * unit_price).quantize(cent, rounding=ROUND_HALF_UP)
+            supplied = None
+            if line_vats is not None and index < len(line_vats):
+                supplied = Decimal(str(line_vats[index])).quantize(cent, rounding=ROUND_HALF_UP)
+            if supplied is not None:
+                vat = supplied
+                net = gross_or_net - vat if prices_include_vat else gross_or_net
+            elif vat_rate is not None and prices_include_vat and vat_rate > 0:
+                net = (gross_or_net / (Decimal("1") + vat_rate)).quantize(
+                    cent, rounding=ROUND_HALF_UP
+                )
+                vat = gross_or_net - net
+            else:
+                net = gross_or_net
+                vat = (
+                    (net * vat_rate).quantize(cent, rounding=ROUND_HALF_UP)
+                    if vat_rate is not None and vat_rate > 0
+                    else Decimal("0.00")
+                )
+            net_price = (net / quantity).quantize(cent, rounding=ROUND_HALF_UP) if quantity else unit_price
+            payload_lines.append(
+                {
+                    "sku": sku,
+                    "qty": str(quantity),
+                    "price": str(net_price),
+                    "net": str(net),
+                    "vat_amount": str(vat),
+                    "vat": int((Decimal(str(vat_rate)) * 100).to_integral_value())
+                    if vat_rate is not None
+                    else 0,
+                }
+            )
+
         payload = {
             "counterparty": counterparty,
             "organization": organization,
             "warehouse": warehouse,
             "date": date or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
             "comment": comment,
-            "lines": [
-                {
-                    "sku": sku,
-                    "qty": str(qty),
-                    "price": str(price),
-                    # ставка едет вместе со строкой: сервис не должен угадывать НДС
-                    "vat": int((Decimal(str(vat_rate)) * 100).to_integral_value()) if vat_rate is not None else 0,
-                }
-                for sku, qty, price in lines
-            ],
+            "prices_include_vat": bool(prices_include_vat),
+            "lines": payload_lines,
         }
         headers = dict(self._headers())
         if self.service_token:
@@ -811,6 +847,8 @@ class OneCClient:
         extra: dict | None = None,
         *,
         vat_rate: Decimal | None = None,
+        line_vats: list[Decimal] | None = None,
+        prices_include_vat: bool = False,
         post: bool = False,
     ) -> str:
         """Шапка → табличная часть → (по желанию) проведение.
@@ -840,23 +878,44 @@ class OneCClient:
 
         rows: list[dict[str, object]] = []
         total = Decimal(0)
+        cent = Decimal("0.01")
         for number, (sku, qty, price) in enumerate(lines, start=1):
             quantity = Decimal(str(qty))
             unit_price = Decimal(str(price))
-            amount = (quantity * unit_price).quantize(Decimal("0.01"))
-            total += amount
+            gross_or_net = (quantity * unit_price).quantize(cent, rounding=ROUND_HALF_UP)
             row: dict[str, object] = {
                 "LineNumber": str(number),
                 "Номенклатура_Key": refs[sku],
                 "Количество": float(quantity),
                 "Цена": float(unit_price),
-                "Сумма": float(amount),
             }
-            if vat_rate is not None:
-                vat = (amount * vat_rate).quantize(Decimal("0.01"))
-                total += vat
+            if vat_rate is None:
+                net = gross_or_net
+                row["Сумма"] = float(net)
+            else:
+                supplied = None
+                if line_vats is not None and number - 1 < len(line_vats):
+                    supplied = Decimal(str(line_vats[number - 1])).quantize(
+                        cent, rounding=ROUND_HALF_UP
+                    )
+                if supplied is not None:
+                    vat = supplied
+                    net = gross_or_net - vat if prices_include_vat else gross_or_net
+                elif prices_include_vat and vat_rate > 0:
+                    net = (gross_or_net / (Decimal("1") + vat_rate)).quantize(
+                        cent, rounding=ROUND_HALF_UP
+                    )
+                    vat = gross_or_net - net
+                else:
+                    net = gross_or_net
+                    vat = (net * vat_rate).quantize(cent, rounding=ROUND_HALF_UP) if vat_rate > 0 else Decimal("0.00")
+                row["Сумма"] = float(net)
                 row["СуммаНДС"] = float(vat)
                 row["СтавкаНДС"] = _vat_enum(vat_rate)
+                total += net + vat
+                rows.append(row)
+                continue
+            total += net
             rows.append(row)
 
         try:

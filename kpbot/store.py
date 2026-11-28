@@ -87,6 +87,8 @@ CREATE TABLE IF NOT EXISTS quote_lines(
     qty      TEXT NOT NULL,
     price    TEXT NOT NULL,
     amount   TEXT NOT NULL,
+    net      TEXT NOT NULL DEFAULT '0.00',
+    vat      TEXT NOT NULL DEFAULT '0.00',
     PRIMARY KEY (quote_id, idx)
 );
 
@@ -230,6 +232,14 @@ class Store:
                     conn.execute(
                         "ALTER TABLE quotes ADD COLUMN delivery_vat TEXT NOT NULL DEFAULT '0.00'"
                     )
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE quote_lines ADD COLUMN net TEXT NOT NULL DEFAULT '0.00'")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE quote_lines ADD COLUMN vat TEXT NOT NULL DEFAULT '0.00'")
                 except sqlite3.OperationalError:
                     pass
                 try:
@@ -475,8 +485,8 @@ class Store:
                 ),
             )
             conn.executemany(
-                "INSERT INTO quote_lines(quote_id, idx, sku, name, unit, qty, price, amount)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO quote_lines(quote_id, idx, sku, name, unit, qty, price, amount, net, vat)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         quote_id,
@@ -487,6 +497,8 @@ class Store:
                         str(line.qty),
                         str(line.price),
                         str(line.amount),
+                        str(line.net),
+                        str(line.vat),
                     )
                     for idx, line in enumerate(quote.lines, start=1)
                 ],
@@ -1064,11 +1076,20 @@ class Store:
         }
 
     def timing_stats(self) -> dict:
+        """Метрика «письмо → первый расчёт», по одной строке на заявку.
+
+        Раньше JOIN со всеми версиями КП считал каждую правку отдельной заявкой:
+        у заявки с тремя пересчётами count был 3, медиана и максимум — по
+        последней версии, а не по первой. Теперь берётся первый снимок КП —
+        именно он отвечает на вопрос «за сколько сервис подготовил КП».
+        """
         with closing(self._connect()) as conn:
             rows = conn.execute(
                 "SELECT r.created_at AS received, r.received_at AS mail_date,"
                 " q.created_at AS quoted, q.duration_ms AS duration_ms"
-                " FROM rfqs r JOIN quotes q ON q.rfq_id = r.id"
+                " FROM rfqs r JOIN quotes q ON q.id = ("
+                "   SELECT id FROM quotes WHERE rfq_id = r.id ORDER BY rowid LIMIT 1"
+                " )"
             ).fetchall()
         durations: list[float] = []
         waits: list[float] = []

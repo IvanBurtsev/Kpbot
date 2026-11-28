@@ -74,14 +74,14 @@
       {% for line in order.lines %}
       <tr>
         <td>{{ loop.index }}</td>
-        <td>{{ line.name }} <span class="muted small">({{ line.sku }})</span></td>
+        <td>{{ line.name }}{% if line.sku %} <span class="muted small">({{ line.sku }})</span>{% endif %}</td>
         <td>{{ line.unit }}</td>
         <td class="num">{{ line.qty|qty }}</td>
         <td class="num">{{ line.price|rub }}</td>
-        <td class="num">{{ line.amount|rub }}</td>
+        <td class="num">{{ line.net|rub }}</td>
         <td class="num">{{ (vat_rate * 100)|round(0, 'floor')|int }}%</td>
-        <td class="num">{{ (line.amount|float * vat_rate|float)|round(2) }}</td>
-        <td class="num">{{ (line.amount|float * (1 + vat_rate|float))|round(2) }}</td>
+        <td class="num">{{ line.vat|rub }}</td>
+        <td class="num">{{ line.gross|rub }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -108,11 +108,11 @@
       {% for line in order.lines %}
       <tr>
         <td>{{ loop.index }}</td>
-        <td>{{ line.name }} <span class="muted small">({{ line.sku }})</span></td>
+        <td>{{ line.name }}{% if line.sku %} <span class="muted small">({{ line.sku }})</span>{% endif %}</td>
         <td>{{ line.unit }}</td>
         <td class="num">{{ line.qty|qty }}</td>
         <td class="num">{{ line.price|rub }}</td>
-        <td class="num">{{ line.amount|rub }}</td>
+        <td class="num">{{ line.net|rub }}</td>
       </tr>
       {% endfor %}
     </tbody>

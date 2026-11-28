@@ -808,6 +808,7 @@ def cmd_smtp_setup(args: argparse.Namespace) -> int:
 def _retry_one(store: Store, mailer, limit: int) -> tuple[int, int]:
     """Повтор отправки в одной базе: возвращает (отправлено, не удалось)."""
     from .mailer import MailError, build_kp_message, load_attachments, reply_subject
+    from .pipeline import tenant_out_dir
 
     sent = failed = 0
     for item in store.pending_messages(limit):
@@ -816,7 +817,9 @@ def _retry_one(store: Store, mailer, limit: int) -> tuple[int, int]:
             store.mark_attempt_failed(item["id"], "заявка удалена")
             failed += 1
             continue
-        attachments = load_attachments(settings.out_dir, item["rfq_id"], short=item["rfq_id"][:8])
+        attachments = load_attachments(
+            tenant_out_dir(settings, store.db_path), item["rfq_id"], short=item["rfq_id"][:8]
+        )
         message = build_kp_message(
             sender=item["to_addr"],
             from_addr=mailer.from_addr or settings.smtp_user or "no-reply@localhost",
@@ -842,6 +845,7 @@ def _retry_one(store: Store, mailer, limit: int) -> tuple[int, int]:
 def cmd_retry_outbox(args: argparse.Namespace) -> int:
     """Повторяет отправку писем, которые не ушли с первого раза."""
     from .mailer import MailError, Mailer, build_kp_message, load_attachments, reply_subject
+    from .pipeline import tenant_out_dir
 
     mailer = Mailer(settings)
     if getattr(args, "all", False):
@@ -868,7 +872,9 @@ def cmd_retry_outbox(args: argparse.Namespace) -> int:
             store.mark_attempt_failed(item["id"], "заявка удалена")
             failed += 1
             continue
-        attachments = load_attachments(settings.out_dir, item["rfq_id"], short=item["rfq_id"][:8])
+        attachments = load_attachments(
+            tenant_out_dir(settings, store.db_path), item["rfq_id"], short=item["rfq_id"][:8]
+        )
         message = build_kp_message(
             sender=item["to_addr"],
             from_addr=mailer.from_addr or settings.smtp_user or "no-reply@localhost",
@@ -1218,6 +1224,13 @@ def cmd_one_c_order(args: argparse.Namespace) -> int:
         return 2
 
     lines = [(line["sku"], line["qty"], line["price"]) for line in quote["lines"]]
+    delivery = Decimal(str(quote.get("delivery") or "0"))
+    if delivery > 0:
+        print(
+            "в КП есть доставка: в «Заказ клиента» 1С она не выгружается (нет номенклатуры "
+            f"услуги). Сумма заказа будет меньше КП на {delivery:.2f} ₽ — добавьте доставку в 1С"
+        )
+        return 2
     try:
         result = _one_c_client().create_order(
             lines, counterparty_key=args.counterparty, post=args.post
@@ -1277,6 +1290,14 @@ def cmd_one_c_invoice(args: argparse.Namespace) -> int:
     if not args.counterparty:
         print("нужен --counterparty (Ref_Key контрагента из 1С)")
         return 2
+    delivery = Decimal(str(quote.get("delivery") or "0"))
+    if delivery > 0:
+        print(
+            "в КП есть доставка: в счёт 1С она не выгружается (нет номенклатуры услуги). "
+            "Добавьте доставку в 1С вручную или уберите её из КП, иначе сумма счёта "
+            f"будет меньше КП на {delivery:.2f} ₽"
+        )
+        return 2
 
     marker = store.last_decision(rfq["id"], "invoice_1c")
     if marker and not args.force:
@@ -1285,25 +1306,43 @@ def cmd_one_c_invoice(args: argparse.Namespace) -> int:
         return 0
 
     lines = [(line["sku"], line["qty"], line["price"]) for line in quote["lines"]]
+    # В старых снимках КП нет построчного НДС: тогда пусть 1С считает по ставке
+    # и режиму цен, а не получает нулевой НДС из пустых полей.
+    has_split = all(
+        Decimal(str(line.get("net") or "0")) != 0
+        or Decimal(str(line.get("vat") or "0")) != 0
+        or Decimal(str(line.get("amount") or "0")) == 0
+        for line in quote["lines"]
+    )
+    line_vats = (
+        [Decimal(str(line.get("vat") or "0")) for line in quote["lines"]]
+        if has_split
+        else None
+    )
     client = _one_c_client()
-    # Ставка — клиента, а не сервиса: у одного 22%, у другого 10%.
-    # 20% — только чтение старых документов: с 2026 года это недействующая ставка.
-    from .pipeline import calc_settings
-
-    vat_rate = calc_settings(store, settings).vat_rate
+    # Ставка и режим цен — из снимка КП, а не из текущих настроек: если клиент
+    # поменял ставку после выпуска КП, счёт в 1С обязан совпасть с КП.
+    vat_rate = Decimal(str(quote.get("vat_rate") or settings.vat_rate))
+    prices_include_vat = bool(int(quote.get("prices_include_vat") or 0))
     use_service = args.via == "service" or (
         args.via == "auto" and bool(settings.one_c_service_url)
     )
     try:
         if use_service:
             result = client.create_invoice_via_service(
-                counterparty=args.counterparty, lines=lines, vat_rate=vat_rate
+                counterparty=args.counterparty,
+                lines=lines,
+                vat_rate=vat_rate,
+                line_vats=line_vats,
+                prices_include_vat=prices_include_vat,
             )
         else:
             result = client.create_invoice(
                 counterparty=args.counterparty,
                 lines=lines,
                 vat_rate=vat_rate,
+                line_vats=line_vats,
+                prices_include_vat=prices_include_vat,
                 post=args.post,
             )
     except (OneCError, SystemExit) as exc:

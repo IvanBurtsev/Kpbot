@@ -132,9 +132,19 @@ class Pipeline:
     # ---------- прайс ----------
 
     def ensure_price_list(self) -> int:
-        """Подхватывает data/price_list.xlsx|csv, а если их нет — пишет демо-прайс."""
+        """Подхватывает data/price_list.xlsx|csv, а если их нет — пишет демо-прайс.
+
+        Только для основной базы. У клиента (tenant) свой прайс: подставлять
+        ему файл или демо-цены другого поставщика нельзя — это чужие цены в КП.
+        Клиент без прайса получает строки «не найдено» и человека, а не
+        выдуманный каталог.
+        """
         if self.store.price_count() > 0:
             return self.store.price_count()
+        if self._is_tenant_db():
+            # У клиента свой прайс: подставлять ему файл или демо-цены другого
+            # поставщика нельзя — это чужие цены в КП. Ему строки уйдут человеку.
+            return 0
 
         for candidate in (self.cfg.data_dir / "price_list.xlsx", self.cfg.data_dir / "price_list.csv"):
             if candidate.exists():
@@ -152,6 +162,28 @@ class Pipeline:
         count = self.store.replace_price_items(items)
         log.info("загружен встроенный демо-прайс: %s позиций", count)
         return count
+
+    def _is_tenant_db(self) -> bool:
+        """Это база клиента из реестра, а не основная?
+
+        Сравнение по пути ненадёжно: основная база тоже может лежать по другому
+        пути (тесты, восстановление). Реестр знает, какие базы — клиентские.
+        """
+        try:
+            from .tenancy import get_registry
+
+            current = Path(self.tenant_key()).resolve()
+            for tenant in get_registry(self.cfg).list():
+                if tenant.get("id") == "default":
+                    continue
+                try:
+                    if Path(tenant["db_path"]).resolve() == current:
+                        return True
+                except OSError:
+                    continue
+        except Exception:  # noqa: BLE001 - реестр может быть недоступен
+            return False
+        return False
 
     def reload_price_list(self, path: Path) -> int:
         items = load_price_items(path, prices_include_vat=self.cfg.prices_include_vat)

@@ -1115,30 +1115,66 @@ def order_doc(request: Request, order_id: str, kind: str):
     rate = calc_settings(supplier, settings).vat_rate
     lines = order["lines"]
     if quote:
-        # Документ берёт итоги из снимка КП: в режиме «цены с НДС» строки
-        # заказа уже с НДС, и таблица не должна начислять его второй раз.
+        # Документ берёт итоги и построчный НДС из снимка КП. Строки заказа —
+        # снимок на момент заказа, поэтому сумма строк, НДС и «Итого» сходятся
+        # до копейки и не меняются после правок заявки поставщиком.
         rate = _fmt(quote.get("vat_rate") or rate)
         inclusive = bool(int(quote.get("prices_include_vat") or 0))
         delivery = _fmt(quote.get("delivery"))
         delivery_vat = _fmt(quote.get("delivery_vat"))
-        factor = (Decimal("1") + rate) if inclusive and rate else Decimal("1")
-        lines = [
-            {
+        snapshot = {line["sku"]: line for line in quote.get("lines", [])}
+        built: list[dict] = []
+        for line in order["lines"]:
+            qty = _fmt(line.get("qty")) or Decimal("1")
+            snap = snapshot.get(line["sku"])
+            net = vat = Decimal("0")
+            net_price = _fmt(line.get("price"))
+            if snap is not None:
+                amount = _fmt(snap.get("amount"))
+                net = _fmt(snap.get("net"))
+                vat = _fmt(snap.get("vat"))
+                if net == 0 and amount != 0 and not (rate == 0 and vat == 0):
+                    # снимок старого формата: построчного НДС в нём нет
+                    if inclusive and rate:
+                        net = (amount / (Decimal("1") + rate)).quantize(Decimal("0.01"))
+                        vat = amount - net
+                    else:
+                        net = amount
+                        vat = (net * rate).quantize(Decimal("0.01"))
+                net_price = _fmt(snap.get("price"))
+                if inclusive and rate:
+                    net_price = (net_price / (Decimal("1") + rate)).quantize(Decimal("0.01"))
+            else:
+                # заказ без снимка расчёта (старые данные)
+                amount = _fmt(line.get("amount"))
+                if inclusive and rate:
+                    net = (amount / (Decimal("1") + rate)).quantize(Decimal("0.01"))
+                    vat = amount - net
+                    net_price = (net_price / (Decimal("1") + rate)).quantize(Decimal("0.01"))
+                else:
+                    net = amount
+                    vat = (net * rate).quantize(Decimal("0.01"))
+            built.append({
                 **line,
-                "price": _fmt(line["price"]) / factor,
-                "amount": _fmt(line["amount"]) / factor,
-            }
-            for line in order["lines"]
-        ]
+                "price": net_price,
+                "amount": net,
+                "net": net,
+                "vat": vat,
+                "gross": net + vat,
+            })
+        lines = built
         if delivery:
+            if inclusive and rate:
+                delivery_net = delivery - delivery_vat
+            else:
+                delivery_net = delivery
             lines.append({
                 "sku": "", "name": "Доставка", "unit": "", "qty": 1,
-                "price": delivery / factor, "amount": delivery / factor,
+                "price": delivery_net, "amount": delivery_net,
+                "net": delivery_net, "vat": delivery_vat,
+                "gross": delivery_net + delivery_vat,
             })
-        if inclusive:
-            net_total = _fmt(quote.get("subtotal")) + (delivery - delivery_vat)
-        else:
-            net_total = _fmt(quote.get("subtotal")) + delivery
+        net_total = _fmt(quote.get("subtotal")) + (delivery - delivery_vat if inclusive else delivery)
         vat_total = _fmt(quote.get("vat"))
         total = _fmt(quote.get("total"))
     else:
