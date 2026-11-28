@@ -259,6 +259,9 @@ class OneCClient:
         http: httpx.Client | None = None,
         service_url: str = "",
         service_token: str = "",
+        organization: str = "",
+        warehouse: str = "",
+        currency: str = "",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.user = user
@@ -266,6 +269,9 @@ class OneCClient:
         self.timeout = timeout
         self.service_url = (service_url or "").strip()
         self.service_token = (service_token or "").strip()
+        self.organization = (organization or "").strip()
+        self.warehouse = (warehouse or "").strip()
+        self.currency = (currency or "").strip()
         self._entities: set[str] | None = None
         # клиент можно подменить в тестах: сеть не нужна, ответы задаём транспортом
         self._http = http or httpx.Client(timeout=timeout)
@@ -716,9 +722,9 @@ class OneCClient:
         if not counterparty:
             raise OneCError("не передан контрагент: без него 1С счёт не запишет")
 
-        organization = organization or self._first("Catalog_Организации")
-        warehouse = warehouse or self._first("Catalog_Склады")
-        currency = currency or self._first("Catalog_Валюты")
+        organization = organization or self.organization or self._first("Catalog_Организации")
+        warehouse = warehouse or self.warehouse or self._first("Catalog_Склады")
+        currency = currency or self.currency or self._first("Catalog_Валюты")
         if not organization:
             raise OneCError("в базе 1С нет организации — заполните её и повторите")
 
@@ -948,6 +954,9 @@ def client_from_settings(cfg) -> OneCClient:
         cfg.one_c_timeout_seconds,
         service_url=cfg.one_c_service_url,
         service_token=cfg.one_c_service_token,
+        organization=getattr(cfg, "one_c_organization", ""),
+        warehouse=getattr(cfg, "one_c_warehouse", ""),
+        currency=getattr(cfg, "one_c_currency", ""),
     )
 
 

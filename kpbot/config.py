@@ -211,6 +211,12 @@ class Settings(BaseSettings):
     one_c_service_url: str = ""
     # Общий секрет HTTP-сервиса: без него любой, кто видит адрес, создаёт счета
     one_c_service_token: str = ""
+    # Реквизиты документа по умолчанию (Ref_Key из 1С). Пусто — сервис берёт
+    # первый элемент справочника, но на базе с несколькими организациями это
+    # может быть чужое юрлицо, поэтому для прода лучше задать явно.
+    one_c_organization: str = ""
+    one_c_warehouse: str = ""
+    one_c_currency: str = ""
 
     # --- почта (IMAP) ---
     imap_host: str = "imap.gmail.com"

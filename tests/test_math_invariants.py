@@ -209,7 +209,7 @@ class DocumentConsistencyTest(unittest.TestCase):
 class OneCDocumentMathTest(unittest.TestCase):
     """Счёт в 1С должен повторять снимок КП, а не считать по-своему."""
 
-    def _client(self, captured: dict) -> OneCClient:
+    def _client(self, captured: dict, *, organization: str = "") -> OneCClient:
         refs = {
             "Catalog_Номенклатура": {"value": [{"Ref_Key": "N1", "Артикул": "A",
                                                 "Description": "Товар"}]},
@@ -226,6 +226,7 @@ class OneCDocumentMathTest(unittest.TestCase):
                 captured["patch"] = json.loads(request.content.decode("utf-8"))
                 return httpx.Response(200, json={})
             if request.method == "POST":
+                captured["header"] = json.loads(request.content.decode("utf-8"))
                 return httpx.Response(201, json={"Ref_Key": "D1"})
             for key, payload in refs.items():
                 if key in path:
@@ -233,7 +234,8 @@ class OneCDocumentMathTest(unittest.TestCase):
             return httpx.Response(200, json={"value": []})
 
         http = httpx.Client(transport=httpx.MockTransport(handler), timeout=5)
-        return OneCClient("https://1c.example/base", "u", "p", http=http)
+        return OneCClient("https://1c.example/base", "u", "p", http=http,
+                          organization=organization)
 
     def _check(self, inclusive: bool) -> None:
         line = RfqLine(idx=1, raw_text="x", qty=Decimal("3"), unit="шт",
@@ -261,6 +263,17 @@ class OneCDocumentMathTest(unittest.TestCase):
             "СуммаДокумента = сумма без НДС + НДС",
         )
         self.assertEqual(Decimal(str(captured["patch"]["СуммаДокумента"])), quote.total)
+
+    def test_invoice_uses_configured_organization(self) -> None:
+        captured: dict = {}
+        client = self._client(captured, organization="O-CONFIG")
+        client.create_invoice(
+            counterparty="C",
+            lines=[("A", "1", "100")],
+            vat_rate=Decimal("0.22"),
+            line_vats=[Decimal("22.00")],
+        )
+        self.assertEqual(captured["header"]["Организация_Key"], "O-CONFIG")
 
     def test_invoice_net_prices(self) -> None:
         self._check(inclusive=False)
