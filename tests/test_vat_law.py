@@ -11,6 +11,8 @@ import support  # общий стенд: изолированные данные
 
 import os
 import unittest
+import uuid
+from urllib.parse import unquote
 from decimal import Decimal
 
 os.environ.setdefault("KPBOT_PDF_ENABLED", "false")
@@ -96,6 +98,85 @@ class LegacyPriceRowTest(unittest.TestCase):
         self.assertEqual(quote.lines[0].vat_rate, Decimal("0.22"))
         self.assertEqual(quote.vat, Decimal("44.00"))
         self.assertEqual(quote.total, Decimal("244.00"))
+
+
+class LegacyQuoteCardTest(unittest.TestCase):
+    """Снимок с 20%: карточка предупреждает, одобрение блокируется, пересчёт чинит."""
+
+    def setUp(self) -> None:
+        from fastapi.testclient import TestClient
+        from kpbot.web import app, pipeline, store
+
+        self.store = store
+        self.pipeline = pipeline
+        self.client = TestClient(app, follow_redirects=False)
+        self.client.post("/ui/login", data={"password": "test-pass"})
+        self.rfq_id = pipeline.process_text(
+            "уголок 50х50 — 2 шт", sender="legacy@example.ru", subject="Ставка 20%"
+        ).rfq_id
+        self._save_legacy_quote()
+
+    def _save_legacy_quote(self) -> None:
+        from kpbot.domain import Quote, QuoteLine
+
+        quote = Quote(
+            lines=[
+                QuoteLine(
+                    sku="KR-001", name="Уголок монтажный 50х50", unit="шт",
+                    qty=Decimal("2"), price=Decimal("34.50"), amount=Decimal("69.00"),
+                    net=Decimal("69.00"), vat=Decimal("13.80"), vat_rate=Decimal("0.20"),
+                )
+            ],
+            subtotal=Decimal("69.00"), vat=Decimal("13.80"), delivery=Decimal("0.00"),
+            total=Decimal("82.80"), vat_rate=Decimal("0.20"), requires_review=False,
+            unmatched=0, prices_include_vat=False,
+        )
+        self.store.save_quote(uuid.uuid4().hex, self.rfq_id, quote)
+
+    def _csrf(self) -> str:
+        import re
+
+        html = self.client.get(f"/ui/rfq/{self.rfq_id}").text
+        match = re.search(r'name="csrf_token" value="([^"]+)"', html)
+        return match.group(1) if match else ""
+
+    def test_card_warns_and_hides_approve(self) -> None:
+        page = self.client.get(f"/ui/rfq/{self.rfq_id}").text
+        self.assertIn("не применяется", page)
+        self.assertIn("Пересчитать по действующей ставке", page)
+        self.assertNotIn("Одобрить и подготовить ответ", page)
+
+    def test_approve_is_blocked(self) -> None:
+        response = self.client.post(
+            f"/ui/rfq/{self.rfq_id}/approve", data={"csrf_token": self._csrf()}
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("Пересчитайте", unquote(response.headers.get("location", "")))
+        self.assertNotEqual(self.store.get_rfq(self.rfq_id)["status"], "approved")
+
+    def test_reprice_moves_to_legal_rate(self) -> None:
+        response = self.client.post(
+            f"/ui/rfq/{self.rfq_id}/reprice", data={"csrf_token": self._csrf()}
+        )
+        self.assertEqual(response.status_code, 303)
+        quote = self.store.get_quote(self.rfq_id)
+        self.assertEqual(Decimal(quote["vat_rate"]), Decimal("0.22"))
+        self.assertEqual(Decimal(quote["lines"][0]["vat_rate"]), Decimal("0.22"))
+        page = self.client.get(f"/ui/rfq/{self.rfq_id}").text
+        self.assertNotIn("не применяется", page)
+        self.assertIn("Одобрить и подготовить ответ", page)
+
+    def test_sent_request_is_not_repriced(self) -> None:
+        self.store.set_status(self.rfq_id, "sent", force=True)
+        response = self.client.post(
+            f"/ui/rfq/{self.rfq_id}/reprice", data={"csrf_token": self._csrf()}
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertIn(
+            "уже отправлена", unquote(response.headers.get("location", "")),
+            "ожидали отказ «уже отправлена»",
+        )
+        self.assertEqual(Decimal(self.store.get_quote(self.rfq_id)["vat_rate"]), Decimal("0.20"))
 
 
 if __name__ == "__main__":

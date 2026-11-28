@@ -1354,6 +1354,18 @@ code { overflow-wrap: anywhere; }
 }
 
 
+.attention-box {
+  background: var(--bad-soft);
+  border: 1px solid #f3c9c6;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0 0 12px;
+  color: var(--ink);
+}
+.attention-box b { color: var(--bad); }
+.attention-box p { margin: 0 0 8px; }
+.attention-box p:last-child { margin-bottom: 0; }
+
 /* ========== ДЕСКТОП: рабочее место заявки (28.11.2026) ==========
    Карточка делила 1160px на письмо и таблицу из 9 колонок: таблице оставалось
    ~720px, колонки сжимались до ширины буквы, а глобальный

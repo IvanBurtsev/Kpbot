@@ -767,6 +767,16 @@ class Pipeline:
             raise ValidationError(
                 "в расчёте нет ни одной позиции — добавьте строки или отклоните заявку"
             )
+        stale = legacy_vat_rates(quote)
+        if stale:
+            # Снимок с 20% — это документ по незаконной ставке. Одобрять и
+            # отправлять его нельзя, пока расчёт не пересчитан по действующей.
+            rates = ", ".join(f"{rate * 100:.0f}%" for rate in stale)
+            log.warning("одобрение %s отклонено: в снимке ставка %s", rfq_id, rates)
+            raise ValidationError(
+                f"расчёт сделан по ставке {rates}: с 01.01.2026 она не применяется. "
+                "Пересчитайте заявку по действующей ставке перед одобрением"
+            )
         self.store.log(rfq_id, "approved", actor, comment)
 
         reply = build_reply_text_from_store(
@@ -861,6 +871,34 @@ def _money_value(value: object) -> Decimal:
         return Decimal(str(value or "0"))
     except (InvalidOperation, ValueError):
         return Decimal("0")
+
+
+def legacy_vat_rates(quote: dict) -> list[Decimal]:
+    """Незаконные ставки в снимке КП: 20%, 18% и всё, чего нет в законном наборе.
+
+    Снимки, сделанные до 2026 года (или старым кодом), хранят 20%. Показывать их
+    как действующий расчёт нельзя: документ с такой ставкой незаконен. Карточка
+    по этому списку показывает предупреждение и предлагает пересчёт, а одобрение
+    и отправка блокируются.
+    """
+    values: list[Decimal] = []
+    head = quote.get("vat_rate")
+    if head not in (None, ""):
+        try:
+            values.append(Decimal(str(head)))
+        except (InvalidOperation, ValueError):
+            pass
+    for line in quote.get("lines", []):
+        if not isinstance(line, dict):
+            continue
+        raw = line.get("vat_rate")
+        if raw in (None, ""):
+            continue
+        try:
+            values.append(Decimal(str(raw)))
+        except (InvalidOperation, ValueError):
+            continue
+    return sorted({rate for rate in values if rate not in LEGAL_VAT_RATES})
 
 
 def calc_settings(store: Store, cfg) -> CalcSettings:

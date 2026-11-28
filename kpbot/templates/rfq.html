@@ -39,6 +39,20 @@
 {% if quote %}
 <section class="card">
   <h2>Расчёт</h2>
+  {% if stale_vat %}
+  <div class="attention-box">
+    <p><b>Расчёт по ставке {% for rate in stale_vat %}{{ (rate * 100)|int }}%{{ ", " if not loop.last }}{% endfor %} — с 01.01.2026 она не применяется.</b>
+      Такой документ нельзя одобрить и отправить: клиент получит счёт с незаконной ставкой.</p>
+    {% if can_edit %}
+    <form method="post" action="/ui/rfq/{{ rfq.id }}/reprice" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="mini primary" type="submit">Пересчитать по действующей ставке</button>
+    </form>
+    {% else %}
+    <p class="muted small">Заявка уже отправлена: пересчёт изменил бы документ, который у клиента.</p>
+    {% endif %}
+  </div>
+  {% endif %}
   {% if not quote.lines %}
   <p class="warn">В расчёте нет ни одной позиции: все строки исключены или удалены.
     Добавьте позиции ниже — одобрить пустое КП нельзя.</p>

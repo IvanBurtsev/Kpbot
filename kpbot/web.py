@@ -39,7 +39,12 @@ from .export import build_rfq_xlsx, check_1c_sheet
 from .mailer import MailError, Mailer, build_kp_message, load_attachments, reply_subject
 from .mailparse import sender_address, sender_display_name
 from .one_c import OneCError, client_from_settings
-from .pipeline import NotAnRfq, Pipeline, build_reply_text_from_store
+from .pipeline import (
+    NotAnRfq,
+    Pipeline,
+    build_reply_text_from_store,
+    legacy_vat_rates,
+)
 from .pricelist import load_price_items, load_stock_items, merge_prices
 from .render import render_template
 from .report import build_pilot_report
@@ -1617,12 +1622,15 @@ def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
     )
     artifacts = {a["kind"] for a in store.artifacts(rfq_id)}
     status = str(rfq.get("status") or "")
+    # Снимки, сделанные до 2026 года, хранят 20%: такой расчёт нельзя одобрить
+    # и отправить, пока он не пересчитан по действующей ставке.
+    stale_vat = legacy_vat_rates(quote) if quote else []
     # Что можно делать с заявкой в этом статусе. Правила — здесь, а не в шаблоне:
     # кнопка, которая заведомо кончается ошибкой, — это не «функция», а ловушка.
     can_edit = status != RfqStatus.SENT.value
-    can_approve = status in (RfqStatus.DRAFT_READY.value, RfqStatus.HUMAN_REVIEW.value)
+    can_approve = status in (RfqStatus.DRAFT_READY.value, RfqStatus.HUMAN_REVIEW.value) and not stale_vat
     can_reject = status not in (RfqStatus.SENT.value, RfqStatus.REJECTED.value)
-    can_send = status in (RfqStatus.APPROVED.value, RfqStatus.SENT.value)
+    can_send = status in (RfqStatus.APPROVED.value, RfqStatus.SENT.value) and not stale_vat
     # Итоги считает пайплайн — те же строки, что уходят клиенту в письме и КП.
     totals = pipeline.quote_totals(quote) if quote else []
     # В поле «Кому» — чистый адрес: отправитель может быть записан
@@ -1645,6 +1653,7 @@ def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
         rfq=rfq,
         quote=quote,
         totals=totals,
+        stale_vat=stale_vat,
         to_addr=to_addr,
         can_edit=can_edit,
         can_approve=can_approve,
@@ -1983,6 +1992,40 @@ async def ui_line_add(request: Request, rfq_id: str):
         )
     )
     return await save_edits(rfq_id, lines, actor_of(request), f"добавлена позиция {item.sku}")
+
+
+@app.post("/ui/rfq/{rfq_id}/reprice")
+async def ui_rfq_reprice(request: Request, rfq_id: str):
+    """Пересчитывает расчёт по действующей ставке (снимки со старыми 20/18%)."""
+    if not is_authenticated(request):
+        return login_redirect(request)
+    ensure_rfq_id(rfq_id)
+    await verified_form(request)
+    rfq = store.get_rfq(rfq_id)
+    if rfq is None:
+        raise HTTPException(status_code=404, detail="заявка не найдена")
+    if rfq["status"] == RfqStatus.SENT.value:
+        # Уже отправленный документ не пересчитываем: у клиента на руках другой.
+        return back_to(
+            rfq_id, "заявка уже отправлена — пересчёт изменил бы отправленный документ"
+        )
+    _rfq, lines = lines_from_db(rfq_id)
+    if not lines:
+        return back_to(rfq_id, "в заявке нет строк — пересчитывать нечего")
+    try:
+        await run_in_threadpool(
+            pipeline.apply_edits,
+            rfq_id,
+            lines,
+            actor=actor_of(request),
+            note="пересчёт по действующей ставке НДС",
+        )
+    except PermissionError as exc:
+        return back_to(rfq_id, str(exc))
+    except ValidationError as exc:
+        return back_to(rfq_id, str(exc))
+    store.log(rfq_id, "reprice_vat", actor_of(request), "снимок пересчитан по действующей ставке")
+    return back_to(rfq_id, "расчёт пересчитан по текущему прайсу и действующей ставке")
 
 
 @app.post("/ui/rfq/{rfq_id}/send")
