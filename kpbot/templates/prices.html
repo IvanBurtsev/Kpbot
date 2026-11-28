@@ -6,8 +6,8 @@
   {% if flash %}<p class="ok">{{ flash }}</p>{% endif %}
   <p class="muted small">
     Позиций: <b>{{ total }}</b>
-    {% if updated_at %}· обновлён {{ updated_at[:19] }}{% endif %}
-    {% if query %}· найдено {{ shown }}{% endif %}
+    {% if updated_at %}· обновлён {{ updated_at|dt_ru }}{% endif %}
+    {% if query %}· найдено {{ matched }}{% endif %}
   </p>
 
   <form method="get" action="/ui/prices" class="row">
@@ -17,7 +17,8 @@
   </form>
 
   {% if can_edit %}
-  <form method="post" action="/ui/prices/upload" enctype="multipart/form-data" class="upload-row">
+  <form method="post" action="/ui/prices/upload" enctype="multipart/form-data" class="upload-row"
+        data-confirm="Загрузить прайс? Текущий список будет полностью заменён.">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label class="dropzone" data-dropzone>
       <input type="file" name="file" accept=".xlsx,.csv" required>
@@ -49,7 +50,7 @@
   <p class="muted small">
     Из 1С одной кнопкой или файлом: артикул и количество. Показываются в заявке,
     нехватка подсвечивается.
-    {% if stock_count %}Сейчас: {{ stock_count }} позиций{% if stock_updated_at %}, обновлено {{ stock_updated_at[:16].replace("T", " ") }}{% endif %}.{% endif %}
+    {% if stock_count %}Сейчас: {{ stock_count }} позиций{% if stock_updated_at %}, обновлено {{ stock_updated_at|dt_ru }}{% endif %}.{% endif %}
   </p>
   {% if can_edit %}
   <form method="post" action="/ui/prices/stock" enctype="multipart/form-data" class="upload-row">
@@ -72,7 +73,7 @@
 <section class="card">
   <table class="cards-table">
     <thead>
-      <tr><th>Код</th><th>Наименование</th><th>Ед.</th><th class="num">Цена</th></tr>
+      <tr><th>Код</th><th>Наименование</th><th>Ед.</th><th class="num">Цена</th><th class="num">НДС</th></tr>
     </thead>
     <tbody>
       {% for item in items %}
@@ -80,13 +81,14 @@
         <td data-label="Код"><code>{{ item.sku }}</code></td>
         <td data-label="Наименование">{{ item.name }}</td>
         <td data-label="Ед.">{{ item.unit }}</td>
-        <td data-label="Цена, ₽" class="num">{{ "%.2f"|format(item.price) }} ₽</td>
+        <td data-label="Цена, ₽" class="num">{{ item.price|rub }} ₽</td>
+        <td data-label="НДС" class="num">{% if item.vat_rate is not none %}{{ (item.vat_rate|float * 100)|round(0)|int }}%{% else %}—{% endif %}</td>
       </tr>
       {% else %}
-      <tr><td colspan="4" class="muted">ничего не найдено</td></tr>
+      <tr><td colspan="5" class="muted">ничего не найдено</td></tr>
       {% endfor %}
     </tbody>
   </table>
-  {% if shown < total %}<p class="muted small">показаны первые {{ shown }} из {{ total }}</p>{% endif %}
+  {% if truncated %}<p class="muted small">показаны первые {{ shown }} из {{ matched }} — уточните поиск</p>{% endif %}
 </section>
 {% endblock %}

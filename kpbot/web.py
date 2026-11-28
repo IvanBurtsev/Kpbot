@@ -17,6 +17,7 @@ import secrets
 import string
 import time
 import uuid
+from dataclasses import replace
 from datetime import datetime
 from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
@@ -115,7 +116,7 @@ async def hardening(request: Request, call_next):
     started = time.perf_counter()
     length = request.headers.get("content-length")
     if length and length.isdigit() and int(length) > settings.max_upload_bytes + 128 * 1024:
-        return PlainTextResponse("payload too large", status_code=413)
+        return PlainTextResponse("файл слишком большой — уменьшите размер", status_code=413)
 
     # Кука клиента есть, а базы нет (удалена, переименована, клиент приостановлен):
     # запрос нельзя молча переводить в основную базу — это показало бы одному
@@ -647,7 +648,7 @@ async def ui_upload(request: Request, file: UploadFile):
     raw = await file.read(settings.max_upload_bytes + 1)
     if len(raw) > settings.max_upload_bytes:
         return page("inbox.html", request, code=413, rfqs=store.list_rfqs(100),
-                    error="файл больше 2 МБ")
+                    error=_file_too_big())
     try:
         result = await run_in_threadpool(
             pipeline.process_eml_bytes, raw, actor=actor_of(request)
@@ -775,19 +776,34 @@ def ui_prices(request: Request, q: str = "", flash: str = ""):
         return login_redirect(request)
     user = current_user(request)
     items = store.price_items()
-    query = q.strip().lower()
+    # «ё» и «е» — одна буква для поиска: иначе «елка» не находит «Ёлку».
+    query = q.strip().lower().replace("ё", "е")
     if query:
-        items = [item for item in items if query in item.name.lower() or query in item.sku.lower()]
+        items = [
+            item
+            for item in items
+            if query in item.name.lower().replace("ё", "е") or query in item.sku.lower()
+        ]
+    # Ставка строки: своя из прайса или ставка клиента. Показываем действующую —
+    # иначе при смешанных 22/10 менеджер не видит, чем отличается позиция.
+    default_rate = pipeline.calc().vat_rate
+    for index, item in enumerate(items):
+        if item.vat_rate is None:
+            items[index] = replace(item, vat_rate=default_rate)
+    page_size = 300
+    shown_items = items[:page_size]
     return page(
         "prices.html",
         request,
         active_page="prices",
-        items=items[:300],
+        items=shown_items,
         stock=store.stock_map(),
         stock_count=store.stock_count(),
         stock_updated_at=store.stock_updated_at(),
         total=store.price_count(),
-        shown=len(items),
+        matched=len(items),
+        shown=len(shown_items),
+        truncated=len(items) > page_size,
         query=q.strip(),
         updated_at=store.price_updated_at(),
         can_edit=is_admin_request(request),
@@ -823,14 +839,16 @@ async def ui_prices_upload(request: Request):
     raw = await upload.read(settings.max_upload_bytes + 1)
     if len(raw) > settings.max_upload_bytes:
         return RedirectResponse(
-            f"/ui/prices?flash={quote('файл больше 2 МБ')}", status_code=status.HTTP_303_SEE_OTHER
+            f"/ui/prices?flash={quote(_file_too_big())}", status_code=status.HTTP_303_SEE_OTHER
         )
 
     suffix = ".xlsx" if filename.endswith(".xlsx") else ".csv"
     temp_path = _upload_temp(suffix, "price")
     temp_path.write_bytes(raw)
     try:
-        items = load_price_items(temp_path, prices_include_vat=settings.prices_include_vat)
+        items = load_price_items(
+            temp_path, prices_include_vat=pipeline.calc().prices_include_vat
+        )
     except ValidationError as exc:
         temp_path.unlink(missing_ok=True)
         return RedirectResponse(f"/ui/prices?flash={quote(str(exc))}", status_code=status.HTTP_303_SEE_OTHER)
@@ -943,13 +961,15 @@ async def ui_setup_price(request: Request):
     raw = await upload.read(settings.max_upload_bytes + 1)
     if len(raw) > settings.max_upload_bytes:
         return RedirectResponse(
-            f"/ui/setup?flash={quote('файл больше 2 МБ')}", status_code=status.HTTP_303_SEE_OTHER
+            f"/ui/setup?flash={quote(_file_too_big())}", status_code=status.HTTP_303_SEE_OTHER
         )
     suffix = ".xlsx" if filename.endswith(".xlsx") else ".csv"
     temp_path = _upload_temp(suffix, "price")
     temp_path.write_bytes(raw)
     try:
-        items = load_price_items(temp_path, prices_include_vat=settings.prices_include_vat)
+        items = load_price_items(
+            temp_path, prices_include_vat=pipeline.calc().prices_include_vat
+        )
     except ValidationError as exc:
         temp_path.unlink(missing_ok=True)
         return RedirectResponse(f"/ui/setup?flash={quote(str(exc))}", status_code=status.HTTP_303_SEE_OTHER)
@@ -1513,7 +1533,7 @@ async def ui_prices_stock(request: Request):
     raw = await upload.read(settings.max_upload_bytes + 1)
     if len(raw) > settings.max_upload_bytes:
         return RedirectResponse(
-            f"/ui/prices?flash={quote('файл больше 2 МБ')}", status_code=status.HTTP_303_SEE_OTHER
+            f"/ui/prices?flash={quote(_file_too_big())}", status_code=status.HTTP_303_SEE_OTHER
         )
 
     suffix = ".xlsx" if filename.endswith(".xlsx") else ".csv"
@@ -1531,6 +1551,12 @@ async def ui_prices_stock(request: Request):
     return RedirectResponse(
         f"/ui/prices?flash={quote(f'остатки обновлены: {count} позиций')}", status_code=status.HTTP_303_SEE_OTHER
     )
+
+
+def _file_too_big() -> str:
+    """Понятный текст про лимит: он настраивается, «2 МБ» — только значение по умолчанию."""
+    megabytes = settings.max_upload_bytes / (1024 * 1024)
+    return f"файл больше {megabytes:g} МБ — уменьшите файл"
 
 
 def _prices_flash(message: str) -> RedirectResponse:
