@@ -49,6 +49,32 @@ class BackupRestoreTest(unittest.TestCase):
         # страховочная копия «до восстановления» тоже создана
         self.assertTrue(list(self.data_dir.glob("kpbot.before-restore-*.sqlite3")))
 
+    def test_main_backup_does_not_touch_tenant_copies(self) -> None:
+        """Ротация основной базы не трогает копии клиентов и саму новую копию.
+
+        Дефект: шаблон «kpbot-*.sqlite3» захватывал и kpbot-<клиент>-…; при
+        числе файлов больше keep свежая основная копия сортировалась раньше
+        (2026… < e75f…) и удалялась сразу после создания — команда падала.
+        """
+        backups = self.data_dir / "backups"
+        backups.mkdir(parents=True, exist_ok=True)
+        tenant = backups / "kpbot-abcdef123456-20261101-030000-000001.sqlite3"
+        tenant.write_bytes(b"tenant backup")
+        for index in range(5):
+            old = backups / f"kpbot-2020010{index + 1}-030000-00000{index}.sqlite3"
+            old.write_bytes(b"old")
+
+        report = _backup_one(settings.db_path, keep=2)
+
+        self.assertIn("целостность ok", report)
+        created = backups / report.split(" ")[0]
+        self.assertTrue(created.exists(), "свежая копия не должна удаляться ротацией")
+        self.assertTrue(tenant.exists(), "копия клиента не должна удаляться")
+        main_copies = [
+            path for path in backups.glob("kpbot-2*.sqlite3") if path.name != tenant.name
+        ]
+        self.assertEqual(len(main_copies), 2, [path.name for path in main_copies])
+
     def test_restore_refuses_corrupted_copy(self) -> None:
         bad = self.data_dir / "bad.sqlite3"
         bad.write_bytes(b"not a sqlite database at all")

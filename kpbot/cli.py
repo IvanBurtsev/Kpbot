@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import sys
 from datetime import datetime, timedelta, timezone
@@ -1050,9 +1051,25 @@ def _backup_one(source: Path, keep: int, suffix: str = "") -> str:
     _copy_db(source, target)
 
     integrity = _integrity(target)
-    copies = sorted(target_dir.glob(f"{name_part}*.sqlite3"))
+    # Ротация — только внутри своей семьи файлов. Раньше шаблон
+    # «kpbot-*.sqlite3» захватывал и копии клиентов (kpbot-<id>-…), и сама
+    # свежая копия сортировалась раньше них: при >keep файлов она удалялась
+    # сразу после создания, а команда падала на stat. Теперь семья — это
+    # ровно «kpbot-<метка времени>.sqlite3» (основная) или
+    # «kpbot-<клиент>-<метка>.sqlite3», и только она участвует в ротации.
+    stamp = r"\d{8}-\d{6}-\d{6}\.sqlite3"
+    family = re.compile(
+        rf"^kpbot-{re.escape(suffix)}-{stamp}$" if suffix else rf"^kpbot-{stamp}$"
+    )
+    copies = sorted(
+        (path for path in target_dir.glob("kpbot-*.sqlite3")
+         if path != target and family.match(path.name)),
+        key=lambda path: path.name,
+    )
+    # keep считает и только что созданную копию: она самая свежая и не удаляется.
+    excess = max(0, len(copies) + 1 - max(1, keep))
     removed = 0
-    for old in copies[: max(0, len(copies) - max(1, keep))]:
+    for old in copies[:excess]:
         try:
             old.unlink()
             removed += 1
