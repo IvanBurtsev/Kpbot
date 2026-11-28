@@ -1863,13 +1863,25 @@ async def ui_line_confirm(request: Request, rfq_id: str, idx: int):
     if not is_authenticated(request):
         return login_redirect(request)
     ensure_rfq_id(rfq_id)
-    await verified_form(request)
+    form = await verified_form(request)
     _rfq, lines = lines_from_db(rfq_id)
     target = next((line for line in lines if line.idx == idx), None)
     if target is None:
         return back_to(rfq_id, "строка не найдена")
     if not target.matched_sku:
         return back_to(rfq_id, "у строки нет подобранной позиции — выберите её вручную")
+    # «Подтвердить» стоит в той же форме, что количество и артикул: человек мог
+    # поправить их и нажать именно эту кнопку. Раньше правка молча терялась.
+    raw_qty = str(form.get("qty", "")).strip()
+    if raw_qty:
+        qty = parse_qty(raw_qty)
+        error = qty_error(qty)
+        if error:
+            return back_to(rfq_id, error)
+        try:
+            target.qty = quantity(qty)
+        except ValidationError as exc:
+            return back_to(rfq_id, str(exc))
     if target.qty is None or target.qty <= 0:
         # Без количества строка не попадает в расчёт, но выглядела бы как
         # подтверждённая («в прайсе») — человек считал бы её учтённой.

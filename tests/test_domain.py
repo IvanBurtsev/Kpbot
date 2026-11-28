@@ -39,12 +39,12 @@ class PriceQuoteTest(unittest.TestCase):
             RfqLine(idx=2, raw_text="подрозетник", qty=Decimal("5"), unit="шт",
                     status=LineStatus.NO_MATCH),
         ]
-        quote = price_quote(lines, {"A": item("A", "100.00")}, vat_rate=Decimal("0.20"))
+        quote = price_quote(lines, {"A": item("A", "100.00")}, vat_rate=Decimal("0.22"))
 
         self.assertEqual(len(quote.lines), 1)
         self.assertEqual(quote.subtotal, Decimal("200.00"))
-        self.assertEqual(quote.vat, Decimal("40.00"))
-        self.assertEqual(quote.total, Decimal("240.00"))
+        self.assertEqual(quote.vat, Decimal("44.00"))
+        self.assertEqual(quote.total, Decimal("244.00"))
         self.assertTrue(quote.requires_review)
         self.assertEqual(quote.unmatched, 1)
         self.assertEqual(quote.excluded, ["подрозетник"])
@@ -52,7 +52,7 @@ class PriceQuoteTest(unittest.TestCase):
     def test_never_invents_price_for_missing_item(self) -> None:
         lines = [RfqLine(idx=1, raw_text="x", qty=Decimal("1"), unit="шт",
                          matched_sku="GONE", status=LineStatus.OK)]
-        quote = price_quote(lines, {}, vat_rate=Decimal("0.20"))
+        quote = price_quote(lines, {}, vat_rate=Decimal("0.22"))
         self.assertEqual(quote.lines, [])
         self.assertEqual(quote.total, Decimal("0.00"))
         self.assertTrue(quote.requires_review)
@@ -76,12 +76,12 @@ class PriceQuoteTest(unittest.TestCase):
         lines = [RfqLine(idx=1, raw_text="x", qty=Decimal("1"), unit="шт",
                          matched_sku="A", status=LineStatus.OK)]
         quote = price_quote(lines, {"A": item("A", "1000")},
-                            vat_rate=Decimal("0.20"), delivery=Decimal("500"))
+                            vat_rate=Decimal("0.22"), delivery=Decimal("500"))
         self.assertEqual(quote.subtotal, Decimal("1000.00"))
         self.assertEqual(quote.delivery, Decimal("500.00"))
-        self.assertEqual(quote.delivery_vat, Decimal("100.00"))
-        self.assertEqual(quote.vat, Decimal("300.00"))
-        self.assertEqual(quote.total, Decimal("1800.00"))
+        self.assertEqual(quote.delivery_vat, Decimal("110.00"))
+        self.assertEqual(quote.vat, Decimal("330.00"))
+        self.assertEqual(quote.total, Decimal("1830.00"))
         # «Итого» обязано сходиться с тем, что видит клиент в письме
         self.assertEqual(quote.total, quote.subtotal + quote.vat + quote.delivery)
 
@@ -90,13 +90,13 @@ class PriceQuoteTest(unittest.TestCase):
         lines = [RfqLine(idx=1, raw_text="x", qty=Decimal("1"), unit="шт",
                          matched_sku="A", status=LineStatus.OK)]
         quote = price_quote(lines, {"A": item("A", "1200")},
-                            vat_rate=Decimal("0.20"), delivery=Decimal("600"),
+                            vat_rate=Decimal("0.22"), delivery=Decimal("600"),
                             prices_include_vat=True)
-        self.assertEqual(quote.subtotal, Decimal("1000.00"))
+        self.assertEqual(quote.subtotal, Decimal("983.61"))
         self.assertEqual(quote.delivery, Decimal("600.00"))
-        self.assertEqual(quote.delivery_vat, Decimal("100.00"))
+        self.assertEqual(quote.delivery_vat, Decimal("108.20"))
         self.assertEqual(quote.total, Decimal("1800.00"), "итого = товары + доставка, без второго НДС")
-        self.assertEqual(quote.vat, Decimal("300.00"))
+        self.assertEqual(quote.vat, Decimal("324.59"))
         # НДС уже внутри цен: итого = товары с НДС + доставка с НДС
         self.assertEqual(
             quote.subtotal + quote.vat - quote.delivery_vat + quote.delivery, quote.total
@@ -105,9 +105,9 @@ class PriceQuoteTest(unittest.TestCase):
     def test_no_delivery_keeps_old_numbers(self) -> None:
         lines = [RfqLine(idx=1, raw_text="x", qty=Decimal("1"), unit="шт",
                          matched_sku="A", status=LineStatus.OK)]
-        quote = price_quote(lines, {"A": item("A", "1000")}, vat_rate=Decimal("0.20"))
+        quote = price_quote(lines, {"A": item("A", "1000")}, vat_rate=Decimal("0.22"))
         self.assertEqual(quote.delivery_vat, Decimal("0.00"))
-        self.assertEqual(quote.total, Decimal("1200.00"))
+        self.assertEqual(quote.total, Decimal("1220.00"))
 
     def test_ambiguous_line_is_excluded(self) -> None:
         lines = [RfqLine(idx=1, raw_text="x", qty=Decimal("1"), unit="шт",
@@ -120,7 +120,7 @@ class PriceQuoteTest(unittest.TestCase):
 class StatusTest(unittest.TestCase):
     def test_review_when_unmatched(self) -> None:
         quote = Quote(lines=[], subtotal=Decimal("0"), vat=Decimal("0"),
-                      delivery=Decimal("0"), total=Decimal("0"), vat_rate=Decimal("0.2"),
+                      delivery=Decimal("0"), total=Decimal("0"), vat_rate=Decimal("0.22"),
                       requires_review=True, unmatched=2)
         self.assertIs(status_for(quote), RfqStatus.HUMAN_REVIEW)
 

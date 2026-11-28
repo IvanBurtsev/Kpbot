@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import sqlite3
 import threading
 import uuid
@@ -11,8 +12,21 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from .domain import PriceItem, Quote, QuoteLine, RfqLine, RfqStatus, check_transition
+from .domain import (
+    LEGAL_VAT_RATES,
+    PriceItem,
+    Quote,
+    QuoteLine,
+    RfqLine,
+    RfqStatus,
+    check_transition,
+)
 from .users import ROLE_ADMIN, User, check_role, hash_password, normalize_email, verify_password
+
+log = logging.getLogger("kpbot.store")
+
+# Предупреждение о старой ставке — один раз на позицию, а не на каждое чтение прайса.
+_legacy_rate_warned: set[str] = set()
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -301,6 +315,19 @@ class Store:
         result: list[PriceItem] = []
         for row in rows:
             raw_rate = row["vat_rate"]
+            rate = Decimal(str(raw_rate)) if raw_rate not in (None, "") else None
+            if rate is not None and rate not in LEGAL_VAT_RATES:
+                # Старый прайс с 20% не должен выпускать документы с 20%:
+                # ставка строки заменяется ставкой клиента (законной).
+                if row["sku"] not in _legacy_rate_warned:
+                    _legacy_rate_warned.add(row["sku"])
+                    log.warning(
+                        "позиция %s: ставка НДС %.0f%% не применяется с 01.01.2026 — "
+                        "беру ставку клиента",
+                        row["sku"],
+                        rate * 100,
+                    )
+                rate = None
             result.append(
                 PriceItem(
                     sku=row["sku"],
@@ -308,7 +335,7 @@ class Store:
                     unit=row["unit"],
                     price=Decimal(row["price"]),
                     currency=row["currency"],
-                    vat_rate=Decimal(str(raw_rate)) if raw_rate not in (None, "") else None,
+                    vat_rate=rate,
                 )
             )
         return result

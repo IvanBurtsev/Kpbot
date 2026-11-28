@@ -10,6 +10,10 @@ from pathlib import Path
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Ставки НДС, которые применяются в РФ с 01.01.2026, живут в домене: это правило
+# расчёта, а не настройка сервера. Здесь — реэкспорт для проверки конфигурации.
+from .domain import LEGAL_VAT_RATES
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -33,13 +37,6 @@ _ENV_FILE = _resolve_env_file()
 
 DEFAULT_SECRETS = frozenset(
     {"dev-api-key-change-me", "dev-password", "dev-session-secret-change-me", "change-me", ""}
-)
-
-# Ставки НДС, которые применяются в РФ с 01.01.2026: основная 22%,
-# льготные 10% и 0%, ставки УСН 5% и 7%. 20% и 18% — ставки прошлых лет;
-# выпускать с ними документы нельзя (ст. 164 НК РФ).
-LEGAL_VAT_RATES = frozenset(
-    {Decimal("0"), Decimal("0.05"), Decimal("0.07"), Decimal("0.10"), Decimal("0.22")}
 )
 
 

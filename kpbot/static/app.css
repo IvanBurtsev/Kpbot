@@ -1352,3 +1352,35 @@ code { overflow-wrap: anywhere; }
     box-sizing: border-box;
   }
 }
+
+
+/* ========== ДЕСКТОП: рабочее место заявки (28.11.2026) ==========
+   Карточка делила 1160px на письмо и таблицу из 9 колонок: таблице оставалось
+   ~720px, колонки сжимались до ширины буквы, а глобальный
+   overflow-wrap:anywhere ломал слова по одной букве («К А К   Н А П И С А Н О»).
+   Теперь на десктопе блоки идут в одну колонку, таблица получает всю ширину,
+   у колонок есть разумные размеры, а длинные слова переносятся только когда
+   действительно не влезают. Мобильные правила (<= 768px) не тронуты:
+   блок начинается с 769px, чтобы планшет не попал в узкую колонку. */
+@media (min-width: 769px) {
+  td, th { overflow-wrap: break-word; }
+
+  .workdesk { grid-template-columns: minmax(0, 1fr); }
+
+  .workdesk .letter { max-height: 320px; }
+
+  .lines-table { min-width: 960px; }
+
+  .lines-table th:nth-child(1), .lines-table td:nth-child(1) { width: 40px; }
+  .lines-table th:nth-child(3), .lines-table td:nth-child(3) { width: 82px; }
+  .lines-table th:nth-child(4), .lines-table td:nth-child(4) { width: 58px; }
+  .lines-table th:nth-child(6), .lines-table td:nth-child(6) { width: 64px; }
+  .lines-table th:nth-child(7), .lines-table td:nth-child(7) { width: 80px; }
+  .lines-table th:nth-child(8), .lines-table td:nth-child(8) { width: 112px; }
+  .lines-table th:nth-child(9), .lines-table td:nth-child(9) { width: 300px; }
+
+  .cards-table td.edit { padding: 10px 12px; }
+  .cards-table .line-form input[name="sku"] { width: 130px; }
+  .cards-table .line-form input[name="qty"] { width: 66px; }
+  .cards-table .line-form .form-actions { gap: 6px; }
+}

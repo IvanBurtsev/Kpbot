@@ -120,7 +120,7 @@
               <option value="{{ item.sku }}">{{ item.name }} ({{ item.unit }})</option>
               {% endfor %}
             </datalist>
-            <input type="text" name="qty" value="{{ l.qty or '' }}" size="5" inputmode="decimal" title="количество">
+            <input type="text" name="qty" value="{{ (l.qty|qty) if l.qty else '' }}" size="5" inputmode="decimal" title="количество">
             <div class="form-actions">
               <button type="submit" class="mini">Сохранить</button>
               {% if l.status == "ambiguous" and l.matched_sku %}
@@ -195,8 +195,6 @@
     Пока КП можно скачать и отправить вручную.
   </p>
   {% endif %}
-  {% if reply_text %}<details><summary class="small">готовый текст ответа</summary>
-    <pre class="small">{{ reply_text }}</pre></details>{% endif %}
 </section>
 
 <section class="card">
@@ -250,7 +248,7 @@
   <h2>Журнал</h2>
   <ul class="log">
     {% for d in decisions %}
-    <li><span class="muted small">{{ d.created_at }}</span> · <b>{{ d.action }}</b> · {{ d.actor }}{% if d.detail %} — {{ d.detail }}{% endif %}</li>
+    <li><span class="muted small">{{ d.created_at|dt_ru }}</span> · <b>{{ d.action }}</b> · {{ d.actor }}{% if d.detail %} — {{ d.detail }}{% endif %}</li>
     {% endfor %}
   </ul>
 </section>

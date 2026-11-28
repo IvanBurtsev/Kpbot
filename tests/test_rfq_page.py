@@ -232,6 +232,24 @@ class RfqPageTest(unittest.TestCase):
         self.assertIn("количество", _flash(response))
         self.assertNotEqual(store.get_rfq(rfq_id)["lines"][0]["status"], "ok")
 
+    def test_confirm_applies_edited_quantity(self) -> None:
+        """Правка количества и «Подтвердить» в одной форме: теряться не должна."""
+        rfq_id = self._create()
+        line = self._lines(rfq_id)[0]
+        line.qty = Decimal("5")
+        line.status = LineStatus.AMBIGUOUS
+        pipeline.apply_edits(rfq_id, [line], actor="test", note="похожая строка")
+
+        html = self.client.get(f"/ui/rfq/{rfq_id}").text
+        response = self.client.post(
+            f"/ui/rfq/{rfq_id}/lines/1/confirm",
+            data={"csrf_token": _csrf(html), "qty": "7"},
+        )
+        self.assertEqual(response.status_code, 303)
+        after = store.get_rfq(rfq_id)["lines"][0]
+        self.assertEqual(after["status"], "ok")
+        self.assertEqual(Decimal(after["qty"]), Decimal("7"))
+
     def test_empty_quote_is_explained(self) -> None:
         rfq_id = self._create()
         html = self.client.get(f"/ui/rfq/{rfq_id}").text
