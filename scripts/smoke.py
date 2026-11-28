@@ -27,6 +27,9 @@ def main() -> int:
     parser.add_argument("--url", default="http://127.0.0.1:8100")
     parser.add_argument("--api-key", default=os.environ.get("KPBOT_API_KEY", ""))
     parser.add_argument("--password", default=os.environ.get("KPBOT_UI_PASSWORD", ""))
+    # Вход общим паролем по умолчанию выключен (и запрещён в проде): проверка
+    # должна уметь входить как человек — по почте и паролю.
+    parser.add_argument("--email", default=os.environ.get("KPBOT_UI_EMAIL", "admin@local"))
     parser.add_argument("--timeout", type=float, default=10.0)
     args = parser.parse_args()
 
@@ -93,10 +96,18 @@ def main() -> int:
         def login_works() -> str:
             if not args.password:
                 raise RuntimeError("пароль не передан: пропущено")
-            response = client.post(f"{base}/ui/login", data={"password": args.password})
+            payload = {"password": args.password}
+            if args.email:
+                payload["email"] = args.email
+            response = client.post(f"{base}/ui/login", data=payload)
+            mode = f"как {args.email}"
+            if response.status_code != 303 and args.email:
+                # Установка со включённым входом общим паролем (только dev/демо).
+                response = client.post(f"{base}/ui/login", data={"password": args.password})
+                mode = "общим паролем"
             assert response.status_code == 303, f"HTTP {response.status_code}"
             assert "kpbot_session" in response.cookies, "нет cookie сессии"
-            return "вход выполнен"
+            return f"вход выполнен ({mode})"
 
         check("healthz", healthz)
         check("API health", api_health)

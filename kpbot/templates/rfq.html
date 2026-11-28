@@ -5,7 +5,7 @@
 {% set line_css = {"ok": "s-sent", "ambiguous": "s-human_review", "no_match": "s-rejected", "invalid": "s-rejected"} %}
 {% set rfq_labels = {"received": "принята", "parsed": "разобрана", "priced": "рассчитана",
                      "draft_ready": "КП готово", "human_review": "нужна проверка",
-                     "approved": "одобрена", "sent": "КП передано в отправку", "rejected": "отказ"} %}
+                     "approved": "одобрена", "sent": "КП отправлено", "rejected": "отказ"} %}
 
 <p class="crumbs"><a href="/ui">← Все заявки</a></p>
 
@@ -39,7 +39,10 @@
 {% if quote %}
 <section class="card">
   <h2>Расчёт</h2>
-  {% if quote.requires_review %}
+  {% if not quote.lines %}
+  <p class="warn">В расчёте нет ни одной позиции: все строки исключены или удалены.
+    Добавьте позиции ниже — одобрить пустое КП нельзя.</p>
+  {% elif quote.requires_review %}
   <p class="warn">В расчёт вошли не все строки: {{ quote.unmatched }} требуют уточнения. Проверьте перед отправкой.</p>
   {% endif %}
   {% if llm_usage and llm_usage.calls %}
@@ -49,6 +52,7 @@
     {% if llm_usage.cost_rub %}· {{ "%.4f"|format(llm_usage.cost_rub) }} ₽{% else %}· тариф не задан{% endif %}
   </p>
   {% endif %}
+  {% if quote.lines %}
   <table class="grid">
     <thead>
       <tr><th>#</th><th>Позиция</th><th>Ед.</th><th class="num">Кол-во</th><th class="num">Цена</th><th class="num">Сумма</th></tr>
@@ -60,36 +64,35 @@
         <td>{{ l.name }} <span class="muted small">{{ l.sku }}</span></td>
         <td>{{ l.unit }}</td>
         <td class="num">{{ l.qty|qty }}</td>
-        <td class="num">{{ l.price }}</td>
-        <td class="num">{{ l.amount }}</td>
+        <td class="num">{{ l.price|rub }}</td>
+        <td class="num">{{ l.amount|rub }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   <dl class="totals">
-    {% if prices_include_vat %}
-    <div><dt>Сумма с НДС</dt><dd>{{ quote.subtotal + quote.vat }} ₽</dd></div>
-    <div><dt>В том числе НДС</dt><dd>{{ quote.vat }} ₽</dd></div>
-    {% else %}
-    <div><dt>Без НДС</dt><dd>{{ quote.subtotal }} ₽</dd></div>
-    <div><dt>НДС</dt><dd>{{ quote.vat }} ₽</dd></div>
-    {% endif %}
-    <div><dt>Доставка</dt><dd>{{ quote.delivery }} ₽</dd></div>
-    <div class="grand"><dt>Итого</dt><dd>{{ quote.total }} ₽</dd></div>
+    {% for label, value in totals %}
+    <div{% if loop.last %} class="grand"{% endif %}><dt>{{ label }}</dt><dd>{{ value|rub }} ₽</dd></div>
+    {% endfor %}
   </dl>
+  {% endif %}
 </section>
 {% endif %}
 
 <div class="workdesk">
 <section class="card">
   <h2>Письмо клиента</h2>
-  <p class="muted small">{{ rfq.sender }}{% if rfq.received_at %} · {{ rfq.received_at[:25] }}{% endif %}</p>
+  <p class="muted small">{{ rfq.sender }}{% if rfq.received_at %} · {{ rfq.received_at|dt_ru }}{% endif %}</p>
   <div class="letter">{{ rfq.raw_text or "текст письма не сохранён" }}</div>
 </section>
 
 <section class="card">
   <h2>Что понял сервис</h2>
+  {% if can_edit %}
   <p class="muted small">Позицию можно подтвердить, заменить, изменить количество или удалить — КП пересчитается сразу.</p>
+  {% else %}
+  <p class="muted small">Заявка отправлена клиенту: строки и расчёт зафиксированы, правка закрыта.</p>
+  {% endif %}
   <table class="cards-table lines-table">
     <thead>
       <tr><th>#</th><th>Как написано в письме</th><th class="num">Кол-во</th><th>Ед.</th>
@@ -107,6 +110,7 @@
         <td data-label="Остаток" class="num">{% set s = stock.get(l.idx) %}{% if s and s.qty is defined %}{% if l.qty and l.qty|float > s.qty|float %}<span class="warn" title="на складе меньше">{{ s.qty }}</span>{% else %}{{ s.qty }}{% endif %}{% else %}—{% endif %}</td>
         <td data-label="Статус"><span class="badge {{ line_css.get(l.status, '') }}">{{ labels.get(l.status, l.status) }}</span></td>
         <td data-label="Действия" class="edit">
+          {% if can_edit %}
           <form method="post" action="/ui/rfq/{{ rfq.id }}/lines/{{ l.idx }}/update" class="line-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="text" name="sku" value="{{ l.matched_sku or '' }}" list="sku-list-{{ l.idx }}"
@@ -129,12 +133,16 @@
               </button>
             </div>
           </form>
+          {% else %}
+          <span class="muted small">—</span>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
 
+  {% if can_edit %}
   <form method="post" action="/ui/rfq/{{ rfq.id }}/lines/add" class="row add-line">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="text" name="sku" list="sku-list-add" data-sku-search
@@ -143,6 +151,7 @@
     <input type="text" name="qty" placeholder="кол-во" size="6" inputmode="decimal" required>
     <button type="submit" class="primary">Добавить позицию</button>
   </form>
+  {% endif %}
 </section>
 </div>
 
@@ -156,7 +165,7 @@
       {% for item in sends %}
       <tr>
         <td class="small muted">{{ item.created_at|dt_ru }}</td>
-        <td class="small">{{ item.detail.split(", ")[0].replace("кому ", "") }}</td>
+        <td class="small">{{ item.detail.split(", ")[0].replace("кому ", "").split(": ")[0] }}</td>
         <td class="small">{% if item.action == "sent" %}<span class="ok">отправлено</span>{% else %}<span class="error">не ушло</span>{% endif %}
           <span class="muted">· {{ item.detail }}</span></td>
       </tr>
@@ -164,17 +173,19 @@
     </tbody>
   </table>
   {% endif %}
-  {% if smtp_ready %}
+  {% if smtp_ready and can_send %}
   <form method="post" action="/ui/rfq/{{ rfq.id }}/send" class="stack">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>Кому
-      <input type="email" name="to" value="{{ rfq.sender }}" required>
+      <input type="email" name="to" value="{{ to_addr }}" required>
     </label>
     <label>Текст письма
       <textarea name="body" rows="10">{{ reply_text }}</textarea>
     </label>
     <button class="primary" type="submit">Отправить КП с PDF и DOCX</button>
   </form>
+  {% elif smtp_ready %}
+  <p class="muted small">Сначала одобрите КП: письмо уходит только после проверки человеком.</p>
   {% else %}
   <p class="muted small">
     Отправка писем выключена. Включить: заполнить в настройках
@@ -203,23 +214,26 @@
     </select>
     <button type="submit" class="mini">Назначить</button>
   </form>
-  {% elif not assignee %}
+  {% elif not assignee and current_user %}
   <form method="post" action="/ui/rfq/{{ rfq.id }}/assign" class="inline">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit" class="mini ok">Взять себе</button>
   </form>
   {% endif %}
-  <p class="muted small">Отправка не настроена: текст ответа сохраняется в черновик, письмо можно отправить вручную.</p>
   <div class="row">
+    {% if can_approve %}
     <form method="post" action="/ui/rfq/{{ rfq.id }}/approve" class="inline">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="primary" type="submit">Одобрить и подготовить ответ</button>
     </form>
+    {% endif %}
+    {% if can_reject %}
     <form method="post" action="/ui/rfq/{{ rfq.id }}/reject" class="inline">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="text" name="reason" placeholder="причина отказа">
       <button class="danger" type="submit">Отклонить</button>
     </form>
+    {% endif %}
     {% if "kp_html" in artifacts %}<a class="button" href="/ui/rfq/{{ rfq.id }}/kp.html" target="_blank" rel="noopener">КП (HTML)</a>{% endif %}
     {% if "kp_docx" in artifacts %}<a class="button" href="/ui/rfq/{{ rfq.id }}/kp-office">КП (DOCX)</a>{% endif %}
     {% if "kp_pdf" in artifacts %}<a class="button" href="/ui/rfq/{{ rfq.id }}/kp.pdf" target="_blank" rel="noopener">КП (PDF)</a>{% endif %}

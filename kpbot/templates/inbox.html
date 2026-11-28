@@ -3,7 +3,7 @@
 {% block content %}
 {% set labels = {"received": "принята", "parsed": "разобрана", "priced": "рассчитана",
                  "draft_ready": "КП готово", "human_review": "нужна проверка",
-                 "approved": "одобрена", "sent": "КП передано в отправку", "rejected": "отказ"} %}
+                 "approved": "одобрена", "sent": "КП отправлено", "rejected": "отказ"} %}
 {# страницу «Заявки» рендерят и обработчики ошибок — без фильтров и пагинации #}
 {% set q = q|default("") %}
 {% set status_filter = status_filter|default("") %}

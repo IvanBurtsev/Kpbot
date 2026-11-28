@@ -101,6 +101,6 @@ def build_letters(items: list[PriceItem], count: int = 6, seed: int = 42) -> lis
 
 def sender_address(sender: str) -> str:
     """«ООО «СтройМонтаж» <zakaz@...>» → «zakaz@...»."""
-    if "<" in sender and sender.rstrip().endswith(">"):
-        return sender[sender.rindex("<") + 1 : -1].strip()
-    return sender.strip()
+    from .mailparse import sender_address as parse_sender
+
+    return parse_sender(sender)

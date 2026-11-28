@@ -78,10 +78,20 @@ def _qty(value: object) -> str:
 
 
 def dt_ru(value: object) -> str:
-    """ISO-время для интерфейса: «2026-11-26T15:02:06» → «26.11.2026 15:02»."""
+    """Дата и время для интерфейса: «2026-11-26T15:02:06» → «26.11.2026 15:02».
+
+    Заголовок Date письма — RFC 2822 («Fri, 20 Nov 2026 10:00:00 +0300»), а не ISO:
+    раньше карточка заявки показывала его как есть, обрезая по 16 символов.
+    """
     text = str(value or "").strip()
     if not text:
         return ""
+    try:
+        parsed = parsedate_to_datetime(text)
+        if parsed is not None:
+            return parsed.strftime("%d.%m.%Y %H:%M")
+    except (TypeError, ValueError, IndexError):
+        pass
     try:
         from datetime import datetime
 

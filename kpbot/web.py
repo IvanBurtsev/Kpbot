@@ -37,7 +37,7 @@ from .config import LEGAL_VAT_RATES, settings
 from .domain import LineStatus, RfqLine, RfqStatus, ValidationError, quantity
 from .export import build_rfq_xlsx, check_1c_sheet
 from .mailer import MailError, Mailer, build_kp_message, load_attachments, reply_subject
-from .mailparse import sender_display_name
+from .mailparse import sender_address, sender_display_name
 from .one_c import OneCError, client_from_settings
 from .pipeline import NotAnRfq, Pipeline, build_reply_text_from_store
 from .pricelist import load_price_items, load_stock_items, merge_prices
@@ -225,6 +225,9 @@ async def healthz() -> dict:
 
 
 RFQ_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+# Адрес получателя КП. Проверяем до сборки письма: перевод строки в заголовке
+# To — это подстановка получателя (Bcc), а не «странный адрес».
+EMAIL_RE = re.compile(r"^[^@\s<>,;]+@[^@\s<>,;]+\.[^@\s<>,;]+$")
 
 
 def ensure_rfq_id(rfq_id: str) -> str:
@@ -1613,6 +1616,22 @@ def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
         else ""
     )
     artifacts = {a["kind"] for a in store.artifacts(rfq_id)}
+    status = str(rfq.get("status") or "")
+    # Что можно делать с заявкой в этом статусе. Правила — здесь, а не в шаблоне:
+    # кнопка, которая заведомо кончается ошибкой, — это не «функция», а ловушка.
+    can_edit = status != RfqStatus.SENT.value
+    can_approve = status in (RfqStatus.DRAFT_READY.value, RfqStatus.HUMAN_REVIEW.value)
+    can_reject = status not in (RfqStatus.SENT.value, RfqStatus.REJECTED.value)
+    can_send = status in (RfqStatus.APPROVED.value, RfqStatus.SENT.value)
+    # Итоги считает пайплайн — те же строки, что уходят клиенту в письме и КП.
+    totals = pipeline.quote_totals(quote) if quote else []
+    # В поле «Кому» — чистый адрес: отправитель может быть записан
+    # как «ООО «Ромашка» <sales@example.ru>» (заказ из кабинета).
+    # Если адреса в отправителе нет, поле пустое: иначе браузер не даст отправить
+    # форму из-за собственной проверки type="email".
+    to_addr = sender_address(str(rfq.get("sender") or ""))
+    if not EMAIL_RE.fullmatch(to_addr.lower()):
+        to_addr = ""
     # Подсказки только для строк, где нужен человек: иначе страница с большим
     # прайсом снова распухнет. Для уверенных строк SKU уже известен.
     index = pipeline.price_index()
@@ -1625,6 +1644,12 @@ def ui_rfq(request: Request, rfq_id: str, flash: str = ""):
         request,
         rfq=rfq,
         quote=quote,
+        totals=totals,
+        to_addr=to_addr,
+        can_edit=can_edit,
+        can_approve=can_approve,
+        can_reject=can_reject,
+        can_send=can_send,
         reply_text=reply_text,
         artifacts=artifacts,
         candidates=candidates,
@@ -1787,6 +1812,11 @@ async def save_edits(rfq_id: str, lines: list[RfqLine], actor: str, note: str) -
 
 
 def parse_qty(raw: str) -> Decimal | None:
+    """Количество из формы: положительное конечное число или None.
+
+    «Infinity», «NaN» и «1e999» — валидные с точки зрения Decimal строки, но не
+    количество: раньше они доходили до округления и роняли запрос в 500.
+    """
     value = raw.replace(",", ".").replace(" ", "").strip()
     if not value:
         return None
@@ -1794,7 +1824,38 @@ def parse_qty(raw: str) -> Decimal | None:
         number = Decimal(value)
     except InvalidOperation:
         return None
-    return number if number > 0 else None
+    if not number.is_finite() or number <= 0:
+        return None
+    return number
+
+
+def qty_error(qty: Decimal | None) -> str:
+    """Понятный текст ошибки для количества (пустой — количество принято)."""
+    if qty is None:
+        return "некорректное количество: нужно положительное число"
+    if qty > settings.max_qty:
+        return f"количество больше допустимого ({settings.max_qty:f}) — проверьте единицы"
+    return ""
+
+
+def resolve_price_item(value: str):
+    """Позиция прайса по артикулу или по точному названию.
+
+    Поле в карточке обещает «артикул или название», а сервер раньше принимал
+    только артикул: набранное название отклонялось, хотя подсказка его находила.
+    Название принимаем только при однозначном совпадении — угадывать позицию
+    по неточному названию нельзя, цена считается по прайсу.
+    """
+    key = (value or "").strip()
+    if not key:
+        return None
+    items = store.price_items()
+    for item in items:
+        if item.sku == key:
+            return item
+    lowered = key.casefold()
+    matches = [item for item in items if item.name.strip().casefold() == lowered]
+    return matches[0] if len(matches) == 1 else None
 
 
 @app.post("/ui/rfq/{rfq_id}/lines/{idx}/confirm")
@@ -1809,6 +1870,10 @@ async def ui_line_confirm(request: Request, rfq_id: str, idx: int):
         return back_to(rfq_id, "строка не найдена")
     if not target.matched_sku:
         return back_to(rfq_id, "у строки нет подобранной позиции — выберите её вручную")
+    if target.qty is None or target.qty <= 0:
+        # Без количества строка не попадает в расчёт, но выглядела бы как
+        # подтверждённая («в прайсе») — человек считал бы её учтённой.
+        return back_to(rfq_id, "сначала укажите количество — без него строка не войдёт в расчёт")
     target.status = LineStatus.OK
     target.note = ""
     return await save_edits(rfq_id, lines, actor_of(request), f"подтверждена строка {idx}")
@@ -1821,9 +1886,11 @@ async def ui_line_update(request: Request, rfq_id: str, idx: int):
     ensure_rfq_id(rfq_id)
     form = await verified_form(request)
 
-    qty = parse_qty(str(form.get("qty", "")))
-    if qty is None:
-        return back_to(rfq_id, "некорректное количество: нужно положительное число")
+    raw_qty = str(form.get("qty", ""))
+    qty = parse_qty(raw_qty)
+    error = qty_error(qty)
+    if error:
+        return back_to(rfq_id, error)
     sku = str(form.get("sku", "")).strip()
 
     _rfq, lines = lines_from_db(rfq_id)
@@ -1831,11 +1898,14 @@ async def ui_line_update(request: Request, rfq_id: str, idx: int):
     if target is None:
         return back_to(rfq_id, "строка не найдена")
 
-    target.qty = quantity(qty)
+    try:
+        target.qty = quantity(qty)
+    except ValidationError as exc:
+        return back_to(rfq_id, str(exc))
     if sku:
-        item = next((candidate for candidate in store.price_items() if candidate.sku == sku), None)
+        item = resolve_price_item(sku)
         if item is None:
-            return back_to(rfq_id, "такой позиции нет в прайс-листе")
+            return back_to(rfq_id, "такой позиции нет в прайс-листе — выберите её из подсказок")
         target.matched_sku = item.sku
         target.matched_name = item.name
         target.unit = item.unit
@@ -1866,22 +1936,32 @@ async def ui_line_add(request: Request, rfq_id: str):
     form = await verified_form(request)
 
     sku = str(form.get("sku", "")).strip()
-    qty = parse_qty(str(form.get("qty", "")))
+    raw_qty = str(form.get("qty", ""))
+    qty = parse_qty(raw_qty)
+    error = qty_error(qty)
     if not sku:
         return back_to(rfq_id, "выберите позицию из прайса")
-    if qty is None:
-        return back_to(rfq_id, "некорректное количество: нужно положительное число")
+    if error:
+        return back_to(rfq_id, error)
 
-    item = next((candidate for candidate in store.price_items() if candidate.sku == sku), None)
+    item = resolve_price_item(sku)
     if item is None:
-        return back_to(rfq_id, "такой позиции нет в прайс-листе")
+        return back_to(rfq_id, "такой позиции нет в прайс-листе — выберите её из подсказок")
 
     _rfq, lines = lines_from_db(rfq_id)
+    if len(lines) >= settings.max_rfq_lines:
+        return back_to(
+            rfq_id, f"в заявке уже {len(lines)} строк — больше {settings.max_rfq_lines} нельзя"
+        )
+    try:
+        added_qty = quantity(qty)
+    except ValidationError as exc:
+        return back_to(rfq_id, str(exc))
     lines.append(
         RfqLine(
             idx=len(lines) + 1,
-            raw_text=f"{item.name} — {qty} {item.unit} (добавлено вручную)",
-            qty=quantity(qty),
+            raw_text=f"{item.name} — {added_qty} {item.unit} (добавлено вручную)",
+            qty=added_qty,
             unit=item.unit,
             matched_sku=item.sku,
             matched_name=item.name,
@@ -1912,8 +1992,10 @@ async def ui_rfq_send(request: Request, rfq_id: str):
         # только интерфейс: из карточки можно было отправить непроверенный расчёт.
         return back_to(rfq_id, "сначала одобрите КП — без проверки человеком не отправляем")
 
-    to = normalize_email(str(form.get("to", "")).strip() or str(rfq.get("sender", "")))
-    if "@" not in to:
+    to = sender_address(
+        str(form.get("to", "")).strip() or str(rfq.get("sender", ""))
+    ).lower()
+    if not EMAIL_RE.fullmatch(to):
         return back_to(rfq_id, "нужен корректный адрес получателя")
 
     quote = store.get_quote(rfq_id)
@@ -1928,14 +2010,19 @@ async def ui_rfq_send(request: Request, rfq_id: str):
         # Письмо говорит «КП во вложении»: без файла клиент получит пустое
         # письмо. Лучше честно остановиться и попросить пересобрать документы.
         return back_to(rfq_id, "к письму нечего приложить: КП не собралось — обновите карточку")
-    message = build_kp_message(
-        sender=to,
-        from_addr=mailer.from_addr or settings.smtp_user or "no-reply@localhost",
-        subject=reply_subject(str(rfq.get("subject", ""))),
-        body=body,
-        attachments=attachments,
-        reply_to=settings.smtp_user or "",
-    )
+    try:
+        message = build_kp_message(
+            sender=to,
+            from_addr=mailer.from_addr or settings.smtp_user or "no-reply@localhost",
+            subject=reply_subject(str(rfq.get("subject", ""))),
+            body=body,
+            attachments=attachments,
+            reply_to=settings.smtp_user or "",
+        )
+    except ValueError:
+        # Заголовки письма не принимают перевод строки: это попытка подставить
+        # скрытого получателя, а не «необычный адрес».
+        return back_to(rfq_id, "некорректный адрес получателя")
     try:
         await run_in_threadpool(mailer.send, message, to=to)
     except MailError as exc:
@@ -1946,9 +2033,12 @@ async def ui_rfq_send(request: Request, rfq_id: str):
             body=body,
             error=str(exc),
         )
-        # Письмо не ушло — заявка остаётся одобренной и ждёт повтора, а не «отправленной».
-        # force: статус мог быть sent из старой схемы «черновик = отправлено».
-        store.set_status(rfq_id, RfqStatus.APPROVED.value, force=True)
+        # Письмо не ушло — заявка остаётся одобренной и ждёт повтора, а не
+        # «отправленной». Но если она уже была отправлена раньше (повторная
+        # отправка не удалась), статус sent не откатываем: клиент письмо получил.
+        current = (store.get_rfq(rfq_id) or {}).get("status")
+        if current != RfqStatus.SENT.value:
+            store.set_status(rfq_id, RfqStatus.APPROVED.value, force=True)
         store.log(rfq_id, "send_failed", actor_of(request), f"{to}: {exc}"[:300])
         if mailer.enabled:
             return back_to(rfq_id, f"не отправлено: {exc}. Письмо в очереди, повторю автоматически")
@@ -1981,7 +2071,8 @@ async def ui_rfq_assign(request: Request, rfq_id: str):
 
     target = str(form.get("user_id", "")).strip() or (user.id if user else "")
     if not target:
-        return back_to(rfq_id, "не выбран исполнитель")
+        # Вход общим паролем: личности нет, и «взять себе» некому.
+        return back_to(rfq_id, "войдите под своей учётной записью, чтобы взять заявку")
     if user is None or (not user.is_admin and rfq.get("assignee") not in (None, "", user.id)):
         return back_to(rfq_id, "эту заявку ведёт другой менеджер")
     if not user.is_admin and target != user.id:

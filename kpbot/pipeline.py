@@ -20,6 +20,7 @@ from .domain import (
     RfqStatus,
     ValidationError,
     build_reply_subject,
+    check_transition,
     money,
     price_quote,
     status_for,
@@ -663,6 +664,22 @@ class Pipeline:
         }
         return {key: (saved.get(f"company_{key}") or value) for key, value in defaults.items()}
 
+    def quote_totals(self, quote: dict) -> list[tuple[str, Decimal]]:
+        """Итоги снимка КП так, как их увидит клиент в письме и в КП.
+
+        Один источник правды: карточка заявки не считает деньги сама.
+        """
+        return reply_totals_rows(
+            _money_value(quote.get("subtotal")),
+            _money_value(quote.get("vat")),
+            _money_value(quote.get("delivery")),
+            _money_value(quote.get("total")),
+            prices_include_vat=str(quote.get("prices_include_vat") or "0").strip().lower()
+            in {"1", "true", "yes", "on", "да"},
+            delivery_vat=_money_value(quote.get("delivery_vat")),
+            breakdown=_breakdown_from_store(quote),
+        )
+
     def _render_documents(
         self, rfq_id: str, parsed: ParsedEmail, lines: list, quote: Quote
     ) -> dict[str, object]:
@@ -735,6 +752,10 @@ class Pipeline:
             raise ValidationError(
                 f"нельзя перевести заявку в «одобрена»: текущий статус — «{current.value}»"
             )
+        # Переход проверяем ДО любых записей: раньше журнал и черновик письма
+        # появлялись даже тогда, когда статус не менялся (например, одобрение
+        # отклонённой заявки), и в журнале оставалось «approved» без одобрения.
+        check_transition(current, RfqStatus.APPROVED)
         quote = self.store.get_quote(rfq_id) or {}
         if not quote.get("lines"):
             # Пустое КП отправлять нечего: либо строки не найдены, либо всё
@@ -943,7 +964,32 @@ def _reply_totals(
     delivery_vat: Decimal = Decimal("0.00"),
     breakdown: list[tuple[Decimal, Decimal, Decimal]] | None = None,
 ) -> list[str]:
-    """Строки итогов для письма так, чтобы они складывались в «Итого».
+    """Строки итогов для письма: те же пары, что у карточки, но текстом."""
+    return [
+        f"{label}: {_money_text(value)} ₽"
+        for label, value in reply_totals_rows(
+            subtotal,
+            vat,
+            delivery,
+            total,
+            prices_include_vat=prices_include_vat,
+            delivery_vat=delivery_vat,
+            breakdown=breakdown,
+        )
+    ]
+
+
+def reply_totals_rows(
+    subtotal: Decimal,
+    vat: Decimal,
+    delivery: Decimal,
+    total: Decimal,
+    *,
+    prices_include_vat: bool,
+    delivery_vat: Decimal = Decimal("0.00"),
+    breakdown: list[tuple[Decimal, Decimal, Decimal]] | None = None,
+) -> list[tuple[str, Decimal]]:
+    """Итоги КП парами «подпись — сумма»: один источник правды для письма и UI.
 
     В режиме «цены уже с НДС» доставка тоже уже с НДС: если показать её рядом
     с «Сумма без НДС» и «НДС», клиент сложит 1000 + 242 + 122 и получит 1364
@@ -953,6 +999,11 @@ def _reply_totals(
 
     Если ставки разные (22% и 10%), НДС показывается по каждой ставке:
     иначе клиент не увидит, из чего сложился налог.
+
+    Карточке заявки эти же строки нужны, чтобы показывать ровно то, что клиент
+    увидит в письме и КП: раньше она считала итоги сама и в режиме «цены с НДС»
+    склеивала две строки («172.5037.95 ₽»), а режим брала из `.env`, а не из
+    расчёта этого клиента.
     """
     delivery = max(delivery, Decimal("0.00"))
     rates = [
@@ -962,29 +1013,28 @@ def _reply_totals(
     ]
     if prices_include_vat:
         goods_gross = money(subtotal + vat - delivery_vat)
-        lines = [f"Сумма с НДС по товарам: {_money_text(goods_gross)} ₽"]
+        rows: list[tuple[str, Decimal]] = [("Сумма с НДС по товарам", goods_gross)]
         if len(rates) > 1:
-            lines.extend(
-                f"В том числе НДС {_rate_label(rate)}: {_money_text(rate_vat)} ₽"
+            rows.extend(
+                (f"В том числе НДС {_rate_label(rate)}", rate_vat)
                 for rate, _net, rate_vat in rates
             )
         else:
-            lines.append(f"В том числе НДС: {_money_text(vat)} ₽")
+            rows.append(("В том числе НДС", vat))
         if delivery:
-            lines.append(f"Доставка с НДС: {_money_text(delivery)} ₽")
+            rows.append(("Доставка с НДС", delivery))
     else:
-        lines = [f"Сумма без НДС: {_money_text(subtotal)} ₽"]
+        rows = [("Сумма без НДС", subtotal)]
         if len(rates) > 1:
-            lines.extend(
-                f"НДС {_rate_label(rate)}: {_money_text(rate_vat)} ₽"
-                for rate, _net, rate_vat in rates
+            rows.extend(
+                (f"НДС {_rate_label(rate)}", rate_vat) for rate, _net, rate_vat in rates
             )
         else:
-            lines.append(f"НДС: {_money_text(vat)} ₽")
+            rows.append(("НДС", vat))
         if delivery:
-            lines.append(f"Доставка без НДС: {_money_text(delivery)} ₽")
-    lines.append(f"Итого: {_money_text(total)} ₽")
-    return lines
+            rows.append(("Доставка без НДС", delivery))
+    rows.append(("Итого", total))
+    return rows
 
 
 def _breakdown_from_store(quote: dict) -> list[tuple[Decimal, Decimal, Decimal]]:

@@ -95,6 +95,20 @@ def sender_display_name(value: str) -> str:
     return name or text
 
 
+def sender_address(value: str) -> str:
+    """«ИП Сергеев <mail@example.ru>» → «mail@example.ru».
+
+    Отправитель заявки может быть записан с названием компании: заказ из личного
+    кабинета клиента приходит именно так. В поле «Кому» карточки должен попадать
+    чистый адрес — иначе браузер считает его неверным и не даёт отправить КП.
+    """
+    text = (value or "").strip()
+    if not text:
+        return ""
+    parsed = parseaddr(text)[1].strip()
+    return parsed or text
+
+
 def parse_eml(raw: bytes) -> ParsedEmail:
     if not raw:
         raise ValueError("пустое письмо")
